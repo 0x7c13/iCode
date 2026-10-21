@@ -281,6 +281,61 @@ async def test_sub_agent_resume_after_pause_resets_attempt_local_inner_call_trac
         assert tool._total_inner_calls == 3
 
 
+async def test_sub_agent_retry_drops_the_answer_its_failed_attempt_showed() -> None:
+    async with LocalizedWidgetApp(
+        lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "delegate"})
+    ).run_test() as pilot:
+        tool = pilot.app.query_one(SubAgentToolCall)
+        tool.add_answer("segment-1", "Looking first.")
+        await tool.add_inner_tool_start("inner-0", "read_file", {})
+        tool.complete_inner_tool("inner-0", "done", 5)
+        tool.add_answer("segment-2", "The result is")
+        surface = await mount_sub_agent_detail(tool, pilot)
+
+        def answers(view: AgentTranscriptSurface) -> list[str]:
+            return [message.text for message in view.query(AgentMessage)]
+
+        await wait_for(lambda: answers(surface) == ["Looking first.", "The result is"], pilot=pilot)
+
+        tool.set_paused("stream_error", "connection closed", 0)
+        tool.set_resumed_after_pause()
+        # The retried attempt asks again for that answer: it goes, the tool work stays.
+        await wait_for(lambda: answers(surface) == ["Looking first."] and not surface._pending, pilot=pilot)
+        assert len(surface.query(ToolGroup)) == 1
+        tool.add_answer("segment-3", "The result is 42.")
+        await wait_for(lambda: answers(surface) == ["Looking first.", "The result is 42."], pilot=pilot)
+
+        reopened = await mount_sub_agent_detail(tool, pilot)
+        await wait_for(lambda: answers(reopened) == ["Looking first.", "The result is 42."], pilot=pilot)
+
+
+async def test_sub_agent_answer_a_failure_stopped_is_final_while_paused() -> None:
+    """While paused, the answer the failed attempt showed is final in live and reopened detail views."""
+    async with LocalizedWidgetApp(
+        lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "delegate"})
+    ).run_test() as pilot:
+        tool = pilot.app.query_one(SubAgentToolCall)
+        tool.add_answer("segment-1", "I'll write the file now.")
+        surface = await mount_sub_agent_detail(tool, pilot)
+
+        def states(view: AgentTranscriptSurface) -> list[tuple[str, bool, bool]]:
+            return [
+                (message.text, message._is_final, message.has_class("--streaming"))
+                for message in view.query(AgentMessage)
+            ]
+
+        await wait_for(lambda: states(surface) == [("I'll write the file now.", False, True)], pilot=pilot)
+
+        tool.set_paused("stream_error", "connection closed", 0)
+        await wait_for(lambda: states(surface) == [("I'll write the file now.", True, False)], pilot=pilot)
+        reopened = await mount_sub_agent_detail(tool, pilot)
+        await wait_for(lambda: states(reopened) == [("I'll write the file now.", True, False)], pilot=pilot)
+
+        # Retry still asks again for the answer the failed attempt showed.
+        tool.set_resumed_after_pause()
+        await wait_for(lambda: not states(surface) and not states(reopened), pilot=pilot)
+
+
 async def test_sub_agent_acp_transport_pause_shows_ui_only_diagnostic_banner() -> None:
     async with LocalizedWidgetApp(
         lambda: SubAgentToolCall("c1", "Remote", args={"prompt": "delegate"})

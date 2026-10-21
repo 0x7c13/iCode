@@ -17,7 +17,6 @@ from chrys.app.tui.screens.main.ports import (
 if TYPE_CHECKING:
     from chrys.app.tui.screens.main.state import MainScreenState
     from chrys.app.tui.widgets.sidebar.context import ContextUsageState
-    from chrys.foundation.events.types import ProvisionalPresentation
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.todos import TodoItem
     from chrys.service.approval.policy import ApprovalMode
@@ -144,8 +143,8 @@ class MainScreenPresenter:
     def clear_compressed_blocks(self) -> None:
         self._view.clear_compressed_blocks()
 
-    async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
-        await self._view.add_error(message, action_label=action_label)
+    async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
+        await self._view.add_error(message, action_label=action_label, ends_turn=ends_turn)
 
     async def add_system(self, text: str, *, key: str | None = None) -> None:
         await self._view.add_system(text, key=key)
@@ -159,14 +158,14 @@ class MainScreenPresenter:
     async def replay_history(self, *args: Any, **kwargs: Any) -> None:
         await self._view.replay_history(*args, **kwargs)
 
+    async def add_answer_delta(self, segment_id: str, text: str) -> None:
+        await self._view.add_answer_delta(segment_id, text)
+
+    def finish_answer_segment(self, segment_id: str, *, completed: bool) -> None:
+        self._view.finish_answer_segment(segment_id, completed=completed)
+
     async def add_agent_message(self, *args: Any, **kwargs: Any) -> None:
         await self._view.add_agent_message(*args, **kwargs)
-
-    async def accept_presentation_attempt(self, attempt_id: str, segment_ids: tuple[str, ...]) -> None:
-        await self._view.accept_presentation_attempt(attempt_id, segment_ids)
-
-    async def reject_presentation_attempt(self, attempt_id: str) -> None:
-        await self._view.reject_presentation_attempt(attempt_id)
 
     async def add_user_injection(self, *args: Any, **kwargs: Any) -> None:
         await self._view.add_user_injection(*args, **kwargs)
@@ -239,31 +238,8 @@ class MainScreenPresenter:
             tool_name=tool_name,
         )
 
-    def add_sub_agent_message(
-        self,
-        agent_name: str,
-        invocation_id: str,
-        text: str,
-        *,
-        presentation: ProvisionalPresentation | None = None,
-    ) -> None:
-        self._view.add_sub_agent_message(
-            agent_name,
-            invocation_id,
-            text,
-            presentation=presentation,
-        )
-
-    def accept_sub_agent_presentation(
-        self,
-        invocation_id: str,
-        attempt_id: str,
-        segment_ids: tuple[str, ...],
-    ) -> None:
-        self._view.accept_sub_agent_presentation(invocation_id, attempt_id, segment_ids)
-
-    def reject_sub_agent_presentation(self, invocation_id: str, attempt_id: str) -> None:
-        self._view.reject_sub_agent_presentation(invocation_id, attempt_id)
+    def add_sub_agent_answer(self, agent_name: str, invocation_id: str, segment_id: str, text: str) -> None:
+        self._view.add_sub_agent_answer(agent_name, invocation_id, segment_id, text)
 
     async def add_sub_agent_tool_start(self, *args: Any, **kwargs: Any) -> None:
         await self._view.add_sub_agent_tool_start(*args, **kwargs)

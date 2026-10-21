@@ -8,7 +8,7 @@ from typing import Any
 
 from rich.text import Text
 
-from chrys.app.tui.util.removal import finish_shielded, remove_shielded
+from chrys.app.tui.util.removal import remove_shielded
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard
 from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
 from chrys.app.tui.widgets.chat.messages import (
@@ -19,7 +19,6 @@ from chrys.app.tui.widgets.chat.messages import (
     SystemMessage,
     UserMessage,
     format_message_created_at,
-    process_think_tags,
     resolve_interrupted_message_copy,
 )
 from chrys.app.tui.widgets.chat.ports import (
@@ -31,7 +30,6 @@ from chrys.app.tui.widgets.chat.ports import (
 )
 from chrys.app.tui.widgets.chat.toc_model import TurnTocModel
 from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
-from chrys.foundation.events.types import ProvisionalPresentation
 from chrys.foundation.i18n.formatting import format_message
 
 
@@ -59,7 +57,12 @@ class LiveTranscriptRenderer:
         self._current_agent_msg: AgentMessage | None = None
         self._profile_name: str = ""
         self._compaction_cards: dict[str, CompactionCard] = {}
-        self._provisional_agent_messages: dict[str, dict[str, AgentMessage]] = {}
+        # The answer segment being streamed, and its text while it is still
+        # blank: whitespace-only text mounts no message.
+        self._segment_id = ""
+        self._blank_segment_text = ""
+        self._answer_streamed = False
+        """Whether answer text streamed since the turn opened."""
 
     @property
     def current_agent_msg(self) -> AgentMessage | None:
@@ -87,7 +90,9 @@ class LiveTranscriptRenderer:
         """Clear per-transcript cursors while preserving durable metadata."""
         self._current_agent_msg = None
         self._compaction_cards.clear()
-        self._provisional_agent_messages.clear()
+        self._segment_id = ""
+        self._blank_segment_text = ""
+        self._answer_streamed = False
 
     def _finalize_current_agent_message(self) -> None:
         """Terminate and release the active streamed-message presentation."""
@@ -97,6 +102,19 @@ class LiveTranscriptRenderer:
             self._current_agent_msg.format_agent_response_copy(),
             is_final=True,
         )
+        self._current_agent_msg = None
+
+    def stop_answer(self) -> None:
+        """The run stopped before completing its answer: the text it streamed stays, final."""
+        self._segment_id = ""
+        self._blank_segment_text = ""
+        self._finalize_current_agent_message()
+
+    def settle_answer_before_tools(self) -> None:
+        """The streamed answer text is followed by more of the turn (tool calls, another segment): show it as intermediate text."""
+        if self._current_agent_msg is None:
+            return
+        self._current_agent_msg.settle_intermediate()
         self._current_agent_msg = None
 
     async def add_user_message(
@@ -112,6 +130,7 @@ class LiveTranscriptRenderer:
         if not is_injection:
             self._ui.on_live_user_turn_started()
             await self._remove_failed_turn()
+            self._answer_streamed = False
         self._tools.end_group()
         self._finalize_current_agent_message()
         timestamp = format_message_created_at(created_at)
@@ -143,92 +162,83 @@ class LiveTranscriptRenderer:
         else:
             self._toc.remember_failed_turn_without_user_removal()
 
+    async def add_answer_delta(self, segment_id: str, text: str) -> None:
+        """Stream new answer text into its segment's message, mounting it once the text is not blank."""
+        self._answer_streamed = True
+        if segment_id != self._segment_id:
+            # A failed segment was finalized when it closed: one still current
+            # completed, and the turn went on past it.
+            self.settle_answer_before_tools()
+            self._segment_id = segment_id
+            self._blank_segment_text = ""
+        if self._current_agent_msg is not None:
+            self._current_agent_msg.append_text(text)
+            self._ui.schedule_anchor_sync()
+            return
+        self._blank_segment_text += text
+        if not self._blank_segment_text.strip():
+            return
+        await self._status.remove_trailing_status()
+        if self._tools.current_tool_group is not None:
+            self._tools.current_tool_group.collapsed = True
+        self._tools.end_group()
+        message = AgentMessage(self._blank_segment_text, is_final=False, profile_name=self._profile_name)
+        self._blank_segment_text = ""
+        self._current_agent_msg = message
+        await self._mount.mount_transcript_widget(message)
+        self._ui.schedule_anchor_sync()
+
+    def finish_answer_segment(self, segment_id: str, *, completed: bool) -> None:
+        """Close a streamed answer segment; a failed or interrupted one keeps its partial text."""
+        if segment_id != self._segment_id:
+            return
+        self._segment_id = ""
+        self._blank_segment_text = ""
+        if not completed:
+            # A completed segment stays current: it is the final answer
+            # unless tool calls follow it.
+            self._finalize_current_agent_message()
+
     async def add_agent_message(
         self,
         text: str,
-        is_final: bool = True,
         *,
-        is_intermediate: bool = False,
+        streamed: bool = True,
         structured_output_completed: bool = False,
-        presentation: ProvisionalPresentation | None = None,
         created_at: Any = None,
     ) -> None:
-        """Display or update a live agent message."""
-        timestamp = format_message_created_at(created_at) if is_final and not is_intermediate else ""
+        """Complete the agent's answer: its text already streamed, so only its message finalizes.
+
+        The text is mounted only when no answer streamed (a transcript replayed
+        without its deltas) or when it is not the streamed answer (*streamed*
+        False: a failure result).
+        """
+        timestamp = format_message_created_at(created_at)
         await self._status.remove_trailing_status()
-
-        if is_intermediate:
-            if text and process_think_tags(text, intermediate=True):
-                if self._tools.current_tool_group is not None:
-                    self._tools.current_tool_group.collapsed = True
-                self._tools.end_group()
-                self._finalize_current_agent_message()
-                msg = AgentMessage(
-                    text,
-                    is_final=True,
-                    profile_name=self._profile_name,
-                    is_intermediate=True,
-                )
-                await self._mount.mount_transcript_widget(msg)
-                if presentation is not None:
-                    self._provisional_agent_messages.setdefault(presentation.attempt_id, {})[
-                        presentation.segment_id
-                    ] = msg
-                self._ui.schedule_anchor_sync()
-            return
-
         self._ui.on_final_response_started()
-
-        if is_final and self._tools.current_tool_group is not None:
+        if self._tools.current_tool_group is not None:
             self._tools.current_tool_group.collapsed = True
         self._tools.end_group()
-
-        if not is_final:
-            if self._current_agent_msg is None:
-                self._current_agent_msg = AgentMessage(
-                    text,
-                    is_final=False,
-                    profile_name=self._profile_name,
-                )
-                await self._mount.mount_transcript_widget(self._current_agent_msg)
-            else:
-                self._current_agent_msg.stream_update(text, is_final=False)
-            self._ui.schedule_anchor_sync()
-        elif self._current_agent_msg is not None:
-            self._current_agent_msg.stream_update(text, is_final=True, timestamp=timestamp)
+        self._segment_id = ""
+        self._blank_segment_text = ""
+        if streamed and self._current_agent_msg is not None:
+            self._current_agent_msg.stream_update(self._current_agent_msg.text, is_final=True, timestamp=timestamp)
             self._current_agent_msg = None
             self._ui.schedule_anchor_sync()
-        else:
-            final_text = text if text.strip() else ""
-            if not final_text and not structured_output_completed:
-                return
-            msg = AgentMessage(
-                final_text or "✓",
-                is_final=True,
-                profile_name=self._profile_name,
-                is_structured_completion=structured_output_completed and not final_text,
-                timestamp=timestamp,
-            )
-            await self._mount.mount_transcript_widget(msg)
-            self._ui.schedule_anchor_sync()
-
-    async def accept_presentation_attempt(self, attempt_id: str, segment_ids: tuple[str, ...]) -> None:
-        """Commit canonical provisional widgets and remove unmatched ones."""
-        tracked = self._provisional_agent_messages.pop(attempt_id, {})
-        accepted = set(segment_ids)
-        rejected = [message for segment_id, message in tracked.items() if segment_id not in accepted]
-        if rejected:
-            # The attempt no longer tracks these widgets, so a cancelled caller still removes every one.
-            await finish_shielded(self._remove_rejected(rejected))
-
-    async def _remove_rejected(self, messages: list[AgentMessage]) -> None:
-        for message in messages:
-            await self._mount.remove_transcript_widget(message)
+            return
+        self._finalize_current_agent_message()
+        final_text = "" if (streamed and self._answer_streamed) or not text.strip() else text
+        if not final_text and not structured_output_completed:
+            return
+        msg = AgentMessage(
+            final_text or "✓",
+            is_final=True,
+            profile_name=self._profile_name,
+            is_structured_completion=structured_output_completed and not final_text,
+            timestamp=timestamp,
+        )
+        await self._mount.mount_transcript_widget(msg)
         self._ui.schedule_anchor_sync()
-
-    async def reject_presentation_attempt(self, attempt_id: str) -> None:
-        """Remove all mounted provisional widgets for a rejected attempt."""
-        await self.accept_presentation_attempt(attempt_id, ())
 
     async def add_context_fold(
         self,
@@ -346,6 +356,7 @@ class LiveTranscriptRenderer:
         self, reason: str = "Execution interrupted", source: str = "user", *, show_action: bool = True
     ) -> None:
         """Display an interruption notice, replacing any trailing status widget."""
+        self._finalize_current_agent_message()
         await self.cancel_running_tools()
         await self._status.remove_trailing_status()
 
@@ -355,12 +366,18 @@ class LiveTranscriptRenderer:
         await self._mount.mount_transcript_widget(msg)
         self._ui.on_status_message_mounted()
 
-    async def add_error(self, text: str, *, action_label: str | None = "Retry") -> None:
+    async def add_error(self, text: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
         """Display an error message, replacing any trailing status widget."""
+        self._finalize_current_agent_message()
         await self.cancel_running_tools()
+        # An error outside a turn that replaces a failed turn's card leaves
+        # that turn to retry: the new card still ends it.
+        replaced = self._status.failed_turn_status()
+        if isinstance(replaced, InterruptedMessage) or (isinstance(replaced, ErrorMessage) and replaced.ends_turn):
+            ends_turn = True
         await self._status.remove_trailing_status()
 
-        msg = ErrorMessage(text, action_label=action_label)
+        msg = ErrorMessage(text, action_label=action_label, ends_turn=ends_turn)
         await self._mount.mount_transcript_widget(msg)
         self._ui.on_status_message_mounted()
 

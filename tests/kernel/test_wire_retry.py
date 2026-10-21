@@ -66,6 +66,11 @@ def _text_update(text: str, **kwargs: Any) -> ChatResponseUpdate:
     return ChatResponseUpdate(contents=[Content.from_text(text)], role="assistant", **kwargs)
 
 
+def _silent_update(**kwargs: Any) -> ChatResponseUpdate:
+    """Stream progress without readable text: a replay cannot repeat anything shown."""
+    return ChatResponseUpdate(contents=[], role="assistant", **kwargs)
+
+
 def _call_update(call_id: str, name: str, **arguments: Any) -> ChatResponseUpdate:
     return ChatResponseUpdate(
         contents=[Content.from_function_call(call_id, name, arguments=arguments)],
@@ -80,6 +85,7 @@ class _Policy:
     stall_max_retries: int = 0
     stall_exhausted_action: StallExhaustedAction = StallExhaustedAction.BLOCKING_FALLBACK
     hosted_commits_in_flight: Callable[[], tuple[str, ...]] | None = None
+    answer_shown: Callable[[], bool] | None = None
     events: list[tuple[str, int, int, int, BaseException]] = field(default_factory=list)
     before_retry_calls: int = 0
     before_retry_hook: Any = None
@@ -227,7 +233,7 @@ async def test_forced_stateless_store_true_still_uses_local_wire_retry(stream: b
 
 
 def _layer(wire: _ScriptedWire, *, validation: bool = False) -> InvariantCheckedToolLoopLayer:
-    middleware = [ResponseValidationMiddleware(backoff_schedule=(0,))] if validation else None
+    middleware = [ResponseValidationMiddleware()] if validation else None
     return InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(wire, middleware=middleware))
 
 
@@ -277,7 +283,7 @@ async def test_retry_after_committed_tool_work_reissues_only_failed_logical_call
 async def test_continuation_token_is_polled_to_terminal_inside_logical_call(stream: bool) -> None:
     token = {"response_id": "pending-1"}
     if stream:
-        pending = [_text_update("not-terminal", continuation_token=token)]
+        pending = [_silent_update(continuation_token=token)]
         terminal = [_text_update("terminal")]
     else:
         pending = _text_response("not-terminal", continuation_token=token)
@@ -287,9 +293,8 @@ async def test_continuation_token_is_polled_to_terminal_inside_logical_call(stre
 
     result = layer.get_response([_user()], stream=stream)
     if stream:
-        visible = [update async for update in result]
+        _ = [update async for update in result]
         response = await result.get_final_response()
-        assert all(update.text != "not-terminal" for update in visible)
     else:
         response = await result
 
@@ -372,7 +377,7 @@ async def test_stall_fallback_closes_nested_stream_and_continues_tool_loop() -> 
     async def _stalled_updates():
         nonlocal closed
         try:
-            yield _text_update("discard-me")
+            yield _silent_update()
             await asyncio.Event().wait()
         finally:
             closed += 1
@@ -456,7 +461,7 @@ async def test_local_streaming_wire_lanes_compose_to_3n_plus_2_worst_case(budget
 
     def _stalled_stream() -> ResponseStream:
         async def _updates():
-            yield _text_update("discard-me")
+            yield _silent_update()
             await asyncio.Event().wait()
 
         return ResponseStream(_updates(), finalizer=ChatResponse.from_updates)
@@ -520,7 +525,7 @@ async def test_stall_downgraded_exhaustion_final_is_stripped() -> None:
     runs: list[str] = []
 
     async def _stalled_updates():
-        yield _text_update("discard-me")
+        yield _silent_update()
         await asyncio.Event().wait()
 
     stalled = ResponseStream(_stalled_updates(), finalizer=ChatResponse.from_updates)
@@ -575,9 +580,9 @@ async def test_retry_boundary_marker_is_not_assembled_into_response() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mid_answer_retry_emits_boundary_before_fresh_attempt_and_drops_partial() -> None:
+async def test_a_retry_before_any_text_emits_a_boundary_before_the_fresh_attempt() -> None:
     async def _failed_updates():
-        yield _text_update("failed partial")
+        yield _call_update("c1", "echo", text="partial call")
         raise ConnectionError("stream reset")
 
     failed = ResponseStream(_failed_updates(), finalizer=ChatResponse.from_updates)
@@ -594,7 +599,7 @@ async def test_mid_answer_retry_emits_boundary_before_fresh_attempt_and_drops_pa
     response = await stream.get_final_response()
     marker_index = next(index for index, update in enumerate(updates) if is_retry_boundary_update(update))
 
-    assert updates[marker_index - 1].text == "failed partial"
+    assert updates[marker_index - 1].contents[0].call_id == "c1"
     assert updates[marker_index + 1].text == "fresh answer"
     assert response.text == "fresh answer"
     assert len(policy.events) == 1
@@ -622,7 +627,7 @@ async def test_hosted_commit_evidence_vetoes_blocking_wire_retry() -> None:
             )
         ]
     )
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
     policy = _Policy()
     policy.hosted_commits_in_flight = validation.hosted_commits_in_flight
     wire = _ScriptedWire([hosted, _text_response("must stay unused")])
@@ -643,7 +648,7 @@ async def test_hosted_commit_evidence_vetoes_blocking_wire_retry() -> None:
 async def test_hosted_free_blocking_wire_retry_still_replays() -> None:
     # The veto must not over-block: a transport failure with no hosted work
     # observed in the attempt retries as before, even with the probe wired.
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
     policy = _Policy()
     policy.hosted_commits_in_flight = validation.hosted_commits_in_flight
     wire = _ScriptedWire([ConnectionError("wire dropped"), _text_response("recovered")])
@@ -675,7 +680,7 @@ async def test_hosted_commit_evidence_vetoes_mid_stream_wire_replay() -> None:
         raise ConnectionError("stream reset")
 
     failed = ResponseStream(_failed_updates(), finalizer=ChatResponse.from_updates)
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
     policy = _Policy()
     policy.hosted_commits_in_flight = validation.hosted_commits_in_flight
     wire = _ScriptedWire([failed, [_text_update("must stay unused")]])
@@ -715,7 +720,7 @@ def _failed_after_hosted_work(*, invalidates: bool, hosted: bool = True) -> Prov
 
 
 def _validated_layer(wire: _ScriptedWire) -> tuple[InvariantCheckedToolLoopLayer, _ProviderRetryPolicy]:
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
     policy = _ProviderRetryPolicy()
     policy.hosted_commits_in_flight = validation.hosted_commits_in_flight
     return InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(wire, middleware=[validation])), policy
@@ -755,7 +760,7 @@ async def test_hosted_work_on_a_provider_failure_vetoes_wire_retry(stream: bool,
 async def test_hosted_work_on_a_provider_failure_still_polls_a_live_token(stream: bool) -> None:
     token = {"response_id": "pending-hosted"}
     if stream:
-        pending: Any = [_text_update("not-terminal", continuation_token=token)]
+        pending: Any = [_silent_update(continuation_token=token)]
         terminal: Any = [_text_update("terminal")]
     else:
         pending = _text_response("not-terminal", continuation_token=token)
@@ -799,7 +804,7 @@ async def test_hosted_work_a_poll_showed_still_vetoes_a_later_poll_that_ends_the
     # response, not to the poll that reported it.
     token = {"response_id": "pending-hosted"}
     pending: Any = (
-        [_text_update("not-terminal", continuation_token=token)]
+        [_silent_update(continuation_token=token)]
         if stream
         else _text_response("not-terminal", continuation_token=token)
     )
@@ -1572,7 +1577,7 @@ async def test_learned_continuation_token_survives_failed_poll_for_the_retry_own
     token = {"response_id": "pending-9"}
     observed: list[Any] = []
     if stream:
-        pending = [_text_update("not-terminal", continuation_token=token)]
+        pending = [_silent_update(continuation_token=token)]
         terminal = [_text_update("terminal")]
     else:
         pending = _text_response("not-terminal", continuation_token=token)
@@ -1605,7 +1610,7 @@ async def test_learned_continuation_token_survives_failed_poll_for_the_retry_own
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.asyncio
 async def test_invalid_terminal_completion_clears_token_before_outer_retry(stream: bool) -> None:
-    from chrys.service.agent_middleware.response_validation import RetryableResponseValidationError
+    from chrys.service.agent_middleware.response_validation import TerminalResponseValidationError
 
     token = {"response_id": "pending-invalid"}
     observed: list[Any] = []
@@ -1624,14 +1629,14 @@ async def test_invalid_terminal_completion_clears_token_before_outer_retry(strea
         options={"store": True},
         client_kwargs={"continuation_token_observer": observed.append},
     )
-    with pytest.raises(RetryableResponseValidationError):
+    with pytest.raises(TerminalResponseValidationError):
         if stream:
             async for _ in result:
                 pass
         else:
             await result
 
-    # The completed response is immutable; the retry owner must issue a
+    # The completed response is immutable: a later turn must issue a
     # fresh request instead of re-polling the same invalid completion.
     assert observed == [token, None]
 

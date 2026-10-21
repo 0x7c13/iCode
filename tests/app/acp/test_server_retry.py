@@ -10,14 +10,22 @@ response naming the turn that was resumed rather than a new one.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from acp import RequestError
 from acp.helpers import text_block
 
 from chrys.app.acp.server import ChrysAcpServer
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import Error, InvocationMessage, TurnStarted
-from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.events.types import (
+    Error,
+    InvocationContentDelta,
+    InvocationMessage,
+    InvocationToolCallStart,
+    TurnStarted,
+)
+from chrys.foundation.models.invocations import ContentChannel, InvocationOrigin
 from chrys.orchestration.session_host import Cancelled, EndTurn, Errored
 from tests.app.acp._server_fakes import _FakeClient, _FakeEngine, _FakeHost, _FakeManager
 
@@ -172,3 +180,115 @@ async def test_session_retry_maps_a_failed_retry_to_a_request_error_with_its_tur
 
     assert exc_info.value.data["code"] == "model_failed"
     assert exc_info.value.data["turnId"] == _TURN_ID
+
+
+def _origin() -> InvocationOrigin:
+    return InvocationOrigin("turn", "s1", _TURN_ID, None)
+
+
+def _delta(segment_id: str, text: str, channel: ContentChannel = "answer") -> InvocationContentDelta:
+    return InvocationContentDelta(origin=_origin(), session_id="s1", segment_id=segment_id, channel=channel, text=text)
+
+
+class _OrderedClient(_FakeClient):
+    """Also records what the server sent, updates and extension notifications, in one order."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent: list[str] = []
+
+    async def session_update(self, session_id: str, update: Any) -> None:
+        await super().session_update(session_id, update)
+        self.sent.append(update.session_update)
+
+    async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
+        await super().ext_notification(method, params)
+        self.sent.append(method)
+
+
+def _cut_off_turn_host() -> _FakeHost:
+    """A turn cancelled while it wrote its answer after a tool call; each retry writes the answer again."""
+    engine = _FakeEngine()
+    engine.can_retry = True
+    return _FakeHost(
+        event_bus=EventBus(),
+        engine=engine,
+        events=[
+            TurnStarted(turn_id=_TURN_ID, turn_number=3, session_id="s1"),
+            _delta("intro", "Let me look."),
+            InvocationToolCallStart(tool_name="read_file", call_id="c1", origin=_origin()),
+            _delta("think", "Hmm", "reasoning"),
+            _delta("answer", "The result "),
+            _delta("answer", "is"),
+        ],
+        retry_events=[
+            TurnStarted(turn_id=_TURN_ID, turn_number=3, is_retry=True, session_id="s1"),
+            _delta("again", "The result is 42."),
+        ],
+        outcome=Cancelled(),
+    )
+
+
+def _answer_ids(client: _FakeClient) -> dict[str, str]:
+    """Each answer chunk's text by its message's ``messageId``, joined per message."""
+    texts: dict[str, str] = {}
+    for notification in client.updates:
+        update = notification.update
+        if update.session_update == "agent_message_chunk":
+            texts[update.message_id] = texts.get(update.message_id, "") + update.content.text
+    return texts
+
+
+def _retractions(client: _FakeClient) -> list[dict[str, Any]]:
+    return [params for method, params in client.ext_notifications if method == "chrys/messages_retracted"]
+
+
+@pytest.mark.anyio
+async def test_a_bare_retry_withdraws_the_answer_its_turn_ended_with_before_writing_it_again() -> None:
+    client = _OrderedClient()
+    server = _server(_cut_off_turn_host(), client=client)
+    await server.prompt([text_block("go")], session_id="s1")
+    intro_id, answer_id = _answer_ids(client)
+    assert _answer_ids(client) == {intro_id: "Let me look.", answer_id: "The result is"}
+
+    sent_before = len(client.sent)
+    await server.ext_method("session/retry", {"sessionId": "s1"})
+
+    # The text before the tool call and the thought stay; the cut-off answer goes before the new one streams.
+    assert _retractions(client) == [{"sessionId": "s1", "turnId": _TURN_ID, "messageIds": [answer_id]}]
+    assert client.sent[sent_before : sent_before + 3] == [
+        "chrys/turn_started",
+        "chrys/messages_retracted",
+        "agent_message_chunk",
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_retry_with_text_goes_on_from_the_answer_and_withdraws_nothing() -> None:
+    client = _FakeClient()
+    server = _server(_cut_off_turn_host(), client=client)
+    await server.prompt([text_block("go")], session_id="s1")
+
+    await server.ext_method("session/retry", {"sessionId": "s1", "text": "go on"})
+
+    assert _retractions(client) == []
+
+
+@pytest.mark.anyio
+async def test_each_bare_retry_withdraws_only_the_answer_the_turn_before_it_ended_with() -> None:
+    """A refused retry keeps the answer to withdraw; a retry that ran replaces it with its own."""
+    host = _cut_off_turn_host()
+    client = _FakeClient()
+    server = _server(host, client=client)
+    await server.prompt([text_block("go")], session_id="s1")
+    _intro_id, answer_id = _answer_ids(client)
+
+    host.engine.can_retry = False
+    with pytest.raises(RequestError):
+        await server.ext_method("session/retry", {"sessionId": "s1"})
+    host.engine.can_retry = True
+    await server.ext_method("session/retry", {"sessionId": "s1"})
+    first_again_id = list(_answer_ids(client))[-1]
+    await server.ext_method("session/retry", {"sessionId": "s1"})
+
+    assert [params["messageIds"] for params in _retractions(client)] == [[answer_id], [first_again_id]]

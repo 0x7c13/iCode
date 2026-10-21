@@ -3,14 +3,19 @@
 """Pipeline integration tests for interrupt, error and resume (scenario family S6).
 
 Completed tool-loop iterations must survive an interrupt or a non-retryable
-LLM error, a response that lands after the user pressed Stop must not reach
-session state, and a retry or a new message must continue from the preserved
-work.
+LLM error, a response that lands after the user pressed Stop stays in session
+state as the user saw it, and a retry or a new message must continue from the
+preserved work.
 """
 
 from __future__ import annotations
 
-from chrys.foundation.events.types import InvocationToolCallResult, InvocationToolCallStart, UserMessage
+from chrys.foundation.events.types import (
+    InvocationContentDelta,
+    InvocationToolCallResult,
+    InvocationToolCallStart,
+    UserMessage,
+)
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.service.llm.mock import MockResponse
 from tests.support.pipeline_helpers import (
@@ -321,24 +326,42 @@ class TestErrorAndRetry:
 # ---------------------------------------------------------------------------
 
 
+def _session_rows(raw: list[dict]) -> list[tuple[str, object, list[str]]]:
+    """Each saved message as (role, marker kind, its text parts)."""
+    return [
+        (
+            message.get("role", ""),
+            message.get("additional_properties", {}).get(HistoryMarkerKind.KEY),
+            [c.get("text", "") for c in message.get("contents", []) if isinstance(c, dict) and c.get("type") == "text"],
+        )
+        for message in raw
+    ]
+
+
+def _answer_texts(raw: list[dict]) -> list[str]:
+    """The text of every saved assistant message that is not a marker."""
+    return [text for role, kind, texts in _session_rows(raw) if role == "assistant" and kind is None for text in texts]
+
+
 class TestInterruptDuringFinalResponse:
     """Interrupt during the LLM's final text response (no tool calls).
 
     The InterruptMiddleware only fires at tool call boundaries.  When the LLM
     is generating its final text-only response, the interrupt flag is set but
-    the response completes and after_run stores it.  The engine must detect
-    and remove this leaked response from session state.
+    the response completes, is shown as it lands and after_run stores it.  The
+    user saw it, so the interrupted turn keeps it ahead of its interrupted
+    marker; a bare Continue asks for it again.
     """
 
-    async def test_interrupt_during_final_response_drops_text(self, make_pipeline_ctx):
-        """Interrupt during final LLM call: text response not in session."""
+    async def test_interrupt_during_final_response_keeps_the_shown_text(self, make_pipeline_ctx):
+        """Interrupt during final LLM call: the answer stays, after the completed tool, before the marker."""
         slow_echo = slow_echo_tool(0.0)
 
         responses = [
             MockResponse(tool_calls=[("slow_echo", "c1", {"message": "first"})]),
             # 2nd LLM call returns text-only (final response).
             # Interrupt will be set during this call (see monkey-patch below).
-            MockResponse(text="This is the final answer that should be dropped"),
+            MockResponse(text="This is the final answer the user saw"),
             # Resume responses
             MockResponse(text="Resumed answer"),
         ]
@@ -356,48 +379,51 @@ class TestInterruptDuringFinalResponse:
             "Expected was_interrupted after interrupt during final response"
         )
 
-        # Session must NOT contain the leaked final text
         raw = await ctx.get_session_messages()
-        for msg in raw:
-            for c in msg.get("contents", []):
-                if isinstance(c, dict) and c.get("type") == "text":
-                    text = c.get("text", "")
-                    assert "final answer that should be dropped" not in text, (
-                        f"Leaked final response found in session: {text}"
-                    )
+        assert _answer_texts(raw) == ["This is the final answer the user saw"]
+        rows = _session_rows(raw)
+        answer_at = rows.index(("assistant", None, ["This is the final answer the user saw"]))
+        assert rows[answer_at - 1][0] == "tool"
+        assert [kind for _role, kind, _texts in rows[answer_at + 1 :]] == [
+            HistoryMarkerKind.INTERRUPTED,
+            HistoryMarkerKind.TURN,
+        ]
 
         # Session should still have the completed tool call
         tool_names = extract_session_tool_names(raw)
         assert "slow_echo" in tool_names, f"Completed tool call should be preserved: {tool_names}"
 
-    async def test_interrupt_before_any_tools_drops_text(self, make_pipeline_ctx):
-        """Interrupt during first LLM call (text-only, no tools): session has only user msg."""
+    async def test_interrupt_before_any_tools_keeps_the_shown_text(self, make_pipeline_ctx):
+        """Interrupt during first LLM call (text-only, no tools): the text it showed is saved."""
         responses = [
             # LLM returns text-only on first call (no tools needed).
             # Interrupt set during this call.
-            MockResponse(text="Text response that should be dropped"),
+            MockResponse(text="Text response the user saw"),
             # Resume
             MockResponse(text="Resumed"),
         ]
         ctx = await make_pipeline_ctx(responses)
+        shown: list[str] = []
+
+        async def _collect(event: InvocationContentDelta) -> None:
+            shown.append(event.text)
+
+        await ctx.bus.subscribe(InvocationContentDelta, _collect)
 
         interrupt_on_nth(ctx, 1)
 
         await ctx.send_message("Just explain something")
 
         assert ctx.engine.current.loaded.bindings.state.was_interrupted
+        assert shown == ["Text response the user saw"]
 
         raw = await ctx.get_session_messages()
-        # Should have user message + interrupted marker + turn marker, but NO assistant text
-        for msg in raw:
-            role = msg.get("role", "")
-            if role == "assistant":
-                extra = msg.get("additional_properties", {})
-                chrys_kind = extra.get(HistoryMarkerKind.KEY, "")
-                # Only chrys markers (interrupted, turn_marker) allowed
-                assert chrys_kind in (HistoryMarkerKind.INTERRUPTED, HistoryMarkerKind.TURN), (
-                    f"Unexpected assistant message in session: contents={msg.get('contents')}"
-                )
+        assert _session_rows(raw) == [
+            ("user", None, ["Just explain something"]),
+            ("assistant", None, ["Text response the user saw"]),
+            ("assistant", HistoryMarkerKind.INTERRUPTED, ["Execution interrupted"]),
+            ("assistant", HistoryMarkerKind.TURN, [""]),
+        ]
 
     async def test_normal_completion_preserves_final_text(self, make_pipeline_ctx):
         """Regression: normal completion (no interrupt) keeps the final text."""
@@ -427,13 +453,13 @@ class TestInterruptDuringFinalResponse:
         assert has_final_text, "Final text should be preserved on normal completion"
 
     async def test_resume_after_interrupt_during_final_response(self, make_pipeline_ctx):
-        """Interrupt during final LLM call, then resume: session ends with new response."""
+        """Interrupt during final LLM call, then Continue: the resumed answer replaces the interrupted one."""
         slow_echo = slow_echo_tool(0.0)
 
         responses = [
             MockResponse(tool_calls=[("slow_echo", "c1", {"message": "first"})]),
             # Final response — interrupt fires during this LLM call
-            MockResponse(text="Leaked answer"),
+            MockResponse(text="Interrupted answer"),
             # Resume responses
             MockResponse(text="Correct resumed answer"),
         ]
@@ -449,28 +475,10 @@ class TestInterruptDuringFinalResponse:
         ctx.events.clear()
         await ctx.send_retry()
 
-        # Verify the resumed response is in session
+        # A bare Continue asks for the answer again, after the tool work it keeps.
         raw = await ctx.get_session_messages()
-        has_resumed = any(
-            msg.get("role") == "assistant"
-            and any(
-                isinstance(c, dict) and c.get("type") == "text" and "Correct resumed answer" in (c.get("text") or "")
-                for c in msg.get("contents", [])
-            )
-            for msg in raw
-        )
-        assert has_resumed, "Resumed answer should be in session"
-
-        # Leaked answer should NOT be present
-        has_leaked = any(
-            msg.get("role") == "assistant"
-            and any(
-                isinstance(c, dict) and c.get("type") == "text" and "Leaked answer" in (c.get("text") or "")
-                for c in msg.get("contents", [])
-            )
-            for msg in raw
-        )
-        assert not has_leaked, "Leaked answer from interrupted run should not be in session"
+        assert _answer_texts(raw) == ["Correct resumed answer"]
+        assert [kind for _role, kind, _texts in _session_rows(raw)].count(HistoryMarkerKind.INTERRUPTED) == 0
 
 
 # ---------------------------------------------------------------------------

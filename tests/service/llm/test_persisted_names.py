@@ -95,7 +95,6 @@ def test_named_persisted_constants_keep_their_values() -> None:
     from chrys.foundation.hosted_tools import (
         ANTHROPIC_HOSTED_WIRE_BLOCK_KEY,
         OPENAI_HOSTED_WIRE_ITEM_KEY,
-        PRESENTATION_TEXT_SEGMENT_ID_KEY,
     )
     from chrys.kernel import OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY
     from chrys.service.llm.chat_completions.reasoning import (
@@ -113,7 +112,6 @@ def test_named_persisted_constants_keep_their_values() -> None:
 
     assert OPENAI_HOSTED_WIRE_ITEM_KEY == "openai.responses.hosted_item"
     assert ANTHROPIC_HOSTED_WIRE_BLOCK_KEY == "anthropic.hosted_block"
-    assert PRESENTATION_TEXT_SEGMENT_ID_KEY == "_chrys_presentation_text_segment_id"
     assert OPENAI_OUTPUT_MESSAGE_ENVELOPE_KEY == "openai.responses.output_message_envelope"
     assert REASONING_FORMAT_KEY == "openai_reasoning_format"
     assert (REASONING_DETAILS_FIELD, REASONING_CONTENT_FIELD, REASONING_FIELD) == (

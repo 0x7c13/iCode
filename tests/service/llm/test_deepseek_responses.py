@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from chrys.foundation.hosted_tools import PRESENTATION_TEXT_SEGMENT_ID_KEY
 from chrys.kernel import ChatResponse, Content, Message
 from chrys.kernel.exceptions import ChatClientInvalidRequestException
 from chrys.service.llm.openai_responses import DeepSeekResponsesApiClient
@@ -556,9 +555,6 @@ def test_deepseek_intermediate_text_search_and_final_text_preserve_order() -> No
         "text",
     ]
     assert response.messages[0].contents[0].text == "Checking sources."
-    assert response.messages[0].contents[0].additional_properties[PRESENTATION_TEXT_SEGMENT_ID_KEY] == (
-        "item:msg_1:content:0"
-    )
     assert response.messages[0].contents[-1].text == "Final answer."
 
 

@@ -17,6 +17,8 @@ class HostedMockResponse(MockResponse):
     """A scripted response that opens with provider-hosted output."""
 
     hosted: list[Content] = field(default_factory=list)
+    # Text before the hosted output, in its own update when streamed.
+    lead_text: str = ""
     # Streamed with the hosted output, as a background response announces the id a later request polls.
     continuation_token: Any = None
     # Raised right after the streamed hosted output: the connection drops while the response runs on.
@@ -31,7 +33,8 @@ class HostedMockChatClient(MockChatClient):
         if not isinstance(resp, HostedMockResponse):
             return messages
         (message,) = messages
-        return [Message("assistant", [*resp.hosted, *message.contents])]
+        lead = [Content.from_text(resp.lead_text)] if resp.lead_text else []
+        return [Message("assistant", [*lead, *resp.hosted, *message.contents])]
 
     async def _stream_updates(
         self,
@@ -39,6 +42,8 @@ class HostedMockChatClient(MockChatClient):
         model_id: str,
         finish_reason: FinishReasonLiteral | FinishReason,
     ) -> AsyncIterable[ChatResponseUpdate]:
+        if isinstance(resp, HostedMockResponse) and resp.lead_text:
+            yield ChatResponseUpdate(contents=[Content.from_text(resp.lead_text)], role="assistant", model=model_id)
         if isinstance(resp, HostedMockResponse) and resp.hosted:
             yield ChatResponseUpdate(
                 contents=list(resp.hosted),

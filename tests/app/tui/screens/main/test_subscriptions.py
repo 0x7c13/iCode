@@ -103,12 +103,12 @@ async def test_unsubscribe_all_is_idempotent_and_remount_does_not_duplicate_hand
         assert subscription.handler not in bus._handlers.get(subscription.event_type, [])
 
 
-async def test_tui_routes_child_prose_provisional_activity_and_control() -> None:
+async def test_tui_routes_child_prose_activity_and_control() -> None:
     from chrys.foundation.events.types import (
+        InvocationContentDelta,
+        InvocationContentFinished,
         InvocationMessage,
         InvocationPaused,
-        InvocationPresentationAttemptAccepted,
-        InvocationPresentationAttemptRejected,
         InvocationProgress,
     )
 
@@ -123,8 +123,8 @@ async def test_tui_routes_child_prose_provisional_activity_and_control() -> None
     )
     routes = {
         InvocationMessage: "on_agent_message",
-        InvocationPresentationAttemptAccepted: "on_presentation_attempt_accepted",
-        InvocationPresentationAttemptRejected: "on_presentation_attempt_rejected",
+        InvocationContentDelta: "on_agent_content",
+        InvocationContentFinished: "on_agent_content",
         InvocationProgress: "on_sub_agent_progress",
         InvocationPaused: "on_sub_agent_paused",
     }

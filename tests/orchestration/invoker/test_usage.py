@@ -23,7 +23,7 @@ _USAGE = {"input_token_count": 7, "output_token_count": 3, "total_token_count": 
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("store", [False, True])
-@pytest.mark.parametrize("first", ["reported", "missing", "exception", "validation"])
+@pytest.mark.parametrize("first", ["reported", "missing", "exception"])
 async def test_pass_usage_observes_every_response(executor, monkeypatch, stream, store, first):
     @tool
     async def counted() -> str:
@@ -32,8 +32,6 @@ async def test_pass_usage_observes_every_response(executor, monkeypatch, stream,
     initial = (
         ConnectionError("wire failed")
         if first == "exception"
-        else MockResponse(text="", usage_details=_USAGE)
-        if first == "validation"
         else MockResponse(tool_calls=[("counted", "c1", {})], usage_details=_USAGE if first == "reported" else None)
     )
     client = ErrorMockChatClient([initial, MockResponse(text="done", usage_details=_USAGE)])
@@ -43,13 +41,13 @@ async def test_pass_usage_observes_every_response(executor, monkeypatch, stream,
     monkeypatch.setattr(executor, "_BACKOFF_SCHEDULE", (0,))
     executor._agent.client = client
     executor._agent.default_options["tools"] = [counted]
-    executor._agent.middleware = [ResponseValidationMiddleware(backoff_schedule=[0])]
+    executor._agent.middleware = [ResponseValidationMiddleware()]
 
     outcome = await executor.backend.run(executor.inputs.fresh_request(["work"]))
 
     assert isinstance(outcome, Ok)
     assert client.call_count == 2
-    reported = first in ("reported", "validation")
+    reported = first == "reported"
     assert outcome.usage.input_tokens == (14 if reported else 7)
     assert outcome.usage.output_tokens == (6 if reported else 3)
     assert outcome.usage.total_tokens == (20 if reported else 10)
@@ -129,10 +127,11 @@ async def test_stalled_stream_usage_survives_blocking_fallback(executor, monkeyp
 
 @pytest.mark.parametrize("stream", [False, True])
 async def test_child_run_validation_counts_rejected_usage(stream):
+    # A rejected response fails the pass at once, and its billed usage still counts.
     client = MockChatClient(
         responses=[MockResponse(text="", usage_details=_USAGE), MockResponse(text="valid", usage_details=_USAGE)]
     )
-    middleware = [ResponseValidationMiddleware(backoff_schedule=[0])]
+    middleware = [ResponseValidationMiddleware()]
     controller = _make_controller(
         Agent(client=client), EventBus(), stream=stream, run_kwargs={"middleware": middleware}
     )
@@ -140,9 +139,9 @@ async def test_child_run_validation_counts_rejected_usage(stream):
         result = await controller.policy.backend.run(
             RunRequest([Message("user", ["work"])], RunIntent.FRESH, controller.origin)
         )
-        assert isinstance(result, Ok)
-        assert client.call_count == 2
-        assert result.usage == UsageDelta(14, 6, 20, True, 0)
+        assert isinstance(result, Failed)
+        assert client.call_count == 1
+        assert result.usage == UsageDelta(7, 3, 10, False, 0)
         assert controller.policy._run_kwargs["middleware"] is middleware
     finally:
         await controller.policy.backend.owner.aclose()
@@ -171,10 +170,7 @@ async def test_after_run_failure_usage_is_incomplete(executor, stream):
 
 @pytest.mark.parametrize("validation", [False, True])
 async def test_stream_preserves_raw_finalizer_hooks_and_cache(executor, monkeypatch, validation):
-    client = MockChatClient(
-        responses=([MockResponse(text="", usage_details=_USAGE)] if validation else [])
-        + [MockResponse(text="valid", usage_details=_USAGE)]
-    )
+    client = MockChatClient(responses=[MockResponse(text="valid", usage_details=_USAGE)])
     original = client._inner_get_response
     log, raw, finals = [], [], []
 
@@ -203,12 +199,12 @@ async def test_stream_preserves_raw_finalizer_hooks_and_cache(executor, monkeypa
     executor._agent.client = client
     executor._stream = True
     if validation:
-        executor._agent.middleware = [ResponseValidationMiddleware(backoff_schedule=[0])]
+        executor._agent.middleware = [ResponseValidationMiddleware()]
     result = await executor.backend.run(executor.inputs.fresh_request(["work"]))
     assert isinstance(result, Ok)
-    assert result.usage.total_tokens == (198 if validation else 99)
+    assert result.usage.total_tokens == 99
     assert result.usage.complete
-    expected = [("finalize", 0), ("finalize", 1), ("hook", 1)] if validation else [("finalize", 0), ("hook", 0)]
+    expected = [("finalize", 0), ("hook", 0)]
     assert log == expected
     for index, stream in enumerate(raw):
         assert await stream.get_final_response() is finals[index]

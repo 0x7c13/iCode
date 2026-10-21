@@ -50,6 +50,7 @@ from chrys.kernel import (
     annotate_message_groups,
     annotate_token_counts,
     included_token_count,
+    recount_user_messages,
 )
 from chrys.service.profiles.models.schema import DEFAULT_MAX_CONTEXT_TOKENS
 from chrys.service.trajectory.compaction import (
@@ -858,6 +859,10 @@ class UnifiedContextStrategy:
         # message IDs.
         annotate_message_groups(messages, force_reannotate=True)
         annotate_token_counts(messages, tokenizer=self._tokenizer)
+        # Reminders on a user message change between calls (the last-words note
+        # leaves it when the turn ends, a turn adds notices), so its stored count
+        # can be another call's. There are about as many as turns.
+        recount_user_messages(messages, tokenizer=self._tokenizer)
 
         current = included_token_count(messages)
         self._last_included_tokens = current

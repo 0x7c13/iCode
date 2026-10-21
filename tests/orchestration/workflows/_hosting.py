@@ -64,8 +64,7 @@ def patch_runtime(
     main_client = clients.pop(0)
 
     def _configure(client: MockChatClient, kwargs: dict) -> MockChatClient:
-        client._on_intermediate_text_async = kwargs.get("on_intermediate_text_async")
-        client._on_intermediate_text_sync = kwargs.get("on_intermediate_text_sync")
+        client._on_intermediate_text = kwargs.get("on_intermediate_text")
         return client
 
     async def _main_client(*_args: Any, **kwargs: Any) -> MockChatClient:

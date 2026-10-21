@@ -18,7 +18,7 @@ import pytest
 from chrys.foundation.retry import StreamStall
 from chrys.foundation.trajectory.context import TRAJECTORY_CONTEXT_KWARG
 from chrys.foundation.trajectory.event_types import EventType, RetryMode, RetryReason
-from chrys.kernel import ChatResponse
+from chrys.kernel import ChatResponse, ChatResponseUpdate
 from tests.kernel._fakes import (
     _call_response,
     _call_update,
@@ -67,7 +67,7 @@ async def _run(
     [
         pytest.param(False, False, id="blocking"),
         pytest.param(True, False, id="streaming"),
-        pytest.param(True, True, id="streaming_after_output"),
+        pytest.param(True, True, id="streaming_after_silent_progress"),
     ],
 )
 async def test_an_overflow_is_resent_once_without_using_the_retry_budget(stream: bool, mid_stream: bool) -> None:
@@ -75,7 +75,7 @@ async def test_an_overflow_is_resent_once_without_using_the_retry_budget(stream:
     sink = _OverflowSink()
     policy = _WireRetryPolicy(max_retries=0)
     trajectory = FakeSink()
-    rejected = [_text_update("partial"), error] if mid_stream else error
+    rejected = [ChatResponseUpdate(contents=[], role="assistant"), error] if mid_stream else error
 
     response, wire_calls = await _run(
         [rejected, _answer(stream=stream)],

@@ -22,7 +22,7 @@ from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.net.route_probe import default_route_available, is_local_target
 
-from .classify import ErrorClassification, classify_error, context_overflow_limit
+from .classify import ErrorClassification, classify_error, context_overflow_limit, is_blank_response
 from .kinds import NETWORK_KINDS, ErrorKind
 from .route import Origin
 
@@ -125,6 +125,7 @@ _STREAM_STALLED = msg("retry.stream_stalled", fallback="Stream stalled")
 _CONTEXT_OVERFLOW_RESEND = msg(
     "retry.context_overflow", fallback="The context window is full. Compacting the context before one retry."
 )
+_BLANK_RESPONSE_RESEND = msg("retry.blank_response", fallback="The model returned no answer. Asking again once.")
 # The probe checks the device {app} runs on: under ``icode serve`` that is the
 # server, not the device showing the browser.
 _MAYBE_OFFLINE = msg(
@@ -232,7 +233,8 @@ def describe_error(
     failed to resolve or connect; it adds a hint and never changes the
     message.  A *retry_notice* also names a stalled stream; a paused
     sub-agent's card already labels a stall by its pause reason.  A retry
-    notice for a context overflow is the one resend after compacting.
+    notice for a context overflow is the one resend after compacting, and
+    one for a response that showed nothing the one resend of its request.
     *max_context_tokens*, the failed request's configured window, lets an
     overflow whose provider names a smaller limit say which value to set.
     """
@@ -242,6 +244,8 @@ def describe_error(
         return ErrorDescription(kind, _STREAM_STALLED.bind())
     if kind is ErrorKind.CONTEXT_OVERFLOW and retry_notice:
         return ErrorDescription(kind, _CONTEXT_OVERFLOW_RESEND.bind())
+    if retry_notice and is_blank_response(exc):
+        return ErrorDescription(kind, _BLANK_RESPONSE_RESEND.bind())
     if (definition := _HOSTLESS_MESSAGES.get(kind)) is not None:
         if not result.from_model_service:
             return None

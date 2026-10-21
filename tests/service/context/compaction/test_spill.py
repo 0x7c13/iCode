@@ -570,6 +570,43 @@ def test_spill_records_retain_format_stamped_reasoning(tmp_path: Path) -> None:
     assert '[protected reasoning data]\n"GLM protected thinking"' in record
 
 
+def test_spill_records_reasoning_details_once(tmp_path: Path) -> None:
+    """A ``reasoning_details`` content's text is a readable copy of its payload: the payload alone spills."""
+    payload = '[{"type": "reasoning.text", "text": "details thinking"}]'
+    group = ScopedGroup(
+        "reasoning",
+        "assistant",
+        (
+            Message(
+                "assistant",
+                [
+                    Content.from_text_reasoning(
+                        text="details thinking",
+                        protected_data=payload,
+                        additional_properties={"openai_reasoning_format": "reasoning_details"},
+                    )
+                ],
+            ),
+        ),
+        True,
+    )
+
+    result = write_spill_batch(
+        tmp_path,
+        SpillQuota(),
+        [group],
+        record_dir=dropped_turn_relative_path(1),
+        absolute_turn=1,
+        round_number=1,
+        session_id="s",
+    )
+
+    record = (tmp_path / result.entries[0].relative_path).read_text(encoding="utf-8")
+    assert f"[protected reasoning data]\n{payload}" in record
+    assert "[reasoning]" not in record
+    assert record.count("details thinking") == 1
+
+
 def test_spill_record_is_created_owner_only(tmp_path: Path) -> None:
     if get_platform().is_windows:
         pytest.skip("POSIX permission bits are not authoritative on Windows")

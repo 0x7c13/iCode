@@ -82,6 +82,38 @@ class TestResumeMode:
         # User message should have been popped
         assert len(msgs) == 0
 
+    async def test_continue_after_a_kept_answer_asks_for_it_again(self):
+        """A shown answer at the end is dropped, so the request never ends with assistant text."""
+        msgs = [Message("user", ["go"]), Message("assistant", ["Partial "])]
+        executor = make_resume_harness(msgs)
+
+        await drive_retry_policy(executor)
+
+        sent = executor.backend.run.call_args[0][0].messages
+        assert [(m.role, m.text) for m in sent] == [("user", "go")]
+        assert msgs == []
+
+    async def test_continue_after_tool_work_drops_only_the_kept_answer(self):
+        call = Message("assistant", ["Reading", Content.from_function_call(call_id="c1", name="read", arguments={})])
+        result = Message("tool", [Content.from_function_result(call_id="c1", result="ok")])
+        msgs = [Message("user", ["go"]), call, result, Message("assistant", ["Partial"])]
+        executor = make_resume_harness(msgs)
+
+        await drive_retry_policy(executor)
+
+        assert list(executor.backend.run.call_args[0][0].messages) == []
+        assert msgs[1:] == [call, result]
+
+    async def test_a_note_goes_on_from_the_kept_answer(self):
+        kept = Message("assistant", ["Partial"])
+        msgs = [Message("user", ["go"]), kept]
+        executor = make_resume_harness(msgs)
+
+        await drive_retry_policy(executor, additional_text="go on")
+
+        assert [m.text for m in executor.backend.run.call_args[0][0].messages] == ["go on"]
+        assert msgs[1] is kept
+
     @pytest.mark.parametrize("contents", [[], [""], ["", ""]], ids=["no-content", "empty-text", "empty-texts"])
     @pytest.mark.parametrize("persisted", [False, True], ids=["not-stored", "stored"])
     async def test_empty_text_replay_keeps_a_single_nonempty_fallback(self, contents, persisted):
@@ -494,7 +526,7 @@ class TestResumeMidTurnStamps:
         """Empty-input resume keeps recovery input clear."""
 
         # Completed work after the opener resumes with empty input.
-        msgs = [Message("user", ["prompt"]), Message("assistant", ["work"])]
+        msgs = [Message("user", ["prompt"]), Message("assistant", ["work"]), Message("tool", ["results"])]
         executor = make_resume_harness(msgs)
         turn_state = self._make_turn_state()
         executor.inputs.recovery_input_recorder = turn_state.set_current_input

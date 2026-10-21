@@ -7,10 +7,14 @@ from __future__ import annotations
 import asyncio
 import threading
 
+import pytest
 from textual.app import App
 from textual.await_complete import AwaitComplete
+from textual.content import Content
 from textual.pilot import Pilot
 
+from chrys.app.tui.widgets.markdown import parser as parser_module
+from chrys.app.tui.widgets.markdown import widget as widget_module
 from chrys.app.tui.widgets.markdown.blocks import MarkdownBlock
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from tests.support.waiting import wait_for
@@ -145,6 +149,56 @@ async def test_every_awaitable_resolves_after_its_own_text_or_newer_is_installed
         assert seen["one"] in {"one", "three"}
         assert seen["two"] == "three"
         assert seen["three"] == "three"
+
+
+async def test_a_table_keeps_painting_while_a_newer_update_parses() -> None:
+    """The old document paints until the new one is installed; streaming must not blank its table."""
+    app = App()
+    async with app.run_test() as pilot:
+        widget = await _mounted(app, pilot)
+        await widget.update("| a | b |\n|---|---|\n| one | two |\n")
+        rows = [widget.render_line(y).text for y in range(widget._total_lines)]
+        assert "one" in "".join(rows)
+
+        widget.hold_first_parse = True
+        try:
+            update = widget.update("| a | b |\n|---|---|\n| one | two |\n| three | four |\n")
+            await wait_for(widget.first_parse_started.is_set, pilot=pilot, description="newer parse started")
+            assert [widget.render_line(y).text for y in range(len(rows))] == rows
+        finally:
+            widget.release_first_parse.set()
+        await update
+
+        assert "three" in "".join(widget.render_line(y).text for y in range(widget._total_lines))
+
+
+def test_streamed_reparses_highlight_a_closed_fence_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    highlighted: list[str] = []
+    real_highlight = parser_module.highlight_code
+
+    def recording_highlight(code: str, language: str) -> Content:
+        highlighted.append(code)
+        return real_highlight(code, language)
+
+    monkeypatch.setattr(parser_module, "highlight_code", recording_highlight)
+    monkeypatch.setattr(widget_module, "highlight_code", recording_highlight)
+    widget = VirtualizedMarkdown()
+    # A long answer: more closed fences than a small fixed-size cache would hold.
+    closed_codes = [f"x = {index}" for index in range(40)]
+    closed = "".join(f"```python\n{code}\n```\n\n" for code in closed_codes)
+
+    reparses = [
+        widget._build_blocks(closed + "Tail"),
+        widget._build_blocks(closed + "Tail grows\n\n```python\ny = 2\n"),
+        widget._build_blocks(closed + "Tail grows\n\n```python\ny = 2\nz = 3\n"),
+    ]
+
+    first = [block.content for block in reparses[0] if block.block_type == "fence"]
+    for blocks in reparses[1:]:
+        fences = [block.content for block in blocks if block.block_type == "fence"]
+        assert all(fence is kept for fence, kept in zip(fences[: len(first)], first, strict=True))
+    # The open fence is still being written: each reparse highlights its newest code.
+    assert highlighted == [*closed_codes, "y = 2", "y = 2\nz = 3"]
 
 
 async def test_cancelling_one_awaiter_leaves_the_shared_parse_to_the_others() -> None:

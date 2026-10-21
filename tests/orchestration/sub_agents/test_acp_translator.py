@@ -26,7 +26,8 @@ from acp.schema import (
 
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
-    InvocationMessage,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationProgress,
     InvocationToolCallResult,
     InvocationToolCallStart,
@@ -684,7 +685,8 @@ async def test_progress_updates_do_not_split_streaming_message_segments() -> Non
     assert translator.result_text() == "prefix suffix"
 
     bus = EventBus()
-    messages = await capture_events(bus, InvocationMessage)
+    deltas = await capture_events(bus, InvocationContentDelta)
+    finished = await capture_events(bus, InvocationContentFinished)
     sealing = AcpUpdateTranslator(
         event_bus=bus,
         session_id=None,
@@ -727,14 +729,20 @@ async def test_progress_updates_do_not_split_streaming_message_segments() -> Non
     )
     assert sealing.result_text() == "after tool"
     assert sealing.unpublished_final_text() == "after tool"
-    assert [(message.origin.invocation_id, message.text) for message in messages] == [("inv", "before tool")]
+    assert [(delta.origin.invocation_id, delta.channel, delta.text) for delta in deltas] == [
+        ("inv", "answer", "before tool"),
+        ("inv", "answer", "after tool"),
+    ]
+    # The ToolCallStart ended the first segment; the text after it opened another.
+    assert [(event.segment_id, event.status) for event in finished] == [(deltas[0].segment_id, "completed")]
+    assert deltas[1].segment_id != deltas[0].segment_id
 
 
 async def test_transcript_mode_reports_no_unpublished_final_after_terminal_tool() -> None:
     from acp.schema import ToolCallStart
 
     bus = EventBus()
-    messages = await capture_events(bus, InvocationMessage)
+    deltas = await capture_events(bus, InvocationContentDelta)
     translator = AcpUpdateTranslator(
         event_bus=bus,
         session_id=None,
@@ -769,4 +777,4 @@ async def test_transcript_mode_reports_no_unpublished_final_after_terminal_tool(
 
     assert translator.result_text() == "already published"
     assert translator.unpublished_final_text() == ""
-    assert [message.text for message in messages] == ["already published"]
+    assert [delta.text for delta in deltas] == ["already published"]

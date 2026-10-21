@@ -16,7 +16,7 @@ from chrys.app.tui.widgets.chat.agent_transcript_surface import (
 )
 from chrys.app.tui.widgets.workflow.projector import WorkflowProjector
 from chrys.foundation.events import types as events
-from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.models.invocations import ContentStatus, InvocationOrigin
 
 
 def _origin(attempt: int) -> InvocationOrigin:
@@ -70,6 +70,58 @@ def test_a_resumed_attempt_carries_the_previous_transcript_on_and_drops_its_late
         TranscriptResumedOp,
         TranscriptAssistantOp,
     ]
+
+
+def _delta(attempt: int, segment_id: str, text: str) -> events.InvocationContentDelta:
+    return events.InvocationContentDelta(origin=_origin(attempt), channel="answer", segment_id=segment_id, text=text)
+
+
+def _end(attempt: int, segment_id: str, status: ContentStatus = "completed") -> events.InvocationContentFinished:
+    return events.InvocationContentFinished(
+        origin=_origin(attempt), channel="answer", segment_id=segment_id, status=status
+    )
+
+
+def _answers(journal: AgentTranscriptJournal) -> list[str]:
+    return [operation.text for operation in journal.operations if isinstance(operation, TranscriptAssistantOp)]
+
+
+def test_a_resumed_attempt_leaves_out_the_answer_it_writes_again() -> None:
+    projector = WorkflowProjector()
+    projector.record(events.WorkflowRunStarted(run_id="run", manifest={"nodes": []}))
+    projector.record(_state(1, "running"))
+    projector.record_invocation(events.InvocationStarted(origin=_origin(1), opening_prompt="Review the change."))
+    projector.record_invocation(events.InvocationToolCallStart(origin=_origin(1), call_id="a", tool_name="read"))
+    projector.record_invocation(
+        events.InvocationToolCallResult(origin=_origin(1), call_id="a", tool_name="read", result="text")
+    )
+    run = projector.current
+    assert run is not None
+    first = run.journals["review", 1]
+    # An answer shows whole once its segment completed; the one a failure cut off never shows.
+    for event in (_delta(1, "s1", "The change "), _delta(1, "s1", "looks")):
+        projector.record_invocation(event)
+    assert _answers(first) == []
+    for event in (_end(1, "s1"), _delta(1, "s2", "Also"), _end(1, "s2", "failed")):
+        projector.record_invocation(event)
+    assert _answers(first) == ["The change looks"]
+    projector.record(_state(1, "retrying", error="connection reset"))
+    projector.record(_state(2, "running"))
+    projector.record_invocation(events.InvocationResumed(origin=_origin(2)))
+    for event in (_delta(2, "s3", "The change "), _delta(2, "s3", "is fine."), _end(2, "s3")):
+        projector.record_invocation(event)
+
+    # The answer shown before the failure is asked for again too.
+    operations = run.journals["review", 2].operations
+    assert _kinds(operations) == [
+        TranscriptUserOp,
+        TranscriptToolStartOp,
+        TranscriptToolResultOp,
+        TranscriptErrorOp,
+        TranscriptResumedOp,
+        TranscriptAssistantOp,
+    ]
+    assert isinstance(operations[-1], TranscriptAssistantOp) and operations[-1].text == "The change is fine."
 
 
 def test_an_attempt_that_starts_over_shows_only_the_prompt_and_its_own_facts() -> None:

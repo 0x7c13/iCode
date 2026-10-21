@@ -86,7 +86,6 @@ if TYPE_CHECKING:
     from chrys.app.tui.screens.main.state import MainScreenState
     from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
-    from chrys.foundation.events.types import ProvisionalPresentation
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.todos import TodoItem
@@ -303,6 +302,9 @@ class MainScreenViewAdapter:
 
     def hide_trailing_status_action(self) -> None:
         self._screen.query_one(ChatPanel).hide_trailing_status_action()
+
+    async def remove_answer_before_failure(self) -> None:
+        await self._screen.query_one(ChatPanel).remove_answer_before_failure()
 
     def set_retry_pending(self, pending: bool) -> None:
         self._screen.query_one(InputBar).retry_pending = pending
@@ -764,8 +766,8 @@ class MainScreenViewAdapter:
     # Chat transcript rendering
     # -------------------------------------------------------------- #
 
-    async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
-        await self._screen.query_one(ChatPanel).add_error(message, action_label=action_label)
+    async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
+        await self._screen.query_one(ChatPanel).add_error(message, action_label=action_label, ends_turn=ends_turn)
 
     async def add_system(self, text: str, *, key: str | None = None) -> None:
         await self._screen.query_one(ChatPanel).add_system(text, key=key)
@@ -791,30 +793,24 @@ class MainScreenViewAdapter:
             compressed_blocks=compressed_blocks,
         )
 
+    async def add_answer_delta(self, segment_id: str, text: str) -> None:
+        await self._screen.query_one(ChatPanel).add_answer_delta(segment_id, text)
+
+    def finish_answer_segment(self, segment_id: str, *, completed: bool) -> None:
+        self._screen.query_one(ChatPanel).finish_answer_segment(segment_id, completed=completed)
+
     async def add_agent_message(
         self,
         text: str,
         *,
-        is_final: bool,
-        is_intermediate: bool = False,
         structured_output_completed: bool = False,
-        presentation: ProvisionalPresentation | None = None,
         created_at: datetime | None = None,
     ) -> None:
         await self._screen.query_one(ChatPanel).add_agent_message(
             text,
-            is_final=is_final,
-            is_intermediate=is_intermediate,
             structured_output_completed=structured_output_completed,
-            presentation=presentation,
             created_at=created_at,
         )
-
-    async def accept_presentation_attempt(self, attempt_id: str, segment_ids: tuple[str, ...]) -> None:
-        await self._screen.query_one(ChatPanel).accept_presentation_attempt(attempt_id, segment_ids)
-
-    async def reject_presentation_attempt(self, attempt_id: str) -> None:
-        await self._screen.query_one(ChatPanel).reject_presentation_attempt(attempt_id)
 
     async def add_user_injection(self, text: str, *, created_at: datetime) -> None:
         await self._screen.query_one(ChatPanel).add_user_message(text, is_injection=True, created_at=created_at)
@@ -984,35 +980,8 @@ class MainScreenViewAdapter:
             tool_name=tool_name,
         )
 
-    def add_sub_agent_message(
-        self,
-        agent_name: str,
-        invocation_id: str,
-        text: str,
-        *,
-        presentation: ProvisionalPresentation | None = None,
-    ) -> None:
-        self._screen.query_one(ChatPanel).add_sub_agent_message(
-            agent_name,
-            invocation_id,
-            text,
-            presentation=presentation,
-        )
-
-    def accept_sub_agent_presentation(
-        self,
-        invocation_id: str,
-        attempt_id: str,
-        segment_ids: tuple[str, ...],
-    ) -> None:
-        self._screen.query_one(ChatPanel).accept_sub_agent_presentation(
-            invocation_id,
-            attempt_id,
-            segment_ids,
-        )
-
-    def reject_sub_agent_presentation(self, invocation_id: str, attempt_id: str) -> None:
-        self._screen.query_one(ChatPanel).reject_sub_agent_presentation(invocation_id, attempt_id)
+    def add_sub_agent_answer(self, agent_name: str, invocation_id: str, segment_id: str, text: str) -> None:
+        self._screen.query_one(ChatPanel).add_sub_agent_answer(agent_name, invocation_id, segment_id, text)
 
     async def add_sub_agent_tool_start(
         self,

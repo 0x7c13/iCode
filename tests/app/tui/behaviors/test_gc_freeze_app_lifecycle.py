@@ -248,8 +248,7 @@ async def _add_tool_turn(panel: ChatPanel, call_id: str) -> tuple[ToolGroup, wea
     group = panel._tool_groups_by_call_id[call_id]
     tool = _tool_widget_ref(group, call_id)
     await panel.add_agent_message(
-        f"## {call_id}\n\nThe check passed; `echo` printed twenty lines.\n\n- first point\n- second point",
-        is_final=True,
+        f"## {call_id}\n\nThe check passed; `echo` printed twenty lines.\n\n- first point\n- second point"
     )
     return group, tool
 

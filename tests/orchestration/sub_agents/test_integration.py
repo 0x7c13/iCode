@@ -35,10 +35,6 @@ from unittest.mock import create_autospec
 
 import pytest
 
-import chrys.orchestration.engine.build.builder as builder_module
-import chrys.orchestration.sub_agents.tools as sub_agent_module
-from chrys.foundation.config.settings import Settings
-from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     ApprovalRequest,
     ApprovalResponse,
@@ -46,6 +42,8 @@ from chrys.foundation.events.types import (
     InvocationAborted,
     InvocationAbortRequested,
     InvocationCascadeAborted,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationMessage,
     InvocationPaused,
     InvocationProgress,
@@ -54,47 +52,44 @@ from chrys.foundation.events.types import (
     InvocationRetryRequested,
     InvocationToolCallResult,
     InvocationToolCallStart,
-    SessionReady,
     UsageUpdate,
     UserInterrupt,
     UserMessage,
 )
 from chrys.foundation.hosted_tools import HostedToolFamily
 from chrys.foundation.models.history_markers import HistoryMarkerKind
-from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import get_platform
 from chrys.foundation.tool_kinds import KIND_SKILL
 from chrys.foundation.util.sub_agent_context import SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY
-from chrys.kernel import Content
-from chrys.orchestration.engine.engine import AgentEngine
+from chrys.kernel import ChatResponseUpdate, Content
 from chrys.orchestration.engine.state.machine import EngineState
-from chrys.orchestration.sub_agents.kernel_policy import KernelSubAgentPolicy
 from chrys.service.context.compaction.last_words import LastWordsGenerator
-from chrys.service.llm.mock import MockChatClient, MockResponse
-from chrys.service.profiles.agents.registry import AgentProfileRegistry
+from chrys.service.llm.mock import MockResponse
 from chrys.service.profiles.agents.schema import (
-    AgentProfile,
-    ApprovalConfig,
     CompactionConfig,
-    ModelConfig,
     SkillConfig,
     SkillsConfig,
-    SubAgentRef,
-    SubAgentsConfig,
-    ToolsConfig,
 )
-from chrys.service.profiles.models.registry import ModelProfileRegistry
-from chrys.service.profiles.models.schema import DEFAULT_MAX_OUTPUT_TOKENS, ModelProfile
 from chrys.service.session.message_metadata import TOOL_RESULT_METADATA_KEY
 from chrys.service.skills.constants import RUN_SKILL_SCRIPT_TOOL_NAME
-from chrys.service.state.store import JsonFileStateStore
 from chrys.service.tools.background import MAIN_SCOPE
+from tests.orchestration.sub_agents._pipeline import (
+    _child_answer_segments,
+    _explore_result,
+    _make_ctx,
+    _sub_tool_call,
+    _SubAgentPipelineCtx,
+    use_fast_sub_agent_policy,
+)
 from tests.support.pipeline_helpers import fail_nested_before_response_on_nth
-from tests.support.scripted_clients import ErrorMockChatClient, FrameworkBoom, HostedMockResponse, hosted_image_result
-from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, ENGINE_TURN_TIMEOUT, await_run_task_chain, wait_for
+from tests.support.scripted_clients import FrameworkBoom, HostedMockResponse, hosted_image_result
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
+
+    from chrys.kernel import FinishReason, FinishReasonLiteral
 
 
 # ---------------------------------------------------------------------------
@@ -116,237 +111,8 @@ class APIConnectionError(Exception):
 
 @pytest.fixture
 def fast_sub_agent_controller(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make :class:`KernelSubAgentPolicy` use minimal retries + no backoff.
-
-    ``SubAgentTools._make_tool`` constructs the controller without
-    passing ``max_retries`` / ``backoff_schedule``, so defaults apply.
-    We substitute a subclass whose defaults are test-friendly.
-    """
-
-    class _FastController(KernelSubAgentPolicy):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            kwargs.setdefault("max_retries", 1)
-            kwargs.setdefault("backoff_schedule", (0,))
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(sub_agent_module, "KernelSubAgentPolicy", _FastController)
-
-
-# ---------------------------------------------------------------------------
-# Engine factory — parent + sub-agent both backed by ErrorMockChatClient
-# ---------------------------------------------------------------------------
-
-
-class _SubAgentPipelineCtx:
-    """Holds everything a sub-agent integration test needs."""
-
-    def __init__(
-        self,
-        *,
-        engine: AgentEngine,
-        bus: EventBus,
-        events: list[Event],
-        main_client: ErrorMockChatClient,
-        sub_client: ErrorMockChatClient,
-        store: JsonFileStateStore,
-        session_id: str,
-        create_client_patcher: pytest.MonkeyPatch,
-    ) -> None:
-        self.engine = engine
-        self.bus = bus
-        self.events = events
-        self.main_client = main_client
-        self.sub_client = sub_client
-        self.store = store
-        self.session_id = session_id
-        self._create_client_patcher = create_client_patcher
-
-    async def cleanup(self) -> None:
-        self._create_client_patcher.undo()
-
-    # Ceilings sized for contended CI workers (a loaded Windows runner has
-    # pushed the mock-client pipeline past 20s) while staying under the
-    # global 60s per-test timeout, so the diagnostic TimeoutError below
-    # still fires with the observed-event list instead of a thread kill.
-    async def wait_for_event(self, event_type: type, *, timeout: float = 45.0, min_count: int = 1) -> list[Event]:
-        deadline = asyncio.get_running_loop().time() + timeout
-        while asyncio.get_running_loop().time() < deadline:
-            matches = [e for e in self.events if isinstance(e, event_type)]
-            if len(matches) >= min_count:
-                return matches
-            await asyncio.sleep(0.02)
-        found = [type(e).__name__ for e in self.events]
-        raise TimeoutError(f"Timed out waiting for {event_type.__name__} (saw {found})")
-
-    async def wait_for_idle(self, *, timeout: float = ENGINE_TEST_WAIT_TIMEOUT) -> None:
-        """Wait for the complete parent run-task chain, including its save."""
-        await await_run_task_chain(
-            self.engine, turn_state=self.engine.turns.turn_state, timeout=timeout, expect_installed=True
-        )
-
-
-async def _make_ctx(
-    tmp_path: Path,
-    *,
-    main_outcomes: list[MockResponse | BaseException],
-    sub_outcomes: list[MockResponse | BaseException],
-    sub_stream: bool = False,
-    sub_builtins: list[str] | None = None,
-    search_respect_gitignore: bool = True,
-    sub_skills: SkillsConfig | None = None,
-    sub_responses_store: bool = False,
-    sub_compaction: CompactionConfig | None = None,
-    sub_max_context_tokens: int = 100_000,
-    sub_max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
-    agent_engine,
-) -> _SubAgentPipelineCtx:
-    """Build a parent+sub-agent engine with independent mock clients.
-
-    The parent invokes the sub-agent tool ``Explore`` (arg ``prompt``).
-    Clients are routed by ``ModelProfile.id``: the parent's active
-    profile is ``"main-mock-profile"`` and the sub-agent pins
-    ``"sub-mock-profile"`` via its ``ModelConfig.profile_id``. So a
-    single ``create_client`` patch can return the right client to each
-    caller.
-    """
-    events: list[Event] = []
-
-    async def _collect(ev: Event) -> None:
-        events.append(ev)
-
-    bus = EventBus()
-    for cls in (
-        SessionReady,
-        InvocationMessage,
-        ApprovalRequest,
-        ApprovalResponse,
-        InvocationToolCallStart,
-        InvocationToolCallResult,
-        InvocationPaused,
-        InvocationResumed,
-        InvocationAborted,
-        InvocationCascadeAborted,
-        InvocationRetryAttempt,
-        InvocationProgress,
-        UsageUpdate,
-    ):
-        await bus.subscribe(cls, _collect)
-
-    # Two model profiles so create_client routing is trivial.
-    model_registry = ModelProfileRegistry()
-    main_profile = ModelProfile(
-        id="main-mock-profile",
-        name="main",
-        provider="mock",
-        model_id="mock",
-        stream=False,
-        max_context_tokens=100_000,
-    )
-    sub_profile = ModelProfile(
-        id="sub-mock-profile",
-        name="sub",
-        provider="openai" if sub_responses_store else "mock",
-        api_style="responses" if sub_responses_store else "chat_completions",
-        model_id="gpt-sub" if sub_responses_store else "mock",
-        stream=sub_stream,
-        max_context_tokens=sub_max_context_tokens,
-        max_output_tokens=sub_max_output_tokens,
-        chat_options='{"store": true}' if sub_responses_store else "",
-    )
-    model_registry.register(main_profile)
-    model_registry.register(sub_profile)
-
-    # These scenarios exercise parent/child turns, not advisory disk scans.
-    settings = Settings(
-        model_profile="main-mock-profile",
-        workspace_change_notice=False,
-        search_respect_gitignore=search_respect_gitignore,
-    )
-    store = JsonFileStateStore(tmp_path / "sessions")
-
-    parent_profile = AgentProfile(
-        name="Parent",
-        instructions="You are the parent. Use the Explore sub-agent.",
-        tools=ToolsConfig(builtins=[]),
-        approval=ApprovalConfig(default="auto"),
-        compaction=CompactionConfig(enabled=False),
-        sub_agents=SubAgentsConfig(
-            max_total_concurrency=2,
-            agents=[SubAgentRef(profile="Explore", tool_name="Explore")],
-        ),
-    )
-    sub_agent_profile = AgentProfile(
-        name="Explore",
-        instructions="You explore. Return a summary.",
-        tools=ToolsConfig(builtins=sub_builtins or []),
-        skills=sub_skills or SkillsConfig(auto_load_user_agents_skills=False, auto_load_cwd_agents_skills=False),
-        approval=ApprovalConfig(default="auto"),
-        compaction=sub_compaction or CompactionConfig(enabled=False),
-        # Pin sub-agent to its own model profile so create_client routes correctly.
-        model=ModelConfig(profile_id="sub-mock-profile"),
-    )
-    agent_registry = AgentProfileRegistry()
-    agent_registry.register(parent_profile)
-    agent_registry.register(sub_agent_profile)
-
-    main_client = ErrorMockChatClient(outcomes=main_outcomes)
-    sub_client = ErrorMockChatClient(outcomes=sub_outcomes)
-
-    async def _patched_create_client(p: Any = None, **kw: Any) -> MockChatClient:
-        # Route by resolved ModelProfile id.  Both clients get the
-        # intermediate-text callbacks installed so streaming callbacks
-        # behave identically to the real path (main is non-streaming in
-        # these tests, but this keeps the helper robust if a future test
-        # flips streaming on).
-        profile_id = getattr(p, "id", "") or ""
-        client = sub_client if profile_id == "sub-mock-profile" else main_client
-        client._on_intermediate_text_async = kw.get("on_intermediate_text_async")
-        client._on_intermediate_text_sync = kw.get("on_intermediate_text_sync")
-        return client
-
-    create_client_patcher = pytest.MonkeyPatch()
-    create_client_patcher.setattr(builder_module, "create_client", _patched_create_client)
-
-    # Also patch the sub_agent module's create_client reference so
-    # SubAgentTools.register (which imports create_client at the module
-    # top) picks up the test-scoped routing, not the real one.
-    sub_create_client_patcher = pytest.MonkeyPatch()
-    sub_create_client_patcher.setattr(sub_agent_module, "create_client", _patched_create_client)
-
-    engine = agent_engine(
-        bus,
-        settings=settings,
-        agent_registry=agent_registry,
-        model_registry=model_registry,
-        state_store=store,
-        initial_workspace=Workspace.from_cwd(str(tmp_path)),
-    )
-    try:
-        await engine.start(parent_profile)
-    except Exception:
-        create_client_patcher.undo()
-        sub_create_client_patcher.undo()
-        raise
-
-    # sub_agent_module import was already consumed during start; restore
-    # it here so other tests aren't affected.  The parent builder_module
-    # patch stays live until cleanup (it's needed if the engine rebuilds).
-    sub_create_client_patcher.undo()
-
-    return _SubAgentPipelineCtx(
-        engine=engine,
-        bus=bus,
-        events=events,
-        main_client=main_client,
-        sub_client=sub_client,
-        store=store,
-        session_id=engine.session.session_id or "",
-        create_client_patcher=create_client_patcher,
-    )
-
-
-def _sub_tool_call(prompt: str, call_id: str = "call-1") -> MockResponse:
-    return MockResponse(tool_calls=[("Explore", call_id, {"prompt": prompt})])
+    """Make :class:`KernelSubAgentPolicy` use minimal retries + no backoff."""
+    use_fast_sub_agent_policy(monkeypatch)
 
 
 # ---------------------------------------------------------------------------
@@ -621,15 +387,6 @@ async def _narrated_sub_agent_ctx(tmp_path: Path, agent_engine) -> _SubAgentPipe
     )
 
 
-def _explore_result(ctx: _SubAgentPipelineCtx) -> InvocationToolCallResult:
-    (tool_result,) = [
-        e
-        for e in ctx.events
-        if isinstance(e, InvocationToolCallResult) and e.origin.kind == "turn" and e.tool_name == "Explore"
-    ]
-    return tool_result
-
-
 @pytest.mark.asyncio
 async def test_parent_receives_the_final_segment_not_the_narration(
     tmp_path: Path, fast_sub_agent_controller: None, agent_engine
@@ -652,11 +409,54 @@ async def test_parent_receives_the_final_segment_not_the_narration(
             if content.type == "function_result" and content.call_id == "call-1"
         ]
         assert sent == ["The answer is 42."]
-        assert [
-            e.text
-            for e in ctx.events
-            if isinstance(e, InvocationMessage) and e.origin.kind == "sub_agent" and e.is_intermediate
-        ] == ["Let me check the tree. "]
+        assert [text for _index, text in _child_answer_segments(ctx)] == [
+            "Let me check the tree. ",
+            "The answer is 42.",
+        ]
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_sub_agent_answer_shows_while_its_response_is_still_streaming(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("explore"), MockResponse(text="Parent done.")],
+        sub_outcomes=[MockResponse(text="Looking it up.", chunk_size=8, chunk_delay=0)],
+        sub_stream=True,
+        agent_engine=agent_engine,
+    )
+    original = ctx.sub_client._stream_updates
+    release = asyncio.Event()
+
+    async def held(
+        resp: MockResponse, model_id: str, finish_reason: FinishReasonLiteral | FinishReason
+    ) -> AsyncIterator[ChatResponseUpdate]:
+        held_once = False
+        async for update in original(resp, model_id, finish_reason):
+            yield update
+            if update.text and not held_once:
+                held_once = True
+                await release.wait()
+
+    monkeypatch.setattr(ctx.sub_client, "_stream_updates", held)
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        await wait_for(lambda: _child_answer_segments(ctx), timeout=ENGINE_TURN_TIMEOUT, description="the first chunk")
+        # The rest of the response is still held: the first chunk went out as it arrived.
+        assert [text for _index, text in _child_answer_segments(ctx)] == ["Looking "]
+        assert not [e for e in ctx.events if isinstance(e, InvocationToolCallResult) and e.tool_name == "Explore"]
+        release.set()
+        await ctx.wait_for_idle()
+
+        assert _explore_result(ctx).result == "Looking it up."
+        assert [text for _index, text in _child_answer_segments(ctx)] == ["Looking it up."]
+        deltas = [e for e in ctx.events if isinstance(e, InvocationContentDelta) and e.origin.kind == "sub_agent"]
+        # One child invocation under the parent turn streamed them.
+        assert len({e.origin.invocation_id for e in deltas}) == 1
+        assert {e.origin.root.kind for e in deltas} == {"turn"}
     finally:
         await ctx.cleanup()
 
@@ -670,7 +470,7 @@ async def test_parent_receives_the_final_segment_not_the_narration(
 async def test_streamed_narration_of_a_call_outside_the_tool_pipeline_reaches_the_transcript(
     tmp_path: Path, fast_sub_agent_controller: None, agent_engine, call: tuple[str, str, dict[str, Any]]
 ) -> None:
-    """The kernel answers these calls without a tool start, which is what releases streamed text."""
+    """The kernel answers these calls without a tool start; the text streamed before them still shows once."""
     ctx = await _make_ctx(
         tmp_path,
         main_outcomes=[_sub_tool_call("explore"), MockResponse(text="Parent done.")],
@@ -687,16 +487,9 @@ async def test_streamed_narration_of_a_call_outside_the_tool_pipeline_reaches_th
         await ctx.wait_for_idle()
 
         assert _explore_result(ctx).result == "The answer is 42."
-        narration = [
-            i
-            for i, e in enumerate(ctx.events)
-            if isinstance(e, InvocationMessage)
-            and e.origin.kind == "sub_agent"
-            and e.is_intermediate
-            and e.text == "Let me check the tree. "
-        ]
-        assert len(narration) == 1
-        assert narration[0] < ctx.events.index(_explore_result(ctx))
+        segments = _child_answer_segments(ctx)
+        assert [text for _index, text in segments] == ["Let me check the tree. ", "The answer is 42."]
+        assert segments[0][0] < ctx.events.index(_explore_result(ctx))
     finally:
         await ctx.cleanup()
 
@@ -715,7 +508,7 @@ async def test_narration_before_hosted_output_reaches_the_transcript_once(
     call: tuple[str, str, dict[str, Any]],
     sub_stream: bool,
 ) -> None:
-    """The narration precedes the next response's hosted output, and the run-end reconcile leaves it alone."""
+    """The narration precedes the next response's hosted output and shows once."""
     ctx = await _make_ctx(
         tmp_path,
         main_outcomes=[_sub_tool_call("explore"), MockResponse(text="Parent done.")],
@@ -739,18 +532,67 @@ async def test_narration_before_hosted_output_reaches_the_transcript_once(
         ]
         assert (HostedToolFamily.IMAGE, True) in child_results
         assert (call[0] == "sleep") == (("sleep", False) in child_results)
-        narration = [
-            i
-            for i, e in enumerate(ctx.events)
-            if isinstance(e, InvocationMessage) and e.origin.kind == "sub_agent" and e.is_intermediate
-        ]
-        assert [ctx.events[i].text for i in narration] == ["Let me check the tree. "]
+        segments = _child_answer_segments(ctx)
+        assert [text for _index, text in segments] == ["Let me check the tree. ", "Here it is."]
         hosted_start_at = next(
             i
             for i, e in enumerate(ctx.events)
             if isinstance(e, InvocationToolCallStart) and e.origin.kind == "sub_agent" and e.provider_hosted
         )
-        assert narration[0] < hosted_start_at
+        assert segments[0][0] < hosted_start_at
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sub_stream", [True, False], ids=["streamed", "blocking"])
+async def test_text_before_a_hosted_call_ends_its_segment_before_the_call_starts(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine, sub_stream: bool
+) -> None:
+    """A card that shows each segment once it ends then shows that text above the call, as the response holds it."""
+    # The provider's item id matches the landed call to the streamed one.
+    hosted = Content.from_image_generation_tool_result(
+        image_id="image-1",
+        outputs=[Content.from_uri("data:image/png;base64,QUJD", media_type="image/png")],
+        hosted_provider="openai",
+        provider_item_id="ig_1",
+        provider_phase="terminal",
+        provider_status="completed",
+    )
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("explore"), MockResponse(text="Parent done.")],
+        sub_outcomes=[HostedMockResponse(lead_text="Drawing it.", hosted=[hosted], text="Here it is.")],
+        sub_stream=sub_stream,
+        agent_engine=agent_engine,
+    )
+    child: list[list[str]] = []
+
+    async def record(event: InvocationContentDelta | InvocationContentFinished | InvocationToolCallStart) -> None:
+        if event.origin.kind != "sub_agent":
+            return
+        if isinstance(event, InvocationToolCallStart):
+            child.append(["start", event.tool_name])
+        elif isinstance(event, InvocationContentFinished):
+            child.append(["end", event.status])
+        elif child and child[-1][0] == "text":
+            child[-1][1] += event.text
+        else:
+            child.append(["text", event.text])
+
+    for event_type in (InvocationContentDelta, InvocationContentFinished, InvocationToolCallStart):
+        await ctx.bus.subscribe(event_type, record)
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        await ctx.wait_for_idle()
+
+        assert child == [
+            ["text", "Drawing it."],
+            ["end", "completed"],
+            ["start", HostedToolFamily.IMAGE],
+            ["text", "Here it is."],
+            ["end", "completed"],
+        ]
     finally:
         await ctx.cleanup()
 
@@ -770,28 +612,26 @@ async def test_narration_of_a_failed_pass_precedes_its_pause(
         sub_stream=True,
         agent_engine=agent_engine,
     )
-    # No next response starts, so only the end of the failed pass can release the text.
+    # The second response fails before it starts: the pass pauses after the text it streamed.
     fail_nested_before_response_on_nth(monkeypatch, 2, main=ctx.engine.current.loaded.bindings._response_validation)
-
-    def narration() -> list[int]:
-        return [
-            i
-            for i, e in enumerate(ctx.events)
-            if isinstance(e, InvocationMessage) and e.origin.kind == "sub_agent" and e.is_intermediate
-        ]
 
     try:
         await ctx.bus.publish(UserMessage(text="go"))
         (paused,) = await ctx.wait_for_event(InvocationPaused)
-        assert len(narration()) == 1
-        assert narration()[0] < ctx.events.index(paused)
+        ((narrated_at, narration),) = _child_answer_segments(ctx)
+        assert narration == "Let me check the tree. "
+        assert narrated_at < ctx.events.index(paused)
 
         await ctx.bus.publish(InvocationRetryRequested(invocation_id=paused.origin.invocation_id))
         await ctx.wait_for_event(InvocationResumed)
         await ctx.wait_for_idle()
 
         assert _explore_result(ctx).result == "The answer is 42."
-        assert [ctx.events[i].text for i in narration()] == ["Let me check the tree. "]
+        # The retry continues after the answered call: the narration is never streamed again.
+        assert [text for _index, text in _child_answer_segments(ctx)] == [
+            "Let me check the tree. ",
+            "The answer is 42.",
+        ]
     finally:
         await ctx.cleanup()
 

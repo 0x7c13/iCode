@@ -113,9 +113,7 @@ async def test_main_conversations_exclude_context_management_from_shared_runtime
     shared, recipe = captured[0]
 
     async def open_main(owner: Conversation) -> KernelRuntime:
-        return create_runtime(
-            owner, shared, replace(recipe, validation=lambda scope: create_validation(scope, publish_retry=None))
-        )
+        return create_runtime(owner, shared, replace(recipe, validation=create_validation))
 
     try:
         first = await engine.current.loaded.prepared.open(open_main)
@@ -233,8 +231,9 @@ async def test_real_build_preserves_main_child_model_context_approval_and_chat_i
             if content.type == "function_result"
         ]
         assert denied == ["Error: Tool execution was rejected by user."]
-        assert entries["ROOT"] == ["usage", "injection", "image", "reminder", "validation"] * 2
-        assert entries["CHILD"] == ["image", "reminder", "usage", "validation"] * 2
+        # Usage is innermost, so it counts the response validation then rejects.
+        assert entries["ROOT"] == ["injection", "image", "reminder", "validation", "usage"] * 2
+        assert entries["CHILD"] == ["image", "reminder", "validation", "usage"] * 2
         assert main.enters == child.enters == 1
         assert main.exits == child.exits == 0
     finally:
@@ -244,19 +243,19 @@ async def test_real_build_preserves_main_child_model_context_approval_and_chat_i
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_real_wire_validation_interleaving_preserves_pass_reset_boundaries(
+async def test_real_wire_retries_fire_each_shells_pass_start_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_engine: AgentEngineFactory, stream: bool
 ) -> None:
-    resets: list[tuple[ResponseValidationMiddleware, int, int]] = []
+    starts: list[tuple[ResponseValidationMiddleware, int, int]] = []
     clients = []
-    original = ResponseValidationMiddleware.reset_service_retry_state
+    original = ResponseValidationMiddleware.begin_pass_hosted_baseline
 
-    def reset(self: ResponseValidationMiddleware) -> None:
-        resets.append((self, clients[0].call_count, clients[1].call_count))
-        original(self)
+    def begin(self: ResponseValidationMiddleware, *, resumes_background_response: bool) -> None:
+        starts.append((self, clients[0].call_count, clients[1].call_count))
+        original(self, resumes_background_response=resumes_background_response)
 
     monkeypatch.setattr(
-        ResponseValidationMiddleware, "reset_service_retry_state", create_autospec(original, side_effect=reset)
+        ResponseValidationMiddleware, "begin_pass_hosted_baseline", create_autospec(original, side_effect=begin)
     )
     monkeypatch.setattr(TurnBindings, "_BACKOFF_SCHEDULE", (0,))
     original_init = KernelSubAgentPolicy.__init__
@@ -273,25 +272,25 @@ async def test_real_wire_validation_interleaving_preserves_pass_reset_boundaries
         stream=stream,
         main=[
             ConnectionError("root transport"),
-            MockResponse(text=""),
             MockResponse(tool_calls=[("Explore", "c1", {"prompt": "child question"})]),
             MockResponse(text="root done"),
         ],
-        child=[ConnectionError("child transport"), MockResponse(text=""), MockResponse(text="child done")],
+        child=[ConnectionError("child transport"), MockResponse(text="child done")],
     )
     clients.extend([main, child])
     try:
         await engine.event_bus.publish(UserMessage(text="root question"))
         await await_run_task_chain(engine, turn_state=engine.turns.turn_state, expect_installed=True)
         assert not engine.current.loaded.bindings.state.run_failed
-        assert main.call_count == 4
-        assert child.call_count == 3
+        assert main.call_count == 3
+        assert child.call_count == 2
         root_validation = engine.current.loaded.bindings._response_validation
+        # A wire retry stays inside its pass: each shell's pass starts once.
         assert [
             ("root" if owner is root_validation else "child", root_calls, child_calls)
-            for owner, root_calls, child_calls in resets
-        ] == [("root", 0, 0), ("root", 3, 0), ("child", 3, 0), ("child", 3, 3), ("root", 4, 3)]
-        assert all("root question" in messages[-1].text for messages, _ in main.call_history[:3])
+            for owner, root_calls, child_calls in starts
+        ] == [("root", 0, 0), ("child", 2, 0)]
+        assert all("root question" in messages[-1].text for messages, _ in main.call_history[:2])
         assert all("child question" in messages[-1].text for messages, _ in child.call_history)
         assert not engine.current.loaded.sub_agent_tools._controllers
     finally:

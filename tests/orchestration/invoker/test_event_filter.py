@@ -5,10 +5,11 @@
 import pytest
 
 from chrys.foundation.events.types import (
+    InvocationContentAbandoned,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationMessage,
     InvocationPaused,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationProgress,
     InvocationResumed,
     InvocationRetryAttempt,
@@ -23,7 +24,7 @@ from tests.support.invocation_events import ORIGIN_IDS, ORIGINS, PHASES, PROSE_P
 def test_headless_allows_main_text_and_child_activity_but_drops_child_prose() -> None:
     main = InvocationOrigin("turn", "session", "main", None)
     child = InvocationOrigin("sub_agent", "session", "child", main)
-    prose = (InvocationMessage, InvocationPresentationAttemptAccepted, InvocationPresentationAttemptRejected)
+    prose = (InvocationMessage, InvocationContentDelta, InvocationContentFinished, InvocationContentAbandoned)
     activity = (
         InvocationStarted,
         InvocationPaused,
@@ -42,6 +43,9 @@ def test_headless_drops_a_workflow_node_and_its_children_entirely() -> None:
     node_child = InvocationOrigin("sub_agent", "session", "node-child", node)
     facts = (
         InvocationMessage,
+        InvocationContentDelta,
+        InvocationContentFinished,
+        InvocationContentAbandoned,
         InvocationStarted,
         InvocationPaused,
         InvocationResumed,
@@ -65,3 +69,24 @@ def test_workflow_node_activity_is_the_node_rooted_complement_minus_child_prose(
     assert allows_workflow_node_event(event) is (node_rooted and not child_prose)
     # The two filters never both admit an event: a stream asking for node activity adds to the headless set.
     assert not (allows_workflow_node_event(event) and allows_headless_event(event))
+
+
+@pytest.mark.parametrize("event_type", [InvocationContentDelta, InvocationContentFinished])
+def test_content_segments_follow_the_prose_boundary_of_each_stream(event_type: type) -> None:
+    main = InvocationOrigin("turn", "session", "main", None)
+    child = InvocationOrigin("sub_agent", "session", "child", main)
+    node = InvocationOrigin("workflow_node", "session", "node", None)
+    node_child = InvocationOrigin("sub_agent", "session", "node-child", node)
+
+    assert [allows_headless_event(event_type(origin=origin)) for origin in (main, child, node, node_child)] == [
+        True,
+        False,
+        False,
+        False,
+    ]
+    assert [allows_workflow_node_event(event_type(origin=origin)) for origin in (main, child, node, node_child)] == [
+        False,
+        False,
+        True,
+        False,
+    ]

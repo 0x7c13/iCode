@@ -18,6 +18,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+from itertools import count
 from typing import Any
 
 import pytest
@@ -27,8 +28,12 @@ from chrys.app.tui.widgets.chat.messages import AgentMessage as AgentMessageWidg
 from chrys.app.tui.widgets.chat.messages import UserMessage as UserMessageWidget
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
-from chrys.foundation.events.types import InvocationMessage as AgentMessageEvent
-from chrys.foundation.events.types import InvocationToolCallResult, InvocationToolCallStart
+from chrys.foundation.events.types import (
+    InvocationContentDelta,
+    InvocationMessage,
+    InvocationToolCallResult,
+    InvocationToolCallStart,
+)
 from chrys.foundation.hosted_tools import HostedRetrySafety, HostedToolPhase
 from chrys.kernel import Content, Message
 from chrys.service.llm.mock import MockChatClient, MockResponse
@@ -109,15 +114,24 @@ def _intermediate_texts(cp: ChatPanel) -> list[str]:
 # Helpers — simulate live event sequence
 # ---------------------------------------------------------------------------
 
+_SEGMENT_IDS = count()
+
+
+async def _sim_answer_segment(cp: ChatPanel, text: str) -> None:
+    """Stream *text* as one answer segment, closed as the backend closes it."""
+    segment_id = f"segment-{next(_SEGMENT_IDS)}"
+    await cp.add_answer_delta(segment_id, text)
+    cp.finish_answer_segment(segment_id, completed=True)
+
 
 async def _sim_batch_boundary(cp: ChatPanel) -> None:
-    """Simulate an empty intermediate message (batch boundary)."""
-    await cp.add_agent_message("", is_final=True, is_intermediate=True)
+    """Simulate a response whose only text before its tool calls is whitespace."""
+    await _sim_answer_segment(cp, "\n\n")
 
 
 async def _sim_intermediate_text(cp: ChatPanel, text: str) -> None:
-    """Simulate non-empty intermediate text before tool calls."""
-    await cp.add_agent_message(text, is_final=True, is_intermediate=True)
+    """Simulate answer text that tool calls then follow."""
+    await _sim_answer_segment(cp, text)
 
 
 async def _sim_tool(cp: ChatPanel, call_id: str, name: str, duration_ms: int = 50) -> None:
@@ -127,8 +141,9 @@ async def _sim_tool(cp: ChatPanel, call_id: str, name: str, duration_ms: int = 5
 
 
 async def _sim_final(cp: ChatPanel, text: str = "Done.") -> None:
-    """Simulate the final agent message."""
-    await cp.add_agent_message(text, is_final=True)
+    """Simulate the streamed final answer and the message that completes it."""
+    await _sim_answer_segment(cp, text)
+    await cp.add_agent_message(text)
 
 
 class _PanelApp(App):
@@ -289,20 +304,19 @@ class TestLiveCoalescing:
         # presentation ownership. Production clients suppress that callback
         # when provider-hosted content is present, leaving the bridge as the
         # single publisher; mirror that production behavior in this fixture.
-        context.mock_client._on_intermediate_text_async = None
-        context.mock_client._on_intermediate_text_sync = None
+        context.mock_client._on_intermediate_text = None
 
         try:
             async with _PanelApp().run_test() as pilot:
                 panel = pilot.app.query_one(ChatPanel)
 
-                async def render_agent(event: AgentMessageEvent) -> None:
-                    await panel.add_agent_message(
-                        event.text,
-                        event.is_final,
-                        is_intermediate=event.is_intermediate,
-                        presentation=event.presentation,
-                    )
+                async def render_answer(event: InvocationContentDelta) -> None:
+                    if event.channel == "answer":
+                        await panel.add_answer_delta(event.segment_id, event.text)
+
+                async def render_final(event: InvocationMessage) -> None:
+                    if event.is_final:
+                        await panel.add_agent_message(event.text)
 
                 async def render_tool_start(event: InvocationToolCallStart) -> None:
                     await panel.add_tool_start(
@@ -330,7 +344,8 @@ class TestLiveCoalescing:
                         provider_status=event.provider_status,
                     )
 
-                await context.bus.subscribe(AgentMessageEvent, render_agent)
+                await context.bus.subscribe(InvocationContentDelta, render_answer)
+                await context.bus.subscribe(InvocationMessage, render_final)
                 await context.bus.subscribe(InvocationToolCallStart, render_tool_start)
                 await context.bus.subscribe(InvocationToolCallResult, render_tool_result)
                 await panel.add_user_message("go")
@@ -366,14 +381,14 @@ class TestLiveCoalescing:
             assert _snapshot_groups(cp)[0][1] == ["read_file", "grep"]
 
     @pytest.mark.asyncio
-    async def test_processed_empty_intermediate_think_block_is_noop(self) -> None:
-        """A whitespace-only think block must not mount text or split tool groups."""
+    async def test_whitespace_only_answer_segment_is_noop(self) -> None:
+        """A whitespace-only answer segment must not mount text or split tool groups."""
         async with _PanelApp().run_test() as pilot:
             cp = pilot.app.query_one(ChatPanel)
             await cp.add_user_message("go")
 
             await cp.add_tool_start("c1", "read_file", "filesystem.read")
-            await cp.add_agent_message("<think>   </think>", is_final=True, is_intermediate=True)
+            await cp.add_answer_delta("blank", " \n\t")
             await cp.add_tool_start("c2", "grep", "search")
             await pilot.pause()
 

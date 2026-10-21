@@ -17,10 +17,9 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widget import Widget
 
-from chrys.app.tui.widgets.chat.messages import AgentMessage, ErrorMessage, UserMessage
+from chrys.app.tui.widgets.chat.messages import ErrorMessage, UserMessage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.welcome import WelcomeWidget
-from chrys.foundation.events.types import ProvisionalPresentation
 from tests.support.tui_helpers import BusyWidget, assert_app_handles_messages, interrupt_removal
 
 
@@ -95,25 +94,6 @@ async def test_a_cancelled_new_prompt_still_removes_the_failed_prompt_and_its_co
 
         assert not prompt.is_attached and not panel.query(ErrorMessage)
         assert [item.summary for item in panel.toc_items] == []
-        await assert_app_handles_messages(app)
-
-
-@pytest.mark.asyncio
-async def test_a_cancelled_attempt_acceptance_still_removes_every_rejected_message() -> None:
-    app = _PanelApp()
-    async with app.run_test():
-        panel = app.query_one(ChatPanel)
-        for segment in ("first", "second", "kept"):
-            await panel.add_agent_message(
-                f"{segment} text", is_intermediate=True, presentation=ProvisionalPresentation("attempt", segment)
-            )
-        first, second, kept = panel.query(AgentMessage)
-        busy = await _busy_inside(first)
-
-        await _cancel_while_removing(busy, lambda: panel.accept_presentation_attempt("attempt", ("kept",)))
-
-        assert not first.is_attached and not second.is_attached
-        assert kept.is_attached
         await assert_app_handles_messages(app)
 
 

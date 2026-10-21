@@ -35,7 +35,6 @@ from chrys.foundation.events.types import (
     CompactionFinished,
     CompactionStarted,
     InvocationContextPressure,
-    InvocationMessage,
     InvocationRetryAttempt,
     RuntimeHookDetails,
     RuntimeHookSourceDetails,
@@ -71,7 +70,7 @@ from chrys.orchestration.sub_agents.registration import (
     sub_agent_skip_reason,
 )
 from chrys.service.agent_middleware import (
-    IntermediateTextBuffer,
+    ResponseBatchCounter,
     TodoMiddleware,
 )
 from chrys.service.agent_middleware.injection import InjectionMiddleware
@@ -123,11 +122,6 @@ logger = logging.getLogger(__name__)
 _RETRY_LAST_WORDS_COMPACTION = msg(
     "retry.last_words_compaction",
     fallback="LAST_WORDS compaction: {reason}",
-    multiline=True,
-)
-_RETRY_INVALID_RESPONSE = msg(
-    "retry.invalid_response",
-    fallback="Invalid response: {reason}",
     multiline=True,
 )
 _BUILDER_PROTECTED_CHAT_OPTIONS_STRIPPED = msg(
@@ -245,16 +239,14 @@ async def build_agent(
     bus: EventBus,
     agent_registry: AgentProfileRegistry | None,
     injection: InjectionMiddleware,
-    intermediate_buffer: IntermediateTextBuffer,
-    on_intermediate_async: Callable[[str], Awaitable[None]],
-    on_intermediate_sync: Callable[[str], None],
+    batch_counter: ResponseBatchCounter,
+    on_intermediate: Callable[[str], None],
     on_usage: Callable[..., None],
     *,
     # -- optional -----------------------------------------------------
     model_registry: ModelProfileRegistry | None = None,
     on_sub_agent_usage: Callable[..., None] | None = None,
     on_side_call_usage: Callable[[Mapping[str, Any]], None] | None = None,
-    commit_intermediate_text: Callable[[str, int], None] | None = None,
     drain_parent_usage_publishes: Callable[[], Awaitable[None]] | None = None,
     on_compaction: Callable[[CompactionInfo], Awaitable[None]] | None = None,
     on_pre_compact: Callable[[PreCompactInfo], Awaitable[None]] | None = None,
@@ -274,6 +266,8 @@ async def build_agent(
     persist_recovery_now: Callable[[], Awaitable[bool]] | None = None,
     turn_context: TurnContextHolder | None = None,
     allow_user_interaction: bool = True,
+    shows_answer_text: bool = True,
+    sub_agent_shows_answer_text: bool = True,
 ) -> AgentBuildResult:
     """Build an ``Agent``, ``TurnBindings``, and all supporting infrastructure.
 
@@ -300,14 +294,10 @@ async def build_agent(
         Profile registry (used for sub-agent resolution).
     injection:
         Pre-configured ``InjectionMiddleware`` (engine owns the callbacks).
-    intermediate_buffer:
-        Pre-configured ``IntermediateTextBuffer``.
-    on_intermediate_async:
-        Async callback for intermediate text (non-streaming path).
-    on_intermediate_sync:
-        Sync callback for intermediate text (streaming path).
-    commit_intermediate_text:
-        Accepted-only persistence callback for a pre-reserved provisional batch.
+    batch_counter:
+        The pass's ``ResponseBatchCounter``, advanced by the intermediate-text callback.
+    on_intermediate:
+        Callback for the intermediate-text signal of each response that asks for tools.
     on_usage:
         Callback for context usage updates.
     on_side_call_usage:
@@ -484,28 +474,13 @@ async def build_agent(
 
         ctx = create_context(context_inputs)
 
-        # Create LLM client with intermediate text callbacks.  ``session_dir`` is
+        # Create LLM client with the intermediate text callback.  ``session_dir`` is
         # only used by opt-in raw HTTP logging; normal transport construction stays
         # unchanged.
         invocation_publishers = InvocationPublishers(bus)
-
-        async def _publish_intermediate(text: str) -> None:
-            emitter = invocation_publishers.capture()
-            await on_intermediate_async(text)
-            await emitter.publish(
-                InvocationMessage(
-                    origin=emitter.origin,
-                    text=text,
-                    is_final=False,
-                    is_intermediate=True,
-                    session_id=session_id,
-                )
-            )
-
         client = await create_client(
             active_profile,
-            on_intermediate_text_async=_publish_intermediate,
-            on_intermediate_text_sync=on_intermediate_sync,
+            on_intermediate_text=on_intermediate,
             session_id=session_id,
             session_dir=effective_session_dir,
             tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
@@ -622,6 +597,7 @@ async def build_agent(
                 allow_user_interaction=allow_user_interaction,
                 # A headless run shows no card to pause on, so a failed child ends with its error.
                 human_failure_decisions=allow_user_interaction,
+                shows_answer_text=sub_agent_shows_answer_text,
             )
             prepared.own(sub_agent_tools.cleanup)
             for index, ref in enumerate(profile.sub_agents.agents, start=1):
@@ -900,42 +876,17 @@ async def build_agent(
             report_usage=on_side_call_usage,
         )
 
-        # Response-validation middleware — placed innermost (closest to
-        # ``_inner_get_response``) so its retries on structurally invalid
-        # responses do not double-fire outer middleware (usage, system
-        # reminder, loop capture).  On exhausted retries the response is
-        # returned with ``function_call`` contents stripped (so the tool
-        # loop exits cleanly) and structurally-empty assistant messages
-        # dropped from both ``response.messages`` and ``updates`` (so the
-        # streaming rebuild + persistence stay clean).  Empty-assistant
-        # scrub also runs on the valid path to catch ``[empty, valid]``
-        # multi-message shapes that pass validation but would otherwise
-        # land a stray ``content: []`` message in ``session.json``.
-        # ``publish_retry`` surfaces client-mode validation retries on the
-        # bus; service-side failures raise to the executor's whole-run
-        # retry, which publishes its own ``RetryAttempt``.
-        async def _publish_validation_retry(info: RetryAttemptInfo) -> None:
-            emitter = invocation_publishers.capture()
-            await emitter.publish(
-                InvocationRetryAttempt(
-                    scope="wire",
-                    origin=emitter.origin,
-                    message=f"Invalid response: {info.reason}",
-                    attempt=info.attempt,
-                    max_attempts=info.max_attempts,
-                    delay_seconds=int(info.delay_seconds),
-                    session_id=session_id,
-                    display_message=_RETRY_INVALID_RESPONSE.bind(reason=DisplayBlock(info.reason)),
-                    detail=info.reason,
-                )
-            )
-
+        # Response-validation middleware — placed innermost but for usage,
+        # which counts every landed response first: it judges each one and fails
+        # the turn on one without an answer. A passing response keeps only
+        # its non-empty assistant messages, so an ``[empty, valid]`` shape
+        # cannot land a stray ``content: []`` message in ``session.json``.
         recipe = MainRecipe(
             context=context_inputs,
             reminder=reminder_inputs,
             last_words=last_words_inputs,
             injection=InjectionMiddleware,
-            validation=lambda owner: create_validation(owner, publish_retry=_publish_validation_retry),
+            validation=create_validation,
             persist_recovery=persist_recovery_now,
         )
         web_tools.check_names(tools)
@@ -1018,7 +969,7 @@ async def build_agent(
             session_id=session_id,
             compaction_strategy=ctx.compaction_strategy,
             stream=active_profile.stream,
-            intermediate_buffer=intermediate_buffer,
+            batch_counter=batch_counter,
             chat_options=chat_options,
             mutation_tracker=mutation_tracker,
             mutation_coordinator=mutation_coordinator,
@@ -1029,18 +980,14 @@ async def build_agent(
             workspace_cwd=runtime.cwd,
             serialize_implicit_windows=serialize_implicit_windows,
             extra_function_middleware=extra_function_middleware,
-            run_cycle_start_hooks=(
-                web_tools.begin_pass,
-                validation_middleware.reset_service_retry_state,
-            ),
+            run_cycle_start_hooks=(web_tools.begin_pass,),
             hosted_commits_probe=validation_middleware.hosted_commits_observed,
             hosted_commits_in_flight_probe=validation_middleware.hosted_commits_in_flight,
             response_validation_middleware=validation_middleware,
-            publish_intermediate_text=_publish_intermediate,
             invocation_publishers=invocation_publishers,
-            commit_intermediate_text=commit_intermediate_text,
             tool_result_ceiling_tokens=settings.tool_result_ceiling_tokens,
             background_tasks=background_tasks,
+            shows_answer_text=shows_answer_text,
         )
 
         return AgentBuildResult(

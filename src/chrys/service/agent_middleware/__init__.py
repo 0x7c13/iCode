@@ -11,8 +11,7 @@ Provides:
 - AskUserMiddleware: Intercepts ask_user tool calls to show a dialog.
 - TodoMiddleware: Intercepts todo_write tool calls to update the session todo list.
 - SleepMiddleware: Intercepts sleep tool calls so the frontend can skip them.
-- IntermediateTextBuffer: Buffer for intermediate text between result_hook
-  and ToolEventMiddleware.
+- ResponseBatchCounter: Numbers a main pass's tool-calling responses.
 """
 
 from chrys.foundation.io.result_content import extract_result_images, extract_result_text
@@ -29,7 +28,7 @@ from chrys.service.agent_middleware.control.ask_user import AskUserMiddleware
 from chrys.service.agent_middleware.control.interrupt import InterruptMiddleware
 from chrys.service.agent_middleware.control.sleep import SleepMiddleware
 from chrys.service.agent_middleware.control.todo import TodoMiddleware
-from chrys.service.agent_middleware.events.intermediate_text import IntermediateTextBuffer
+from chrys.service.agent_middleware.events.intermediate_text import ResponseBatchCounter
 from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware, SubAgentStatsMiddleware
 from chrys.service.agent_middleware.events.tool_events import ToolEventMiddleware
 from chrys.service.mutations.pipeline import _read_file_snapshot, _read_shell_snapshots
@@ -46,8 +45,8 @@ __all__ = [
     "_SLEEP_SKIPPED_KEY",
     "ApprovalMiddleware",
     "AskUserMiddleware",
-    "IntermediateTextBuffer",
     "InterruptMiddleware",
+    "ResponseBatchCounter",
     "SleepMiddleware",
     "SubAgentEventMiddleware",
     "SubAgentStatsMiddleware",

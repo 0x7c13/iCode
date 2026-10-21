@@ -12,16 +12,12 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from chrys.foundation.events.types import (
-    InvocationMessage,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationProgress,
     InvocationToolCallArgsUpdated,
     InvocationToolCallProgress,
     InvocationToolCallResult,
     InvocationToolCallStart,
     InvocationToolCallStatusUpdated,
-    ProvisionalPresentation,
 )
 from chrys.foundation.hosted_tools import HOSTED_TOOL_DEFAULT_KIND_BY_FAMILY, HostedToolStatus
 from chrys.foundation.io.result_content import extract_result_images, extract_result_text
@@ -73,13 +69,9 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     HostedToolResultOp,
     HostedToolStartOp,
     HostedToolStatusOp,
-    IntermediateTextOp,
-    PresentationAttemptAcceptedOp,
-    PresentationAttemptRejectedOp,
     PresentationSinkOperation,
     next_hosted_run_generation,
 )
-from chrys.service.agent_middleware.events.intermediate_text import IntermediateTextBuffer
 from chrys.service.agent_middleware.events.rejection_metadata import rejection_result_metadata, rejection_source
 from chrys.service.agent_middleware.events.result_persistence import (
     RESULT_SLEEP_INTERRUPTED_METADATA_KEY,
@@ -109,8 +101,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from chrys.foundation.events.bus import EventBus
-    from chrys.foundation.models.invocations import InvocationOrigin
-    from chrys.kernel import Message
+    from chrys.foundation.models.invocations import ContentStatus, InvocationOrigin
+    from chrys.kernel import Content, Message
     from chrys.kernel.middleware import FunctionInvocationContext
     from chrys.service.hooks.manager import HookManager
     from chrys.service.mutations.coordination import MutationCoordinator
@@ -147,10 +139,6 @@ class SubAgentEventMiddleware(FunctionMiddleware):
     call with a unique ``invocation_id``, then passed as per-run middleware to
     ``agent.run()``.
 
-    A per-invocation ``IntermediateTextBuffer`` preserves the same ordering as
-    the main agent: pending assistant text is delivered before the first tool
-    start in its batch. Sub-agent transcripts do not persist batch IDs.
-
     Tracks cumulative tool call count and publishes ``InvocationProgress``
     after each tool result so the TUI can display live stats.
 
@@ -173,7 +161,6 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         stats: SubAgentLogStats | None = None,
         mutation_coordinator: MutationCoordinator | None = None,
         tool_result_ceiling_tokens: int | None = None,
-        intermediate_buffer: IntermediateTextBuffer | None = None,
         *,
         origin: InvocationOrigin,
     ) -> None:
@@ -190,7 +177,6 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         self._serialize_implicit_windows = serialize_implicit_windows
         self._stats = stats
         self._tool_result_ceiling_tokens = tool_result_ceiling_tokens
-        self._intermediate_buffer = intermediate_buffer
         self._tool_call_count = 0
         self._tool_invocation_order = 0
         self._total_tokens = 0
@@ -199,21 +185,31 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         self._progress_publish_tail: asyncio.Task[None] | None = None
         self._hosted_run_generation = 0
         self._hosted_bridge: HostedPresentationBridge | None = None
+        self._end_text_segment: Callable[[ContentStatus], Awaitable[None]] | None = None
 
     def bind_origin(self, origin: InvocationOrigin) -> None:
         """Bind the next pass; each tool call and hosted bridge keeps the origin it started under."""
         self._origin = origin
 
+    def bind_text_segments(self, end_segment: Callable[[ContentStatus], Awaitable[None]]) -> None:
+        """Bind how the next pass ends its open text segment, which a hosted call's start ends first."""
+        self._end_text_segment = end_segment
+
     def begin_hosted_pass(self) -> HostedPresentationBridge:
         """Create the presentation bridge owned by the next controller pass."""
         self._hosted_run_generation = next_hosted_run_generation()
         origin = self._origin
-        self._hosted_bridge = HostedPresentationBridge(
-            lambda operation: self._publish_hosted_operation(operation, origin),
+        bridge = HostedPresentationBridge(
+            lambda operation: self._publish_hosted_operation(operation, origin, bridge),
             run_generation=self._hosted_run_generation,
-            before_response=self.release_intermediate_text,
         )
-        return self._hosted_bridge
+        self._hosted_bridge = bridge
+        return bridge
+
+    async def hosted_text_shown(self, content: Content | None) -> None:
+        """The pass showed landed text: the hosted work its response ran after that text follows."""
+        if self._hosted_bridge is not None:
+            await self._hosted_bridge.text_shown(content)
 
     async def reconcile_hosted_response(self, messages: Sequence[Message]) -> None:
         """Reconcile the accepted full-pass transcript through the current bridge.
@@ -222,42 +218,10 @@ class SubAgentEventMiddleware(FunctionMiddleware):
         tool starts can arrive: barriers for calls that never entered the
         tool pipeline (unknown tool, pre-pipeline argument rejection) must
         be released here or the hosted events behind them stay buffered
-        forever. The text such a call streamed is released first, so it
-        precedes what the reconcile publishes.
+        forever.
         """
-        await self.release_intermediate_text()
         if self._hosted_bridge is not None:
             await self._hosted_bridge.reconcile_accepted(messages, final=True)
-
-    async def release_intermediate_text(self) -> None:
-        """Publish intermediate text that no tool start has released yet.
-
-        A call that never enters the tool pipeline (unknown tool, pre-pipeline
-        argument rejection) starts no tool, so the text streamed with it stays
-        buffered until the next response starts or the pass ends.
-        """
-        await self._release_intermediate_text(None)
-
-    async def finish_intermediate_text(self) -> None:
-        """Release what is still buffered as the pass ends; see ``IntermediateTextBuffer.finish``."""
-        if self._intermediate_buffer is not None:
-            await self._intermediate_buffer.finish(self._publish_intermediate_text)
-
-    async def _release_intermediate_text(self, preamble: PreparationTrace | None) -> None:
-        if self._intermediate_buffer is not None:
-            await self._intermediate_buffer.release(self._publish_intermediate_text, preamble)
-
-    async def _publish_intermediate_text(self, text: str) -> None:
-        await self._bus.publish(
-            InvocationMessage(
-                is_final=False,
-                is_intermediate=True,
-                origin=self._origin,
-                agent_name=self._agent_name,
-                text=text,
-                session_id=self._session_id,
-            )
-        )
 
     async def reject_hosted_attempt(
         self,
@@ -287,48 +251,10 @@ class SubAgentEventMiddleware(FunctionMiddleware):
             descriptors.append({key: value for key, value in descriptor.items() if value != ""})
         return descriptors
 
-    async def _publish_hosted_operation(self, operation: PresentationSinkOperation, origin: InvocationOrigin) -> None:
+    async def _publish_hosted_operation(
+        self, operation: PresentationSinkOperation, origin: InvocationOrigin, bridge: HostedPresentationBridge
+    ) -> None:
         """Map one hosted presentation operation to sub-agent events."""
-        if isinstance(operation, IntermediateTextOp):
-            presentation = None
-            if operation.provisional:
-                segment_id = operation.segment_ids[0] if operation.segment_ids else ""
-                presentation = ProvisionalPresentation(operation.attempt_id, segment_id)
-            await self._bus.publish(
-                InvocationMessage(
-                    is_final=False,
-                    is_intermediate=True,
-                    origin=origin,
-                    agent_name=self._agent_name,
-                    text=operation.text,
-                    presentation=presentation,
-                    session_id=self._session_id,
-                )
-            )
-            return
-        if isinstance(operation, PresentationAttemptAcceptedOp):
-            await self._bus.publish(
-                InvocationPresentationAttemptAccepted(
-                    origin=origin,
-                    agent_name=self._agent_name,
-                    attempt_id=operation.attempt_id,
-                    segment_ids=tuple(
-                        segment_id for segment in operation.segments for segment_id in segment.segment_ids
-                    ),
-                    session_id=self._session_id,
-                )
-            )
-            return
-        if isinstance(operation, PresentationAttemptRejectedOp):
-            await self._bus.publish(
-                InvocationPresentationAttemptRejected(
-                    origin=origin,
-                    agent_name=self._agent_name,
-                    attempt_id=operation.attempt_id,
-                    session_id=self._session_id,
-                )
-            )
-            return
         if isinstance(operation, FinalTextOp):
             return
         view = operation.view
@@ -342,6 +268,11 @@ class SubAgentEventMiddleware(FunctionMiddleware):
             "session_id": self._session_id,
         }
         if isinstance(operation, HostedToolStartOp):
+            # The call is seen while the update holding it passes on its way to the pass's text, so the text
+            # before it ends here: its segment closes before the card starts, as it does before a local call's.
+            # A card shown as its response fails or is given up follows text that never completed.
+            if self._end_text_segment is not None:
+                await self._end_text_segment("failed" if bridge.shows_failed_attempt else "completed")
             await self._bus.publish(
                 InvocationToolCallStart(
                     origin=origin,
@@ -554,8 +485,6 @@ class SubAgentEventMiddleware(FunctionMiddleware):
             tool_order = self._tool_invocation_order
         self._tool_invocation_order = max(self._tool_invocation_order, tool_order + 1)
         set_tool_invocation_order(context, tool_order)
-
-        await self._release_intermediate_text(preamble)
 
         provider_call_id = get_provider_call_id(context)
         call_id = get_call_id(context) or uuid4().hex[:_SHORT_ID_LEN]

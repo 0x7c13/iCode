@@ -83,7 +83,7 @@ async def test_hosted_shell_call_and_result_produce_one_lower_bound(stream: bool
     context = _make_context(stream=stream)
     fake = _FakeCallNext([response], stream=stream)
     fake.bind(context)
-    middleware = ResponseValidationMiddleware(backoff_schedule=[0.0])
+    middleware = ResponseValidationMiddleware()
     await middleware.process(context, fake)
     await _final_response(context, stream=stream)
     labels = middleware.hosted_commits_observed()

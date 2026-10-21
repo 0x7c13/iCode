@@ -1,47 +1,50 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for the response-validation middleware retry loop.
+"""Tests for the response-validation middleware: terminal verdicts on an unbuffered stream.
 
-Covers the three malformed-response shapes the user explicitly called out:
-
-1. ``contents == []`` — provider returned a message with no content items.
-2. Whitespace-only text — ``text=""`` or ``text="\\n\\n\\n"``.
-3. Leaked ``minimax:tool_call ... </minimax:tool_call>`` markers in text
-   (with text before, after, or surrounding the marker).
-
-Each scenario is exercised in **both** streaming and non-streaming modes,
-plus the fail-fast short-circuit on identical reasons and the observation
-hook contract.  The retry-exhaustion scrub lives in
-``test_response_validation_scrubbing.py``, the service-storage mode in
-``test_response_validation_service_storage.py``, and the pure validator
-rules in ``test_response_validators.py``.
+A response that ends without an answer fails the turn with its reason, once,
+without a second provider call; one that showed nothing is marked for the
+kernel wire caller's one resend. A stream passes through unchanged and is
+judged only when it finishes; a background response still running is not
+judged at all. Accepted-response scrubbing lives in
+``test_response_validation_scrubbing.py``, hosted-commit probes in
+``test_response_validation_service_storage.py``, filtered and failed provider
+responses in ``test_response_validation_failed_responses.py``, and the pure
+validator rules in ``test_response_validators.py``.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import pytest
 
-from chrys.foundation.retry import RetryAttemptInfo
+from chrys.foundation.errors.formatting import clean_error_message
+from chrys.foundation.trajectory.context import ExchangeTrace
+from chrys.foundation.trajectory.event_types import EventType
+from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.kernel import (
     ChatResponse,
     ChatResponseUpdate,
     Content,
+    Message,
     ResponseStream,
 )
+from chrys.kernel.middleware import ChatContext
 from chrys.service.agent_middleware.response_validation import (
-    MAX_RETRIES,
     ResponseValidationMiddleware,
-    RetryableResponseValidationError,
     TerminalResponseValidationError,
-    ValidationRetryExemption,
 )
 from chrys.service.agent_middleware.validators import (
     HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON,
     NO_VISIBLE_OUTPUT_REASON,
+    OUTPUT_TRUNCATED_REASON,
     REASONING_EXHAUSTED_OUTPUT_REASON,
+    UNNAMED_TOOL_CALL_REASON,
+    DefaultResponseValidator,
+    ValidationResult,
 )
 from chrys.service.context.middleware.usage import UsageTrackingMiddleware
 from tests.service.agent_middleware._response_validation_fakes import (
@@ -54,847 +57,451 @@ from tests.service.agent_middleware._response_validation_fakes import (
     _make_context,
     _ObservationHook,
     _search_without_final_text,
-    _semantic_updates,
-    _service_context,
-    _varied_bads,
+    _traced_context,
 )
+from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.waiting import wait_for
+
+_MODES = pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
+
+
+def _exchange(sink: FakeSink) -> ExchangeTrace:
+    return ExchangeTrace(make_context(sink).with_cycle(new_analytics_id()).with_exchange(new_analytics_id()))
+
+
+async def _judge(
+    middleware: ResponseValidationMiddleware, context: ChatContext, call_next: Callable[[], Awaitable[None]]
+) -> ChatResponse:
+    """One pass through *middleware*; a streamed result is drained to its final response."""
+    await middleware.process(context, call_next)
+    return await _final_response(context, stream=context.stream)
+
+
+async def _judge_over_usage(
+    validation: ResponseValidationMiddleware,
+    usage: UsageTrackingMiddleware,
+    context: ChatContext,
+    provider: Callable[[], Awaitable[None]],
+) -> ChatResponse:
+    """The production order: usage sits below validation, closest to the provider."""
+
+    async def _usage_next() -> None:
+        await usage.process(context, provider)
+
+    return await _judge(validation, context, _usage_next)
+
+
+class _UsageCalls:
+    """``on_usage`` double recording each counted (input, output) pair."""
+
+    def __init__(self) -> None:
+        self.counted: list[tuple[int, int]] = []
+
+    def __call__(self, total: int, input_tokens: int, output_tokens: int, *_calibration: Any) -> None:
+        self.counted.append((input_tokens, output_tokens))
+
+
+def _stream_of(
+    updates: list[ChatResponseUpdate], final: ChatResponse | None = None
+) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
+    """A provider stream yielding *updates*, finalized to *final* or to what they assemble."""
+
+    async def _gen() -> AsyncIterator[ChatResponseUpdate]:
+        for update in updates:
+            yield update
+
+    return ResponseStream(_gen(), finalizer=ChatResponse.from_updates if final is None else lambda _updates: final)
+
 
 # ---------------------------------------------------------------------------
-# Middleware — non-streaming retries
+# Terminal verdicts — each rejection fails the turn with its reason, once
 # ---------------------------------------------------------------------------
 
+_REJECTED = [
+    pytest.param(_bad_empty, "empty contents", id="empty_contents"),
+    pytest.param(_bad_whitespace, "empty or whitespace-only text response", id="whitespace"),
+    pytest.param(
+        lambda: _assistant([Content.from_text_reasoning(text="private thought")]),
+        NO_VISIBLE_OUTPUT_REASON,
+        id="reasoning_only",
+    ),
+    pytest.param(
+        lambda: _assistant_truncated([Content.from_text_reasoning(text="thinking harder")]),
+        REASONING_EXHAUSTED_OUTPUT_REASON,
+        id="reasoning_exhausted",
+    ),
+    pytest.param(_search_without_final_text, HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON, id="hosted_evidence_only"),
+    pytest.param(lambda: _assistant_truncated([]), OUTPUT_TRUNCATED_REASON, id="output_truncated"),
+    pytest.param(
+        lambda: _assistant([Content.from_function_call("call_1", "", arguments="{}")]),
+        UNNAMED_TOOL_CALL_REASON,
+        id="unnamed_tool_call",
+    ),
+    pytest.param(
+        lambda: ChatResponse(messages=[], finish_reason="stop"), "no assistant message in response", id="no_message"
+    ),
+]
+# The verdicts on a response that showed nothing: no answer text, no call.
+_BLANK_REASONS = {
+    "empty contents",
+    "empty or whitespace-only text response",
+    NO_VISIBLE_OUTPUT_REASON,
+    REASONING_EXHAUSTED_OUTPUT_REASON,
+    "no assistant message in response",
+}
 
-class TestMiddlewareNonStreaming:
-    async def test_valid_first_try_no_retry(self) -> None:
-        good = _assistant([Content.from_text("all good")])
-        fake = _FakeCallNext([good], stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
 
-        mw = ResponseValidationMiddleware()
-        await mw.process(ctx, fake)
+class TestTerminalVerdicts:
+    @pytest.mark.parametrize(("build", "reason"), _REJECTED)
+    @_MODES
+    async def test_a_response_without_an_answer_fails_once_without_resampling(
+        self, stream: bool, build: Callable[[], ChatResponse], reason: str
+    ) -> None:
+        sink = FakeSink()
+        fake = _FakeCallNext([build(), _assistant([Content.from_text("must stay unused")])], stream=stream)
+        context = _traced_context(stream, _exchange(sink))
+        fake.bind(context)
+        hook = _ObservationHook()
+
+        with pytest.raises(TerminalResponseValidationError) as raised:
+            await _judge(ResponseValidationMiddleware(observation_hook=hook), context, fake)
 
         assert fake.call_count == 1
-        assert isinstance(ctx.result, ChatResponse)
-        assert ctx.result.messages[0].contents[0].text == "all good"
+        assert str(raised.value) == reason
+        assert raised.value.blank_response is (reason in _BLANK_REASONS)
+        # The reason is the error the turn shows: nothing is chained before it.
+        assert raised.value.__cause__ is None
+        assert raised.value.__context__ is None
+        assert clean_error_message(raised.value) == reason
+        assert [event for event in hook.events if event[0] == "rejected"] == [("rejected", reason)]
+        [finished] = sink.of_type(EventType.MODEL_VALIDATION_FINISHED)
+        assert finished.payload["outcome"] == "rejected"
+        # Only the verdict: a resend is the retry owner's decision, recorded by its own event.
+        assert "retryable" not in finished.payload
+        assert "gave_up" not in finished.payload
 
-    async def test_search_without_final_text_retried_then_valid(self) -> None:
-        bad = _search_without_final_text()
-        good = _assistant([Content.from_text("recovered answer")])
-        fake = _FakeCallNext([bad, good], stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
+    @_MODES
+    async def test_a_valid_response_passes_with_one_call(self, stream: bool) -> None:
+        sink = FakeSink()
+        fake = _FakeCallNext([_assistant([Content.from_text("all good")])], stream=stream)
+        context = _traced_context(stream, _exchange(sink))
+        fake.bind(context)
 
-        retries: list[RetryAttemptInfo] = []
+        final = await _judge(ResponseValidationMiddleware(), context, fake)
 
-        async def on_retry(info: RetryAttemptInfo) -> None:
-            retries.append(info)
+        assert fake.call_count == 1
+        assert final.text == "all good"
+        [finished] = sink.of_type(EventType.MODEL_VALIDATION_FINISHED)
+        assert finished.payload["outcome"] == "accepted"
+        assert "gave_up" not in finished.payload
 
-        mw = ResponseValidationMiddleware(publish_retry=on_retry, backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'Here goes:\nminimax:tool_call {"x":1} </minimax:tool_call>\nend',
+            "<tool_use>bad</tool_use>",
+            "<function_call>garbage</function_call>",
+        ],
+        ids=["minimax_marker", "tool_use_marker", "function_call_marker"],
+    )
+    @_MODES
+    async def test_answer_text_is_never_judged_by_what_it_says(self, stream: bool, text: str) -> None:
+        fake = _FakeCallNext([_assistant([Content.from_text(text)])], stream=stream)
+        context = _make_context(stream=stream)
+        fake.bind(context)
 
-        assert fake.call_count == 2
-        assert isinstance(ctx.result, ChatResponse)
-        assert ctx.result.messages[0].contents[0].text == "recovered answer"
-        assert [retry.reason for retry in retries] == [HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON]
+        final = await _judge(ResponseValidationMiddleware(), context, fake)
 
-    async def test_truncated_empty_response_raises_terminal_without_retry(self) -> None:
-        # finish_reason="length" + empty output is terminal: give up on the first
-        # attempt (no retry, no backoff) by raising into the executor error path.
-        # This avoids the retry channel and avoids returning an empty assistant
-        # response that the UI would render as a blank Code Agent block.
-        truncated = _assistant_truncated([])
-        truncated.usage_details = {"input_token_count": 11, "total_token_count": 11}
-        fake = _FakeCallNext([truncated], stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
+        assert fake.call_count == 1
+        assert final.text == text
 
-        retries: list[RetryAttemptInfo] = []
-
-        async def on_retry(info: RetryAttemptInfo) -> None:
-            retries.append(info)
-
-        mw = ResponseValidationMiddleware(
-            publish_retry=on_retry,
-            backoff_schedule=[0.0],
+    @_MODES
+    async def test_a_background_response_still_running_is_accepted_without_a_verdict(self, stream: bool) -> None:
+        sink = FakeSink()
+        running = ChatResponse(
+            messages=[Message(role="assistant", contents=[])], continuation_token={"response_id": "resp_1"}
         )
-        with pytest.raises(TerminalResponseValidationError, match="output token limit") as exc_info:
-            await mw.process(ctx, fake)
+        fake = _FakeCallNext([running], stream=stream)
+        context = _traced_context(stream, _exchange(sink))
+        fake.bind(context)
+        hook = _ObservationHook()
 
-        assert fake.call_count == 1, "terminal failure must not retry"
-        assert retries == [], "terminal failure must not use the retry channel"
-        assert exc_info.value.usage_details == {"input_token_count": 11, "total_token_count": 11}
+        final = await _judge(ResponseValidationMiddleware(observation_hook=hook), context, fake)
 
-    async def test_reasoning_only_exhaustion_raises_terminal(self) -> None:
-        # Alternating stop/length reasoning-only responses carry distinct
-        # reasons, so the short-circuit never fires and the loop runs the full
-        # MAX_RETRIES retries before the terminal give-up raise.
-        stop_flavor = _assistant([Content.from_text_reasoning(text="thinking")])
-        length_flavor = _assistant_truncated([Content.from_text_reasoning(text="thinking harder")])
-        responses = [stop_flavor if i % 2 == 0 else length_flavor for i in range(MAX_RETRIES + 1)]
-        fake = _FakeCallNext(responses, stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
+        assert fake.call_count == 1
+        assert final.continuation_token == {"response_id": "resp_1"}
+        assert sink.of_type(EventType.MODEL_VALIDATION_FINISHED) == []
+        assert hook.events[-1] == ("accepted", ((),))
+        assert not any(event[0] == "rejected" for event in hook.events)
 
-        retries: list[RetryAttemptInfo] = []
-
-        async def on_retry(info: RetryAttemptInfo) -> None:
-            retries.append(info)
-
-        mw = ResponseValidationMiddleware(publish_retry=on_retry, backoff_schedule=[0.0])
-        with pytest.raises(TerminalResponseValidationError):
-            await mw.process(ctx, fake)
-
-        assert fake.call_count == MAX_RETRIES + 1
-        assert len(retries) == MAX_RETRIES
-        assert retries[0].reason == NO_VISIBLE_OUTPUT_REASON
-        assert retries[1].reason == REASONING_EXHAUSTED_OUTPUT_REASON
-
-    async def test_exhaustion_drops_empty_assistant_message(self) -> None:
-        """After MAX_RETRIES retries of (varied) bad responses, the bad
-        assistant message is dropped on the give-up path so it does not
-        land in persisted history next to the engine's turn marker.
-
-        Uses ``_varied_bads`` so consecutive attempts have distinct
-        validator reasons — fail-fast does not short-circuit and the
-        loop reaches MAX_RETRIES exhaustion as intended.  ``last``
-        forces the final attempt's response to be empty so the give-up
-        cleanup demonstrably drops it.
-        """
-        responses = _varied_bads(MAX_RETRIES + 1, last=_bad_empty())
-        fake = _FakeCallNext(responses, stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
-
-        retries: list[str] = []
-
-        async def on_retry(info: RetryAttemptInfo) -> None:
-            retries.append(info.reason)
-
-        mw = ResponseValidationMiddleware(publish_retry=on_retry, backoff_schedule=[0.0])
-        # Must NOT raise — per spec, on exhaustion we return without re-raising.
-        await mw.process(ctx, fake)
-
-        # One initial + MAX_RETRIES retries = MAX_RETRIES + 1 total call_next invocations.
-        assert fake.call_count == MAX_RETRIES + 1
-        # Retry events fire only on the retries themselves, not on the final attempt.
-        assert len(retries) == MAX_RETRIES
-        # The give-up path scrubs the empty assistant message so the
-        # framework's after_run never appends it to history.
-        assert isinstance(ctx.result, ChatResponse)
-        assert ctx.result.messages == []
-
-    async def test_publish_retry_receives_correct_metadata(self) -> None:
-        # Distinct reasons on each bad attempt so fail-fast does not
-        # short-circuit the loop before we observe two retry events.
-        good = _assistant([Content.from_text("ok")])
-        fake = _FakeCallNext([_bad_empty(), _bad_whitespace(), good], stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
-
-        recorded: list[RetryAttemptInfo] = []
-
-        async def on_retry(info: RetryAttemptInfo) -> None:
-            recorded.append(info)
-
-        mw = ResponseValidationMiddleware(
-            publish_retry=on_retry,
-            max_retries=3,
-            backoff_schedule=[0.0, 0.0, 0.0],
+    @_MODES
+    async def test_the_poll_that_finishes_a_background_response_is_judged(self, stream: bool) -> None:
+        fake = _FakeCallNext([_bad_empty()], stream=stream)
+        context = ChatContext(
+            client=None,  # type: ignore[arg-type]
+            messages=[Message("user", ["hi"])],
+            options={"continuation_token": {"response_id": "resp_1"}},
+            stream=stream,
         )
-        await mw.process(ctx, fake)
+        fake.bind(context)
+        hook = _ObservationHook()
 
-        assert [r.attempt for r in recorded] == [1, 2]  # attempt numbers are 1-based
-        assert all(r.max_attempts == 3 for r in recorded)
+        with pytest.raises(TerminalResponseValidationError, match="empty contents"):
+            await _judge(ResponseValidationMiddleware(observation_hook=hook), context, fake)
 
-    async def test_publish_retry_exception_does_not_break_loop(self) -> None:
-        """A raising publish_retry must not prevent retry from happening."""
-        bad = _assistant([])
-        good = _assistant([Content.from_text("ok")])
-        fake = _FakeCallNext([bad, good], stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
-
-        async def bad_publish(_info: RetryAttemptInfo) -> None:
-            raise RuntimeError("telemetry broke")
-
-        mw = ResponseValidationMiddleware(publish_retry=bad_publish, backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
-
-        assert fake.call_count == 2
-        assert ctx.result.messages[0].contents[0].text == "ok"
+        # A poll resumes the response an earlier request began: no new response starts.
+        assert hook.events[0] == ("started", True)
+        assert not any(event[0] == "response" for event in hook.events)
 
 
 # ---------------------------------------------------------------------------
-# Middleware — streaming retries (consume, replay, retry)
+# Streaming — updates pass through as they arrive; the finished stream is judged
 # ---------------------------------------------------------------------------
 
 
-class TestMiddlewareStreaming:
-    async def test_valid_first_try_replay_stream_works(self) -> None:
-        good = _assistant([Content.from_text("streaming good")])
-        fake = _FakeCallNext([good], stream=True)
-        ctx = _make_context(stream=True)
-        fake.bind(ctx)
-
-        mw = ResponseValidationMiddleware()
-        await mw.process(ctx, fake)
-
-        # Caller sees a ResponseStream — must be iterable and finalizable.
-        assert isinstance(ctx.result, ResponseStream)
-        replayed_updates = [u async for u in ctx.result]
-        assert len(_semantic_updates(replayed_updates)) == 1
-        final = await ctx.result.get_final_response()
-        assert final.messages[0].contents[0].text == "streaming good"
-
-    async def test_rejected_provider_raw_payload_never_leaks_through_heartbeats(self) -> None:
-        """Only opaque markers cross validation before an attempt is accepted."""
-        rejected_raw = {"generated": "rejected secret"}
-        accepted_raw = {"event": "accepted provider metadata"}
-        attempt_updates = [
-            [
-                ChatResponseUpdate(
-                    contents=[Content.from_text("   ")],
-                    role="assistant",
-                    raw_representation=rejected_raw,
-                )
-            ],
-            [
-                ChatResponseUpdate(contents=[], raw_representation=accepted_raw),
-                ChatResponseUpdate(contents=[Content.from_text("accepted")], role="assistant"),
-            ],
-        ]
-        attempt = 0
-        ctx = _make_context(stream=True)
-
-        async def _call_next() -> None:
-            nonlocal attempt
-            updates = attempt_updates[attempt]
-            attempt += 1
-
-            async def _gen() -> AsyncIterator[ChatResponseUpdate]:
-                for update in updates:
-                    yield update
-
-            ctx.result = ResponseStream(_gen(), finalizer=ChatResponse.from_updates)
-
-        await ResponseValidationMiddleware(backoff_schedule=[0.0]).process(ctx, _call_next)
-        assert isinstance(ctx.result, ResponseStream)
-        visible = [update async for update in ctx.result]
-
-        assert attempt == 2
-        assert visible[0].is_transport_heartbeat
-        assert all(update.raw_representation is not rejected_raw for update in visible)
-        accepted_raw_index = next(
-            index for index, update in enumerate(visible) if update.raw_representation is accepted_raw
-        )
-        assert all(update.is_transport_heartbeat for update in visible[:accepted_raw_index])
-
-    async def test_truncated_empty_stream_normalizes_usage_before_terminal_error(self) -> None:
-        usage_start = ChatResponseUpdate(
-            contents=[
-                Content.from_usage(usage_details={"input_token_count": 100, "output_token_count": 1}),
-            ],
-            role="assistant",
-        )
-        usage_final = ChatResponseUpdate(
-            contents=[
-                Content.from_usage(usage_details={"output_token_count": 7}),
-            ],
-            role="assistant",
-        )
-        terminal = ChatResponseUpdate(contents=[], role="assistant", finish_reason="length")
+class TestStreamingPassthrough:
+    async def test_each_update_reaches_the_consumer_before_the_stream_ends(self) -> None:
+        first = ChatResponseUpdate(contents=[Content.from_text("first ")], role="assistant")
+        last = ChatResponseUpdate(contents=[Content.from_text("second")], role="assistant")
+        release = asyncio.Event()
 
         async def _gen() -> AsyncIterator[ChatResponseUpdate]:
-            yield usage_start
-            yield usage_final
-            yield terminal
+            yield first
+            await release.wait()
+            yield last
 
-        ctx = _make_context(stream=True)
-
-        async def _call_next() -> None:
-            ctx.result = ResponseStream(_gen(), finalizer=ChatResponse.from_updates)
-
-        mw = ResponseValidationMiddleware(backoff_schedule=[0.0])
-        await mw.process(ctx, _call_next)
-        assert isinstance(ctx.result, ResponseStream)
-        stream = ctx.result
-        with pytest.raises(TerminalResponseValidationError, match="output token limit") as exc_info:
-            await stream.get_final_response()
-
-        assert exc_info.value.usage_details == {"input_token_count": 100, "output_token_count": 7}
-
-    async def test_usage_cleanup_failure_does_not_mask_terminal_stream_error(self) -> None:
-        usage_update = ChatResponseUpdate(
-            contents=[
-                Content.from_usage(usage_details={"input_token_count": 100, "output_token_count": 1}),
-            ],
-            role="assistant",
-        )
-        terminal = ChatResponseUpdate(contents=[], role="assistant", finish_reason="length")
-
-        async def _gen() -> AsyncIterator[ChatResponseUpdate]:
-            yield usage_update
-            yield terminal
-
-        ctx = _make_context(stream=True)
+        provider_stream = ResponseStream(_gen(), finalizer=ChatResponse.from_updates)
+        context = _make_context(stream=True)
 
         async def _call_next() -> None:
-            ctx.result = ResponseStream(_gen(), finalizer=ChatResponse.from_updates)
+            context.result = provider_stream
 
-        validation = ResponseValidationMiddleware(backoff_schedule=[0.0])
+        await ResponseValidationMiddleware().process(context, _call_next)
+        assert context.result is provider_stream
+        seen: list[ChatResponseUpdate] = []
 
-        async def _validation_next() -> None:
-            await validation.process(ctx, _call_next)
+        async def _consume() -> ChatResponse:
+            async for update in provider_stream:
+                seen.append(update)
+            return await provider_stream.get_final_response()
 
-        usage_calls: list[tuple[Any, ...]] = []
+        consumer = asyncio.create_task(_consume())
+        try:
+            await wait_for(lambda: seen or consumer.done(), description="first streamed update")
+            if consumer.done():
+                await consumer  # surfaces an early failure
+            assert len(seen) == 1
+            assert seen[0] is first
+            assert not consumer.done()
+        finally:
+            release.set()
+            final = await consumer
 
-        def _on_usage(*args: Any) -> None:
-            usage_calls.append(args)
-            raise RuntimeError("usage callback failed")
+        assert len(seen) == 2
+        assert seen[1] is last
+        assert final.text == "first second"
 
-        await UsageTrackingMiddleware(on_usage=_on_usage).process(ctx, _validation_next)
-
-        assert isinstance(ctx.result, ResponseStream)
-        with pytest.raises(TerminalResponseValidationError, match="output token limit") as exc_info:
-            await ctx.result.get_final_response()
-
-        assert exc_info.value.usage_details == {"input_token_count": 100, "output_token_count": 1}
-        assert usage_calls
-        assert usage_calls[0][1] == 100
-        assert usage_calls[0][2] == 1
-
-    async def test_service_retry_usage_counted_before_reraise(self) -> None:
-        """A service-side retryable failure bills its rejected attempt like a terminal one."""
-        err = RetryableResponseValidationError(
-            "stored response invalid",
-            exemption=ValidationRetryExemption(attempt=1, max_attempts=3, delay_seconds=1),
-            usage_details={"input_token_count": 17, "output_token_count": 4},
-        )
-        ctx = _make_context(stream=False)
-
-        async def _failing_next() -> None:
-            raise err
-
-        usage_calls: list[tuple[Any, ...]] = []
-
-        def _on_usage(*args: Any) -> None:
-            usage_calls.append(args)
-
-        with pytest.raises(RetryableResponseValidationError) as exc_info:
-            await UsageTrackingMiddleware(on_usage=_on_usage).process(ctx, _failing_next)
-
-        assert exc_info.value is err
-        assert usage_calls
-        assert usage_calls[0][1] == 17
-        assert usage_calls[0][2] == 4
-
-    async def test_service_retry_stream_usage_counted_during_cleanup(self) -> None:
-        """Streaming service-side failures bill the rejected attempt from the stream error."""
-        usage_update = ChatResponseUpdate(
-            contents=[
-                Content.from_usage(usage_details={"input_token_count": 17, "output_token_count": 4}),
-            ],
-            role="assistant",
-        )
-        empty = ChatResponseUpdate(contents=[], role="assistant")
-
-        async def _gen() -> AsyncIterator[ChatResponseUpdate]:
-            yield usage_update
-            yield empty
-
-        ctx = _service_context(stream=True)
+    async def test_a_rejected_stream_shows_what_it_streamed_then_fails_at_its_end(self) -> None:
+        raw = {"generated": "   "}
+        blank = ChatResponseUpdate(contents=[Content.from_text("   ")], role="assistant", raw_representation=raw)
+        context = _make_context(stream=True)
+        calls = 0
 
         async def _call_next() -> None:
-            ctx.result = ResponseStream(_gen(), finalizer=ChatResponse.from_updates)
+            nonlocal calls
+            calls += 1
+            context.result = _stream_of([blank])
 
-        validation = ResponseValidationMiddleware(backoff_schedule=[0.0])
+        await ResponseValidationMiddleware().process(context, _call_next)
+        assert isinstance(context.result, ResponseStream)
+        seen: list[ChatResponseUpdate] = []
+        with pytest.raises(TerminalResponseValidationError, match="whitespace-only") as raised:
+            async for update in context.result:
+                seen.append(update)
 
-        async def _validation_next() -> None:
-            await validation.process(ctx, _call_next)
+        assert calls == 1
+        assert len(seen) == 1
+        assert seen[0] is blank
+        assert seen[0].raw_representation is raw
+        assert raised.value.__context__ is None
 
-        usage_calls: list[tuple[Any, ...]] = []
-
-        def _on_usage(*args: Any) -> None:
-            usage_calls.append(args)
-
-        await UsageTrackingMiddleware(on_usage=_on_usage).process(ctx, _validation_next)
-        assert isinstance(ctx.result, ResponseStream)
-        with pytest.raises(RetryableResponseValidationError) as exc_info:
-            await ctx.result.get_final_response()
-
-        assert exc_info.value.usage_details == {"input_token_count": 17, "output_token_count": 4}
-        assert usage_calls
-        assert usage_calls[0][1] == 17
-        assert usage_calls[0][2] == 4
-
-    async def test_stream_exhaustion_drops_empty_assistant_message(self) -> None:
-        """Streaming exhaustion: replay stream still iterable, but both
-        the finalised response AND the scrubbed updates are empty so
-        consumers using ``ChatResponse.from_updates`` cannot
-        rebuild the bad message.
-
-        Without filtering updates, the streaming wrapper would replay
-        the original empty-content update and then ``from_updates``
-        would re-create the same ``content: []`` assistant message we
-        just dropped from ``response.messages``.
-
-        Uses ``_varied_bads`` to walk distinct validator reasons so the
-        fail-fast short-circuit does not fire and the loop reaches
-        MAX_RETRIES exhaustion.  ``last`` pins the final attempt to an
-        empty response so the give-up cleanup demonstrably drops it.
-        """
-        responses = _varied_bads(MAX_RETRIES + 1, last=_bad_empty())
-        fake = _FakeCallNext(responses, stream=True)
-        ctx = _make_context(stream=True)
-        fake.bind(ctx)
-
-        mw = ResponseValidationMiddleware(backoff_schedule=[0.0])
-        await mw.process(ctx, fake)  # must NOT raise
-
-        assert isinstance(ctx.result, ResponseStream)
-        # Empty semantic updates were filtered out — only transport heartbeats
-        # remain. A consumer rebuilding with ChatResponse.from_updates
-        # would re-create the bad message from any leftover empty update,
-        # even if the replay stream's final response was already scrubbed.
-        updates = [u async for u in ctx.result]
-        assert fake.call_count == MAX_RETRIES + 1
-        assert _semantic_updates(updates) == []
-        # And the finalised response is empty too.
-        final = await ctx.result.get_final_response()
-        assert final.messages == []
-
-    async def test_inner_result_hook_fires_only_on_caller_finalize(self) -> None:
-        """The inner stream's result_hook MUST NOT fire while the middleware
-        is draining + validating.  It must fire only when the caller finalises
-        the replay — matching the original (no-middleware) ordering.
-
-        Regression guard: without this, provider-installed hooks (e.g. the
-        mock client's intermediate-text sync callback, which bumps
-        ``IntermediateTextBuffer.batch_id``) fire too early and break
-        chrys's streaming intermediate-text detection.
-        """
-        # Build a ChatResponse we expect to survive validation.
+    async def test_the_provider_result_hook_fires_once_when_the_caller_finalizes(self) -> None:
         good = _assistant([Content.from_text("once")])
-
-        # Track exactly when the inner's result_hook fires.
-        hook_fired_count = 0
-
-        def _inner_hook(response: ChatResponse) -> ChatResponse:
-            nonlocal hook_fired_count
-            hook_fired_count += 1
-            return response
-
-        # Build an inner stream with a result_hook attached, just like
-        # real providers / the MockChatClient do.
-        updates = [ChatResponseUpdate(contents=good.messages[0].contents, role="assistant")]
-
-        async def _gen() -> AsyncIterator[ChatResponseUpdate]:
-            for u in updates:
-                yield u
-
-        inner_stream = ResponseStream(_gen(), finalizer=lambda _u: good)
-        inner_stream.with_result_hook(_inner_hook)
-
-        # Custom call_next that returns this specific inner stream.
-        ctx = _make_context(stream=True)
-
-        async def _call_next() -> None:
-            ctx.result = inner_stream
-
-        mw = ResponseValidationMiddleware()
-        await mw.process(ctx, _call_next)
-
-        # Hook must NOT have fired yet — validation uses a preview finalize
-        # that bypasses hooks.
-        assert hook_fired_count == 0
-
-        # Iterate + finalise the replay.  NOW the inner's hook should fire,
-        # since the replay inherits it.
-        assert isinstance(ctx.result, ResponseStream)
-        _ = [u async for u in ctx.result]
-        await ctx.result.get_final_response()
-
-        assert hook_fired_count == 1
-
-    async def test_inner_result_hook_runs_before_outer_result_hooks(self) -> None:
-        """Provider finalization must populate usage before UsageTracking runs."""
-        good = _assistant([Content.from_text("once")])
-        updates = [ChatResponseUpdate(contents=good.messages[0].contents, role="assistant")]
-        hook_order: list[str] = []
-        outer_usage: list[tuple[int, int]] = []
-
-        async def _gen() -> AsyncIterator[ChatResponseUpdate]:
-            for update in updates:
-                yield update
+        fired = 0
 
         def _provider_hook(response: ChatResponse) -> ChatResponse:
-            hook_order.append("provider")
+            nonlocal fired
+            fired += 1
+            return response
+
+        provider_stream = _stream_of([ChatResponseUpdate(contents=good.messages[0].contents, role="assistant")])
+        provider_stream.with_result_hook(_provider_hook)
+        context = _make_context(stream=True)
+
+        async def _call_next() -> None:
+            context.result = provider_stream
+
+        await ResponseValidationMiddleware().process(context, _call_next)
+        assert fired == 0
+
+        assert isinstance(context.result, ResponseStream)
+        _ = [update async for update in context.result]
+        await context.result.get_final_response()
+
+        assert fired == 1
+
+    async def test_provider_and_usage_finalize_before_validation_judges(self) -> None:
+        order: list[str] = []
+
+        class _OrderRecordingValidator:
+            def validate(self, response: ChatResponse) -> ValidationResult:
+                order.append("validation")
+                return DefaultResponseValidator().validate(response)
+
+        def _provider_hook(response: ChatResponse) -> ChatResponse:
+            order.append("provider")
             response.usage_details = {"input_token_count": 11, "output_token_count": 3}
             return response
 
-        inner_stream = ResponseStream(_gen(), finalizer=lambda _updates: good)
-        inner_stream.with_result_hook(_provider_hook)
-        ctx = _make_context(stream=True)
+        good = _assistant([Content.from_text("once")])
+        provider_stream = _stream_of([ChatResponseUpdate(contents=good.messages[0].contents, role="assistant")], good)
+        provider_stream.with_result_hook(_provider_hook)
+        context = _make_context(stream=True)
 
-        async def _call_next() -> None:
-            ctx.result = inner_stream
+        async def _provider() -> None:
+            context.result = provider_stream
 
-        validation = ResponseValidationMiddleware()
+        usage_calls = _UsageCalls()
 
-        async def _validation_next() -> None:
-            await validation.process(ctx, _call_next)
+        def _on_usage(total: int, input_tokens: int, output_tokens: int, *calibration: Any) -> None:
+            order.append("usage")
+            usage_calls(total, input_tokens, output_tokens, *calibration)
 
-        def _on_usage(_total: int, input_tokens: int, output_tokens: int, *_args: Any) -> None:
-            hook_order.append("usage")
-            outer_usage.append((input_tokens, output_tokens))
+        await _judge_over_usage(
+            ResponseValidationMiddleware(validator=_OrderRecordingValidator()),
+            UsageTrackingMiddleware(on_usage=_on_usage),
+            context,
+            _provider,
+        )
 
-        await UsageTrackingMiddleware(on_usage=_on_usage).process(ctx, _validation_next)
-        assert isinstance(ctx.result, ResponseStream)
-        proxy = ctx.result
-        await proxy.get_final_response()
-
-        assert hook_order == ["provider", "usage"]
-        assert outer_usage == [(11, 3)]
-
-    async def test_inner_hook_does_not_fire_for_dropped_bad_attempts(self) -> None:
-        """A failed validation attempt must NOT run the inner's result_hooks.
-
-        Running them would double-fire telemetry / intermediate-text
-        capture for responses the caller never sees.
-        """
-        bad = _assistant([])  # empty contents — invalid
-        good = _assistant([Content.from_text("recovered")])
-
-        hook_fired = 0
-
-        def _inner_hook(response: ChatResponse) -> ChatResponse:
-            nonlocal hook_fired
-            hook_fired += 1
-            return response
-
-        responses = [bad, good]
-        stream_idx = 0
-
-        async def _call_next() -> None:
-            nonlocal stream_idx
-            resp = responses[min(stream_idx, len(responses) - 1)]
-            stream_idx += 1
-            updates = [ChatResponseUpdate(contents=resp.messages[0].contents, role="assistant")]
-
-            async def _gen() -> AsyncIterator[ChatResponseUpdate]:
-                for u in updates:
-                    yield u
-
-            inner = ResponseStream(_gen(), finalizer=lambda _u, r=resp: r)
-            inner.with_result_hook(_inner_hook)
-            ctx.result = inner
-
-        ctx = _make_context(stream=True)
-        mw = ResponseValidationMiddleware(backoff_schedule=[0.0])
-        await mw.process(ctx, _call_next)
-
-        # Before caller finalises the replay, no inner hook has fired.
-        assert hook_fired == 0
-
-        _ = [u async for u in ctx.result]  # type: ignore[union-attr]
-        await ctx.result.get_final_response()  # type: ignore[union-attr]
-
-        # Only the SUCCESSFUL (final, good) attempt's hook fires — not
-        # the dropped bad attempt's.
-        assert hook_fired == 1
+        assert order == ["provider", "usage", "validation"]
+        assert usage_calls.counted == [(11, 3)]
 
 
 # ---------------------------------------------------------------------------
-# Malformed shapes retried in both modes
+# Usage — the middleware below validation counts every landed response once
 # ---------------------------------------------------------------------------
 
 
-class TestMalformedShapeRetries:
-    """Retry-then-recover twins that behave the same way in streaming and
-    non-streaming mode, parametrized on ``stream``."""
+class TestRejectedResponseUsage:
+    @_MODES
+    async def test_a_rejected_response_is_counted_once(self, stream: bool) -> None:
+        truncated = _assistant_truncated([])
+        truncated.usage_details = {"input_token_count": 11, "output_token_count": 0, "total_token_count": 11}
+        fake = _FakeCallNext([truncated], stream=stream)
+        context = _make_context(stream=stream)
+        fake.bind(context)
+        usage_calls = _UsageCalls()
 
-    @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
-    async def test_empty_contents_retried_then_valid(self, stream: bool) -> None:
-        bad = _assistant([])
-        good = _assistant([Content.from_text("recovered")])
-        fake = _FakeCallNext([bad, good], stream=stream)
-        ctx = _make_context(stream=stream)
-        fake.bind(ctx)
+        with pytest.raises(TerminalResponseValidationError, match="output token limit"):
+            await _judge_over_usage(
+                ResponseValidationMiddleware(), UsageTrackingMiddleware(on_usage=usage_calls), context, fake
+            )
 
-        retries: list[RetryAttemptInfo] = []
+        assert fake.call_count == 1
+        assert usage_calls.counted == [(11, 0)]
 
-        async def on_retry(info: RetryAttemptInfo) -> None:
-            retries.append(info)
+    async def test_streamed_usage_snapshots_collapse_into_one_count_before_the_rejection(self) -> None:
+        updates = [
+            ChatResponseUpdate(
+                contents=[Content.from_usage(usage_details={"input_token_count": 100, "output_token_count": 1})],
+                role="assistant",
+            ),
+            ChatResponseUpdate(
+                contents=[Content.from_usage(usage_details={"output_token_count": 7})], role="assistant"
+            ),
+            ChatResponseUpdate(contents=[], role="assistant", finish_reason="length"),
+        ]
+        context = _make_context(stream=True)
 
-        mw = ResponseValidationMiddleware(publish_retry=on_retry, backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
+        async def _provider() -> None:
+            context.result = _stream_of(updates)
 
-        final = await _final_response(ctx, stream=stream)
-        assert fake.call_count == 2
-        assert final.messages[0].contents[0].text == "recovered"
-        assert len(retries) == 1
-        assert "empty contents" in retries[0].reason
+        usage_calls = _UsageCalls()
+        with pytest.raises(TerminalResponseValidationError, match="output token limit"):
+            await _judge_over_usage(
+                ResponseValidationMiddleware(), UsageTrackingMiddleware(on_usage=usage_calls), context, _provider
+            )
 
-    @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
-    async def test_reasoning_only_response_retries_then_succeeds(self, stream: bool) -> None:
-        # A reasoning-only final response is a transient over-thinking
-        # failure — retry it like the other malformed shapes instead of
-        # terminating the run on first sight.  In streaming mode the retry
-        # happens inside the lazy validating proxy instead of failing the
-        # stream.
-        reasoning_only = _assistant([Content.from_text_reasoning(text="private thought")])
-        good = _assistant([Content.from_text("recovered answer")])
-        fake = _FakeCallNext([reasoning_only, good], stream=stream)
-        ctx = _make_context(stream=stream)
-        fake.bind(ctx)
+        assert usage_calls.counted == [(100, 7)]
 
-        retries: list[RetryAttemptInfo] = []
 
-        async def on_retry(info: RetryAttemptInfo) -> None:
-            retries.append(info)
+# ---------------------------------------------------------------------------
+# Output truncation — the next request compacts first when the input left no room
+# ---------------------------------------------------------------------------
 
-        mw = ResponseValidationMiddleware(publish_retry=on_retry, backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
 
-        final = await _final_response(ctx, stream=stream)
-        assert fake.call_count == 2
-        assert final.messages[0].contents[0].text == "recovered answer"
-        assert [r.reason for r in retries] == [NO_VISIBLE_OUTPUT_REASON]
+class _OverflowNotes:
+    """``ContextOverflowSink`` double counting the notes it is handed."""
 
+    def __init__(self) -> None:
+        self.notes = 0
+
+    def note_context_overflow(self, exc: BaseException | None = None) -> bool:
+        self.notes += 1
+        return True
+
+
+class TestOutputTruncatedNote:
     @pytest.mark.parametrize(
-        ("stream", "build", "match"),
+        ("build", "usage", "notes"),
         [
-            pytest.param(False, _assistant, "no visible answer", id="non_stream"),
-            pytest.param(True, _assistant_truncated, "output token limit while reasoning", id="stream"),
+            pytest.param(lambda: _assistant_truncated([]), None, 1, id="nothing_generated"),
+            pytest.param(
+                lambda: _assistant_truncated([]),
+                {"output_token_count": 4096, "reasoning_output_token_count": 4096},
+                0,
+                id="hidden_reasoning_counted",
+            ),
+            pytest.param(
+                lambda: _assistant_truncated([Content.from_text_reasoning(text="thinking")]),
+                None,
+                0,
+                id="reasoning_shown",
+            ),
+            pytest.param(_bad_empty, None, 0, id="stopped_empty"),
         ],
     )
-    async def test_reasoning_only_repeat_failure_raises_terminal_after_retry(
-        self, stream: bool, build: Callable[[list[Any]], ChatResponse], match: str
+    async def test_only_a_length_stop_with_nothing_generated_notes_an_overflow(
+        self, build: Callable[[], ChatResponse], usage: dict[str, int] | None, notes: int
     ) -> None:
-        # Two identical reasoning-only failures trip the deterministic-stuck
-        # short-circuit; the give-up must RAISE (terminal_on_giveup) instead of
-        # returning a blank response the caller would treat as a success.  The
-        # streaming flavor raises out of the proxy's finalizer so the executor
-        # records an error instead of a blank final message.
-        reasoning_only = build([Content.from_text_reasoning(text="private thought")])
-        fake = _FakeCallNext([reasoning_only, reasoning_only], stream=stream)
-        ctx = _make_context(stream=stream)
-        fake.bind(ctx)
-
-        retries: list[RetryAttemptInfo] = []
-
-        async def on_retry(info: RetryAttemptInfo) -> None:
-            retries.append(info)
-
-        mw = ResponseValidationMiddleware(publish_retry=on_retry, backoff_schedule=[0.0])
-        if stream:
-            await mw.process(ctx, fake)
-            assert isinstance(ctx.result, ResponseStream)
-            with pytest.raises(TerminalResponseValidationError, match=match):
-                await ctx.result.get_final_response()
-        else:
-            with pytest.raises(TerminalResponseValidationError, match=match):
-                await mw.process(ctx, fake)
-
-        assert fake.call_count == 2, "reasoning-only must retry at least once before giving up"
-        assert len(retries) == 1
-
-    @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
-    async def test_whitespace_text_retried(self, stream: bool) -> None:
-        bad = _assistant([Content.from_text("\n\n\n")])
-        good = _assistant([Content.from_text("OK")])
-        fake = _FakeCallNext([bad, good], stream=stream)
-        ctx = _make_context(stream=stream)
-        fake.bind(ctx)
-
-        mw = ResponseValidationMiddleware(backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
-
-        final = await _final_response(ctx, stream=stream)
-        assert fake.call_count == 2
-        assert final.messages[0].contents[0].text == "OK"
-
-    @pytest.mark.parametrize("stream", [False, True], ids=["blocking", "streaming"])
-    async def test_leaked_minimax_tool_call_retried(self, stream: bool) -> None:
-        bad = _assistant([Content.from_text('Here goes:\nminimax:tool_call {"x":1} </minimax:tool_call>\nend')])
-        good = _assistant([Content.from_text("clean reply")])
-        fake = _FakeCallNext([bad, good], stream=stream)
-        ctx = _make_context(stream=stream)
-        fake.bind(ctx)
-
-        mw = ResponseValidationMiddleware(backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
-
-        final = await _final_response(ctx, stream=stream)
-        assert fake.call_count == 2
-        assert final.messages[0].contents[0].text == "clean reply"
-
-
-# ---------------------------------------------------------------------------
-# Fail-fast — identical-reason short-circuit
-# ---------------------------------------------------------------------------
-
-
-class TestFailFastOnIdenticalReason:
-    """Two consecutive attempts with the same ``ValidationResult.reason``
-    almost always indicate a deterministic-stuck producer (KV-cache /
-    chat-template / fine-tuning quirk).  Re-rolling with identical input
-    will produce identical output, so the middleware short-circuits to
-    the give-up path instead of paying the full MAX_RETRIES latency tax.
-    """
-
-    async def test_two_identical_empty_responses_short_circuit_non_stream(self) -> None:
-        """Same reason on attempts 0 and 1 → give up at attempt 1 without
-        consuming the remaining MAX_RETRIES - 1 attempts."""
-        # Three available bads; we expect only 2 to be consumed before fail-fast.
-        fake = _FakeCallNext([_bad_empty(), _bad_empty(), _bad_empty()], stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
-
-        retries: list[str] = []
-
-        async def on_retry(info: RetryAttemptInfo) -> None:
-            retries.append(info.reason)
-
-        mw = ResponseValidationMiddleware(publish_retry=on_retry, backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
-
-        # Initial + one retry = 2 attempts.  Remaining retries are skipped.
-        assert fake.call_count == 2
-        # publish_retry fires only on the first (real) retry, not on the
-        # fail-fast short-circuit.
-        assert len(retries) == 1
-        # Give-up cleanup still runs: empty assistant message dropped.
-        assert isinstance(ctx.result, ChatResponse)
-        assert ctx.result.messages == []
-
-    async def test_two_identical_responses_short_circuit_stream(self) -> None:
-        fake = _FakeCallNext([_bad_empty(), _bad_empty(), _bad_empty()], stream=True)
-        ctx = _make_context(stream=True)
-        fake.bind(ctx)
-
-        mw = ResponseValidationMiddleware(backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
-
-        assert isinstance(ctx.result, ResponseStream)
-        # Replay must still drop empty updates so ChatResponse.from_updates
-        # cannot rebuild the bad message after the fail-fast short circuit.
-        updates = [u async for u in ctx.result]
-        assert fake.call_count == 2
-        assert _semantic_updates(updates) == []
-        final = await ctx.result.get_final_response()
-        assert final.messages == []
-
-    async def test_fail_fast_strips_function_call_on_repeat(self) -> None:
-        """Give-up cleanup must run even when triggered by fail-fast,
-        not only on MAX_RETRIES exhaustion.  Otherwise a stuck producer
-        would leak ``function_call`` contents into the tool loop after
-        the early give-up and re-trigger the validation cycle every
-        iteration — defeating the whole point of give-up scrubbing.
-        """
-        bad_with_fc = _assistant(
-            [
-                Content.from_text("<function_call>garbage</function_call>"),
-                Content.from_function_call(call_id="c1", name="echo", arguments={"message": "x"}),
-            ]
-        )
-        # Two identical bads → fail-fast at attempt 1 (well before MAX_RETRIES).
-        fake = _FakeCallNext([bad_with_fc, bad_with_fc, bad_with_fc, bad_with_fc], stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
-
-        mw = ResponseValidationMiddleware(backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
-
-        assert fake.call_count == 2  # short-circuit, not MAX_RETRIES + 1
-        assert isinstance(ctx.result, ChatResponse)
-        types = [c.type for c in ctx.result.messages[0].contents]
-        assert "function_call" not in types  # stripped on the early give-up
-        assert "text" in types
-
-    async def test_first_attempt_invalid_always_retries_at_least_once(self) -> None:
-        """Fail-fast needs a *previous* reason to compare against, so the
-        very first invalid attempt must always be retried — even if the
-        producer ends up deterministic.  Without this, a single transient
-        hiccup would skip recovery entirely.
-        """
-        good = _assistant([Content.from_text("recovered")])
-        fake = _FakeCallNext([_bad_empty(), good], stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
-
-        retries: list[str] = []
-
-        async def on_retry(info: RetryAttemptInfo) -> None:
-            retries.append(info.reason)
-
-        mw = ResponseValidationMiddleware(publish_retry=on_retry, backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
-
-        assert fake.call_count == 2
-        assert len(retries) == 1  # the first invalid attempt did get a retry
-        assert ctx.result.messages[0].contents[0].text == "recovered"
-
-    async def test_alternating_reasons_do_not_trigger_fail_fast(self) -> None:
-        """When consecutive attempts have *different* reasons, the producer
-        is plausibly stochastic — keep retrying until either a valid
-        response arrives or MAX_RETRIES is reached.  Verifies fail-fast
-        does not misfire on a sequence like empty → whitespace → empty.
-        """
-        good = _assistant([Content.from_text("ok")])
-        # empty / whitespace / empty / good — three distinct reason
-        # transitions, none repeating consecutively.
-        fake = _FakeCallNext(
-            [_bad_empty(), _bad_whitespace(), _bad_empty(), good],
+        response = build()
+        response.usage_details = usage
+        strategy = _OverflowNotes()
+        fake = _FakeCallNext([response], stream=False)
+        context = ChatContext(
+            client=None,  # type: ignore[arg-type]
+            messages=[Message("user", ["hi"])],
+            options=None,
             stream=False,
+            kwargs={"compaction_strategy": strategy},
         )
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
+        fake.bind(context)
 
-        retries: list[str] = []
+        with pytest.raises(TerminalResponseValidationError):
+            await ResponseValidationMiddleware().process(context, fake)
 
-        async def on_retry(info: RetryAttemptInfo) -> None:
-            retries.append(info.reason)
+        assert strategy.notes == notes
 
-        mw = ResponseValidationMiddleware(publish_retry=on_retry, backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
 
-        # All 3 bads consumed + 1 good = 4 calls.  Three retry events,
-        # one for each invalid attempt that preceded the next call.
-        assert fake.call_count == 4
-        assert len(retries) == 3
-        assert ctx.result.messages[0].contents[0].text == "ok"
-
-    async def test_final_attempt_takes_priority_over_fail_fast(self) -> None:
-        """When the final attempt's reason matches the previous, the
-        regular exhaustion give-up path runs (not the early fail-fast
-        log).  Both lead to the same cleanup, but the log message
-        differs — verify cleanup correctness here regardless.
-        """
-        # MAX_RETRIES + 1 attempts: varied for the leading ones, then
-        # the same reason on the final two.
-        responses = [_bad_empty(), _bad_whitespace(), _bad_empty(), _bad_empty()]
-        assert len(responses) == MAX_RETRIES + 1
-        fake = _FakeCallNext(responses, stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
-
-        mw = ResponseValidationMiddleware(backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
-
-        # All MAX_RETRIES + 1 attempts consumed because the repeat only
-        # appears on the final attempt — there were no earlier
-        # consecutive matches to short-circuit on.
-        assert fake.call_count == MAX_RETRIES + 1
-        assert isinstance(ctx.result, ChatResponse)
-        assert ctx.result.messages == []  # give-up cleanup ran
+# ---------------------------------------------------------------------------
+# Observation hook — raw contents and the attempt's lifecycle, in order
+# ---------------------------------------------------------------------------
 
 
 class TestValidationObservationHook:
     async def test_blocking_accepted_attempt_callbacks(self) -> None:
-        good = _assistant([Content.from_text("accepted")])
-        fake = _FakeCallNext([good], stream=False)
+        fake = _FakeCallNext([_assistant([Content.from_text("accepted")])], stream=False)
         context = _make_context(stream=False)
         fake.bind(context)
         hook = _ObservationHook()
@@ -902,49 +509,38 @@ class TestValidationObservationHook:
         await ResponseValidationMiddleware(observation_hook=hook).process(context, fake)
 
         assert hook.events == [
-            ("response", None, None),
+            ("response", None),
             ("started", False),
             ("contents", True, ("text",)),
             ("accepted", (("text",),)),
         ]
 
-    async def test_blocking_rejected_then_accepted_callbacks(self) -> None:
-        bad = _assistant([])
-        good = _assistant([Content.from_text("accepted")])
-        fake = _FakeCallNext([bad, good], stream=False)
+    async def test_blocking_rejected_attempt_callbacks(self) -> None:
+        fake = _FakeCallNext([_bad_empty(), _assistant([Content.from_text("must stay unused")])], stream=False)
         context = _make_context(stream=False)
         fake.bind(context)
         hook = _ObservationHook()
 
-        await ResponseValidationMiddleware(
-            observation_hook=hook,
-            backoff_schedule=[0.0],
-        ).process(context, fake)
+        with pytest.raises(TerminalResponseValidationError):
+            await ResponseValidationMiddleware(observation_hook=hook).process(context, fake)
 
         assert hook.events == [
-            ("response", None, None),
+            ("response", None),
             ("started", False),
             ("contents", True, ()),
             ("rejected", "empty contents"),
-            ("started", False),
-            ("contents", True, ("text",)),
-            ("accepted", (("text",),)),
         ]
 
     async def test_streaming_observes_updates_and_acceptance(self) -> None:
-        good = _assistant([Content.from_text("accepted")])
-        fake = _FakeCallNext([good], stream=True)
+        fake = _FakeCallNext([_assistant([Content.from_text("accepted")])], stream=True)
         context = _make_context(stream=True)
         fake.bind(context)
         hook = _ObservationHook()
-        middleware = ResponseValidationMiddleware(observation_hook=hook)
 
-        await middleware.process(context, fake)
-        assert isinstance(context.result, ResponseStream)
-        await context.result.get_final_response()
+        await _judge(ResponseValidationMiddleware(observation_hook=hook), context, fake)
 
         assert hook.events == [
-            ("response", None, None),
+            ("response", None),
             ("started", False),
             ("contents", False, ("text",)),
             ("contents", True, ("text",)),

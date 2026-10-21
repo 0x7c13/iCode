@@ -73,7 +73,7 @@ async def enrich_call(
     """Run one call through *middleware* that establishes *requests* provider requests.
 
     ``requests=0`` is a call whose request never went out; more than one is a
-    validation retry re-sending from the same pass.  Returns the per-call list
+    request resent from the same pass.  Returns the per-call list
     the middleware produced (an untouched message keeps its identity).
     """
     enriched, _sent = await _run_call(middleware, messages, options, requests)

@@ -9,7 +9,7 @@ import contextlib
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -174,6 +174,7 @@ class _Executor:
         self.was_interrupted = False
         self.fail_run = False
         self.last_error = None
+        self.partial_answer = ()
         self.service_session_id = ""
         self.history_state: dict[str, object] = {}
         self.input_properties: dict[str, object] | None = None
@@ -277,7 +278,7 @@ class _History:
     def trim_to_last_complete_tool_results(self) -> None:
         return None
 
-    def remove_trailing_agent_text(self) -> None:
+    def keep_partial_answer(self, _contents: Sequence[Content]) -> None:
         return None
 
     def persist_batch_ids(self, _batch_records: list[object]) -> dict[int, object]:

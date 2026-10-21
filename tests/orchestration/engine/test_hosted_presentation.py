@@ -16,14 +16,13 @@ from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
     Event,
+    InvocationContentDelta,
     InvocationMessage,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationToolCallArgsUpdated,
     InvocationToolCallResult,
     InvocationToolCallStart,
     InvocationToolCallStatusUpdated,
-    ProvisionalPresentation,
+    UserMessage,
 )
 from chrys.foundation.tool_result_metadata import TOOL_FAILURE_TEXT_SYNTHESIZED_METADATA_KEY
 from chrys.kernel import (
@@ -38,13 +37,9 @@ from chrys.kernel import (
 from chrys.kernel.middleware import ChatContext
 from chrys.orchestration.engine.run.bindings import TurnBindings
 from chrys.orchestration.invoker.resources import Conversation
-from chrys.service.agent_middleware import IntermediateTextBuffer
 from chrys.service.agent_middleware.events.hosted_tools import (
     FinalTextOp,
     HostedToolResultOp,
-    IntermediateTextOp,
-    PresentationAttemptAcceptedOp,
-    PresentationAttemptRejectedOp,
     adapt_hosted_tool,
 )
 from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
@@ -52,8 +47,10 @@ from chrys.service.llm.mock import MockResponse
 from chrys.service.llm.openai_responses.client import OPENAI_RESPONSES
 from chrys.service.llm.openai_responses.stream import StreamState
 from tests.orchestration.invoker._main_pass import continuation_pass
+from tests.support.event_capture import capture_event_sequence
 from tests.support.pipeline_helpers import create_test_engine
-from tests.support.scripted_clients import HostedMockResponse, hosted_image_result
+from tests.support.scripted_clients import HostedMockResponse
+from tests.support.waiting import await_run_task_chain, wait_for
 
 
 def _responses_events(*, before: str = "", after: str = "", status: str = "completed") -> list[SimpleNamespace]:
@@ -205,8 +202,6 @@ async def _executor_fixture(
     for event_type in (
         InvocationMessage,
         Error,
-        InvocationPresentationAttemptAccepted,
-        InvocationPresentationAttemptRejected,
         InvocationToolCallStart,
         InvocationToolCallArgsUpdated,
         InvocationToolCallStatusUpdated,
@@ -214,7 +209,7 @@ async def _executor_fixture(
     ):
         await bus.subscribe(event_type, _collect)
 
-    validation = ResponseValidationMiddleware(backoff_schedule=[0.0])
+    validation = ResponseValidationMiddleware()
     agent = _ValidatedAgent(
         validation,
         raw_events,
@@ -234,21 +229,34 @@ async def _executor_fixture(
     return executor, agent, events
 
 
+def _hosted_image_item() -> Content:
+    """A completed hosted image result stamped with its provider item id, as every hosted adapter stamps it."""
+    return Content.from_image_generation_tool_result(
+        image_id="image-1",
+        outputs=[Content.from_uri("data:image/png;base64,QUJD", media_type="image/png")],
+        hosted_provider="openai",
+        provider_item_id="ig_1",
+        provider_phase="terminal",
+        provider_status="completed",
+    )
+
+
+def _turn_messages(events: Sequence[Event]) -> list[tuple[str, bool]]:
+    return [
+        (event.text, event.is_final)
+        for event in events
+        if isinstance(event, InvocationMessage) and event.origin.kind == "turn"
+    ]
+
+
 @pytest.mark.asyncio
-async def test_failed_hosted_sequence_publishes_text_call_result_then_final() -> None:
+async def test_failed_hosted_sequence_publishes_call_result_then_final() -> None:
     executor, _agent, events = await _executor_fixture(
         _responses_events(before="Checking sources.", after="No result was available.", status="failed")
     )
 
     await continuation_pass(executor, [Message("user", ["search"])])
 
-    intermediate = next(
-        index
-        for index, event in enumerate(events)
-        if (isinstance(event, InvocationMessage) and event.origin.kind == "turn")
-        and event.is_intermediate
-        and event.text == "Checking sources."
-    )
     start = next(
         index
         for index, event in enumerate(events)
@@ -268,15 +276,11 @@ async def test_failed_hosted_sequence_publishes_text_call_result_then_final() ->
     )
     failed = events[result]
     assert isinstance(failed, InvocationToolCallResult) and failed.origin.kind == "turn"
-    assert intermediate < start < result < final
+    assert start < result < final
     assert failed.provider_status == "failed"
     assert failed.result.startswith("Error: ")
-    accepted = next(
-        event
-        for event in events
-        if (isinstance(event, InvocationPresentationAttemptAccepted) and event.origin.kind == "turn")
-    )
-    assert accepted.segment_ids == ("item:msg_before:content:0",)
+    # The narration before the search is the content projector's: the bridge sends only the completion.
+    assert _turn_messages(events) == [("No result was available.", True)]
 
 
 @pytest.mark.parametrize(
@@ -318,70 +322,27 @@ async def test_published_hosted_result_carries_synthesized_failure_signal_only_f
     assert (published.metadata.get(TOOL_FAILURE_TEXT_SYNTHESIZED_METADATA_KEY) is True) is expected_synthesized
 
 
+@pytest.mark.parametrize(
+    ("operation", "expected"),
+    [
+        (FinalTextOp("Answer."), ("Answer.", False)),
+        (FinalTextOp("", structured_output_completed=True), ("", True)),
+    ],
+    ids=["text", "structured-only"],
+)
 @pytest.mark.asyncio
-async def test_executor_reserves_provisional_batch_and_persists_only_on_acceptance() -> None:
-    bus = EventBus()
-    events: list[Event] = []
-
-    async def _collect(event: Event) -> None:
-        events.append(event)
-
-    for event_type in (InvocationMessage, InvocationPresentationAttemptAccepted, InvocationPresentationAttemptRejected):
-        await bus.subscribe(event_type, _collect)
-    buffer = IntermediateTextBuffer()
-    committed: list[tuple[str, int]] = []
-    executor = TurnBindings(
-        conversation=Conversation(),
-        agent=MagicMock(),
-        session=AgentSession(),
-        event_bus=bus,
-        approval_middleware=MagicMock(),
-        ask_user_middleware=MagicMock(),
-        injection_middleware=MagicMock(),
-        intermediate_buffer=buffer,
-        commit_intermediate_text=lambda text, batch_id: committed.append((text, batch_id)),
-    )
+async def test_final_text_op_publishes_the_turn_completion_message(
+    operation: FinalTextOp, expected: tuple[str, bool]
+) -> None:
+    executor, _agent, events = await _executor_fixture([])
     executor._bound_emitter = executor._invocation_publishers.bind(executor.inputs.origin)
-    segment = IntermediateTextOp(
-        "Checking sources.",
-        (0, 0, 0),
-        attempt_id="presentation:1",
-        segment_ids=("segment:1",),
-        provisional=True,
-    )
 
-    await executor._publish_hosted_operation(segment, emitter=executor._emitter)
-    assert committed == []
-    assert buffer.batch_id == 1
-    provisional = events[-1]
-    assert isinstance(provisional, InvocationMessage) and provisional.origin.kind == "turn"
-    assert provisional.presentation == ProvisionalPresentation("presentation:1", "segment:1")
+    await executor._publish_hosted_operation(operation, emitter=executor._emitter)
 
-    await executor._publish_hosted_operation(
-        PresentationAttemptAcceptedOp("presentation:1", (segment,)), emitter=executor._emitter
-    )
-    assert committed == [("Checking sources.", 1)]
-    assert isinstance(events[-1], InvocationPresentationAttemptAccepted) and events[-1].origin.kind == "turn"
-
-    await executor._publish_hosted_operation(
-        FinalTextOp("", structured_output_completed=True), emitter=executor._emitter
-    )
-    terminal = events[-1]
-    assert isinstance(terminal, InvocationMessage) and terminal.origin.kind == "turn"
-    assert terminal.text == ""
-    assert terminal.structured_output_completed is True
-
-    rejected_segment = IntermediateTextOp(
-        "Stale.",
-        (0, 0, 0),
-        attempt_id="presentation:2",
-        segment_ids=("segment:2",),
-        provisional=True,
-    )
-    await executor._publish_hosted_operation(rejected_segment, emitter=executor._emitter)
-    await executor._publish_hosted_operation(PresentationAttemptRejectedOp("presentation:2"), emitter=executor._emitter)
-    assert committed == [("Checking sources.", 1)]
-    assert isinstance(events[-1], InvocationPresentationAttemptRejected) and events[-1].origin.kind == "turn"
+    (message,) = events
+    assert isinstance(message, InvocationMessage) and message.origin.kind == "turn"
+    assert (message.text, message.structured_output_completed) == expected
+    assert message.is_final is True
 
 
 @pytest.mark.asyncio
@@ -413,7 +374,7 @@ async def test_hosted_card_ids_stay_unique_across_rebuilt_bindings() -> None:
 
 
 @pytest.mark.asyncio
-async def test_response_completed_usage_does_not_publish_final_text_as_provisional() -> None:
+async def test_response_completed_usage_publishes_only_the_text_after_the_hosted_output() -> None:
     raw_events = [
         *_responses_events(before="Checking sources.", after="Final answer."),
         _response_completed_with_usage(),
@@ -422,47 +383,26 @@ async def test_response_completed_usage_does_not_publish_final_text_as_provision
 
     await continuation_pass(executor, [Message("user", ["search"])])
 
-    intermediate = [
-        event.text
-        for event in events
-        if (isinstance(event, InvocationMessage) and event.origin.kind == "turn") and event.is_intermediate
-    ]
-    final = [
-        event.text
-        for event in events
-        if (isinstance(event, InvocationMessage) and event.origin.kind == "turn") and event.is_final
-    ]
-    assert intermediate == ["Checking sources."]
-    assert final == ["Final answer."]
+    assert _turn_messages(events) == [("Final answer.", True)]
 
 
 @pytest.mark.asyncio
-async def test_plain_reasoning_does_not_publish_final_text_as_provisional() -> None:
+async def test_plain_reasoning_publishes_only_the_final_text() -> None:
     executor, _agent, events = await _executor_fixture(_plain_text_then_reasoning_events())
 
     await continuation_pass(executor, [Message("user", ["answer"])])
 
-    intermediate = [
-        event.text
-        for event in events
-        if (isinstance(event, InvocationMessage) and event.origin.kind == "turn") and event.is_intermediate
-    ]
-    final = [
-        event.text
-        for event in events
-        if (isinstance(event, InvocationMessage) and event.origin.kind == "turn") and event.is_final
-    ]
-    assert intermediate == []
-    assert final == ["Final answer."]
+    assert _turn_messages(events) == [("Final answer.", True)]
 
 
 @pytest.mark.asyncio
-async def test_search_without_final_text_retries_then_fails_without_blank_agent_message() -> None:
+async def test_search_without_final_text_fails_without_blank_agent_message() -> None:
+    # A search-only response is rejected but not blank, so nothing resends it: the turn fails.
     executor, agent, events = await _executor_fixture(_responses_events())
 
     await continuation_pass(executor, [Message("user", ["search"])])
 
-    assert agent.wire_calls == 2
+    assert agent.wire_calls == 1
     assert executor.state.run_failed
     assert [
         event
@@ -477,12 +417,14 @@ async def test_interrupt_terminalizes_running_hosted_card() -> None:
     raw_events = _responses_events(before="Checking sources.")[:2]
     executor, _agent, events = await _executor_fixture(raw_events, wait_after_updates=True)
     task = asyncio.create_task(continuation_pass(executor, [Message("user", ["search"])]))
-    for _ in range(100):
-        if any((isinstance(event, InvocationToolCallStart) and event.origin.kind == "turn") for event in events):
-            break
-        await asyncio.sleep(0.01)
-    else:
-        pytest.fail("hosted start was not published")
+    await wait_for(
+        lambda: (
+            task.done()
+            or any((isinstance(event, InvocationToolCallStart) and event.origin.kind == "turn") for event in events)
+        ),
+        description="the hosted start",
+    )
+    assert not task.done()
 
     await executor.interrupt()
     await task
@@ -495,22 +437,8 @@ async def test_interrupt_terminalizes_running_hosted_card() -> None:
     ]
     assert len(interrupted) == 1
     assert executor.state.was_interrupted
-    provisional = [
-        event
-        for event in events
-        if (isinstance(event, InvocationMessage) and event.origin.kind == "turn") and event.presentation is not None
-    ]
-    assert [event.text for event in provisional] == ["Checking sources."]
-    accepted = [
-        event
-        for event in events
-        if (isinstance(event, InvocationPresentationAttemptAccepted) and event.origin.kind == "turn")
-    ]
-    assert len(accepted) == 1
-    assert accepted[0].segment_ids == ("item:msg_before:content:0",)
-    assert not any(
-        (isinstance(event, InvocationPresentationAttemptRejected) and event.origin.kind == "turn") for event in events
-    )
+    # An interrupted pass publishes no completion; the narration it streamed is the projector's.
+    assert _turn_messages(events) == []
 
 
 @pytest.mark.asyncio
@@ -594,40 +522,106 @@ async def test_non_hosted_response_keeps_existing_final_text_path(tmp_path: Any)
 async def test_narration_before_hosted_output_is_published_once(
     tmp_path: Any, call: tuple[str, str, dict[str, Any]], stream: bool
 ) -> None:
-    """The narration precedes the next response's hosted output, and the run-end reconcile leaves it alone."""
+    """The narration streams as answer content before the next response's hosted output, and only once."""
     context = await create_test_engine(
         [
             MockResponse(text="Let me look. ", tool_calls=[call]),
-            HostedMockResponse(text="Here it is.", hosted=[hosted_image_result()]),
+            HostedMockResponse(text="Here it is.", hosted=[_hosted_image_item()]),
         ],
         tmp_path,
         stream=stream,
     )
     try:
-        await context.send_message("go")
+        async with capture_event_sequence(
+            context.bus, InvocationContentDelta, InvocationToolCallStart, InvocationToolCallResult, InvocationMessage
+        ) as events:
+            await context.send_message("go")
 
-        narration_at = next(
-            i
-            for i, event in enumerate(context.events)
-            if isinstance(event, InvocationMessage) and event.is_intermediate and event.text == "Let me look. "
-        )
         hosted_at = next(
             i
-            for i, event in enumerate(context.events)
+            for i, event in enumerate(events)
             if isinstance(event, (InvocationToolCallStart, InvocationToolCallResult)) and event.provider_hosted
         )
-        assert narration_at < hosted_at
+        answer = [
+            (i, event.text)
+            for i, event in enumerate(events)
+            if isinstance(event, InvocationContentDelta) and event.origin.kind == "turn" and event.channel == "answer"
+        ]
+        assert "".join(text for i, text in answer if i < hosted_at) == "Let me look. "
+        assert "".join(text for i, text in answer if i > hosted_at) == "Here it is."
         assert [
             event.provider_hosted
-            for event in context.events
+            for event in events
             if isinstance(event, InvocationToolCallResult) and event.origin.kind == "turn"
         ] == ([False, True] if call[0] == "echo" else [True])
-        turn_messages = [
-            (event.text, event.is_intermediate, event.is_final)
-            for event in context.events
-            if isinstance(event, InvocationMessage) and event.origin.kind == "turn" and event.text
-        ]
-        assert [text for text, intermediate, _final in turn_messages if intermediate] == ["Let me look. "]
-        assert turn_messages[-1] == ("Here it is.", False, True)
+        assert _turn_messages(events) == [("Here it is.", True)]
     finally:
+        await context.cleanup()
+
+
+@pytest.mark.parametrize("stream", [True, False], ids=["streamed", "blocking"])
+async def test_text_before_hosted_output_shows_above_its_card(tmp_path: Any, stream: bool) -> None:
+    """The response's text and its hosted output show in the order the response holds them."""
+    context = await create_test_engine(
+        [HostedMockResponse(lead_text="Drawing it.", hosted=[_hosted_image_item()], text="Here it is.")],
+        tmp_path,
+        stream=stream,
+    )
+    try:
+        async with capture_event_sequence(
+            context.bus, InvocationContentDelta, InvocationToolCallStart, InvocationToolCallResult
+        ) as events:
+            await context.send_message("go")
+
+        hosted = [
+            i
+            for i, event in enumerate(events)
+            if isinstance(event, (InvocationToolCallStart, InvocationToolCallResult)) and event.provider_hosted
+        ]
+        answer = [
+            (i, event.text)
+            for i, event in enumerate(events)
+            if isinstance(event, InvocationContentDelta) and event.origin.kind == "turn" and event.channel == "answer"
+        ]
+        assert hosted
+        assert "".join(text for i, text in answer if i < hosted[0]) == "Drawing it."
+        assert "".join(text for i, text in answer if i > hosted[-1]) == "Here it is."
+    finally:
+        await context.cleanup()
+
+
+async def test_an_interrupt_while_landed_text_shows_publishes_its_held_hosted_card_at_once(tmp_path: Any) -> None:
+    """An interrupt shows the hosted card the response held behind its text while frontends still take its events."""
+    context = await create_test_engine(
+        [HostedMockResponse(lead_text="Drawing it.", hosted=[_hosted_image_item()], text="Here it is.")],
+        tmp_path,
+        stream=False,
+    )
+    showing, release_text = asyncio.Event(), asyncio.Event()
+    hosted: list[type[Event]] = []
+
+    async def hold_text(event: InvocationContentDelta) -> None:
+        if event.text == "Drawing it.":
+            showing.set()
+            await release_text.wait()
+
+    async def record_card(event: InvocationToolCallStart | InvocationToolCallResult) -> None:
+        if event.provider_hosted:
+            hosted.append(type(event))
+
+    await context.bus.subscribe(InvocationContentDelta, hold_text)
+    await context.bus.subscribe(InvocationToolCallStart, record_card)
+    await context.bus.subscribe(InvocationToolCallResult, record_card)
+    try:
+        await context.bus.publish(UserMessage(text="go"))
+        await wait_for(showing.is_set, description="the landed text showing")
+        # The TUI stops taking the run's events once the interrupt it published returns.
+        await context.send_interrupt()
+        assert hosted == [InvocationToolCallStart, InvocationToolCallResult]
+
+        release_text.set()
+        await await_run_task_chain(context.engine, turn_state=context.engine.turns.turn_state)
+        assert hosted == [InvocationToolCallStart, InvocationToolCallResult]
+    finally:
+        release_text.set()
         await context.cleanup()

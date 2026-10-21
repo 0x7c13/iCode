@@ -22,7 +22,6 @@ from chrys.kernel import (
     Content,
     Message,
     annotate_message_groups,
-    annotate_token_counts,
     set_excluded,
 )
 from chrys.kernel.compaction import _has_reasoning
@@ -272,8 +271,10 @@ def _compact_group(
     insertion_index = starts.get(group_id, 0)
     messages.insert(insertion_index, summary_message)
 
-    annotate_message_groups(messages, from_index=insertion_index, force_reannotate=False)
-    annotate_token_counts(messages, tokenizer=tokenizer, from_index=insertion_index)
+    # Only the summary needs counting: the messages after it keep their ids and
+    # contents, and with them their counts. Counting every later message again
+    # for each compacted group made a pass quadratic in the conversation.
+    annotate_message_groups(messages, from_index=insertion_index, force_reannotate=False, tokenizer=tokenizer)
 
     return tool_names
 

@@ -229,8 +229,8 @@ class ChatContext:
         # Unlike the stream_* hooks above (attached to the FINAL result stream
         # after the chain), update filters attach to the stream the final
         # handler resolves — beneath every middleware — so a middleware that
-        # drains the inner stream and re-streams it through a proxy (response
-        # validation) still consumes filtered updates, and a retry's fresh
+        # drains the inner stream and re-streams it through a proxy still
+        # consumes filtered updates, and a retry's fresh
         # inner stream is filtered again automatically. Middleware may append
         # here before calling ``call_next()``.
         self.stream_update_filters = list(stream_update_filters or [])
@@ -312,9 +312,8 @@ class ChatMiddlewarePipeline:
     ) -> ChatResponse | ResponseStream[ChatResponseUpdate, ChatResponse] | None:
         def observe_request_messages() -> None:
             # Run immediately before every final-handler invocation. A
-            # middleware may call ``call_next`` repeatedly (for example a
-            # validation retry), and each resulting wire request must be
-            # observed independently.
+            # middleware may call ``call_next`` repeatedly, and each
+            # resulting wire request must be observed independently.
             for observer in context.request_message_observers:
                 observer(context.messages)
 

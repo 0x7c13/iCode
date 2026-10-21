@@ -143,7 +143,7 @@ def test_session_restore_resets_terminal_title_to_restored_cwd() -> None:
         def update_usage(self, tokens: int, total_session_tokens: int = 0) -> None:
             calls.append(("usage", (tokens, total_session_tokens)))
 
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             calls.append(("error", (message, action_label)))
 
     class _FakeInputBar:
@@ -271,7 +271,7 @@ def test_session_restore_marks_fully_compacted_session_as_having_messages(tmp_pa
         def update_usage(self, tokens: int, total_session_tokens: int = 0) -> None:
             calls.append(("usage", (tokens, total_session_tokens)))
 
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             calls.append(("error", (message, action_label)))
 
     class _FakeInputBar:
@@ -394,7 +394,7 @@ def test_session_restore_moves_shell_panel_to_existing_restored_cwd(tmp_path: Pa
         def update_usage(self, tokens: int, total_session_tokens: int = 0) -> None:
             calls.append(("usage", (tokens, total_session_tokens)))
 
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             calls.append(("error", (message, action_label)))
 
     class _FakeInputBar:
@@ -644,7 +644,7 @@ def test_session_restore_reseeds_todo_state_from_saved_state_tolerantly(tmp_path
         def update_usage(self, tokens: int, total_session_tokens: int = 0) -> None:
             return
 
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             return
 
     class _FakeInputBar:
@@ -753,7 +753,7 @@ def test_session_restore_without_saved_todos_clears_stale_todo_state() -> None:
         def update_usage(self, tokens: int, total_session_tokens: int = 0) -> None:
             return
 
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             return
 
     class _FakeInputBar:

@@ -272,7 +272,7 @@ async def test_live_zero_duration_tool_does_not_gain_replay_suffix_after_rebuild
         await panel.add_user_message("run")
         await panel.add_tool_start("live", "plain_tool", "", args={})
         await panel.add_tool_result("live", "plain_tool", "done", 0)
-        await panel.add_agent_message("finished", is_final=True)
+        await panel.add_agent_message("finished")
 
         group = panel.query_one(ToolGroup)
         await wait_for(lambda: not group._content_mounted, pilot=pilot, description="not group._content_mounted")

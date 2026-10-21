@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import create_autospec
@@ -80,16 +79,12 @@ def _hand_out_sub_agent_client(monkeypatch: pytest.MonkeyPatch, client: MockChat
     async def create_client(
         model_profile: ModelProfile,
         *,
-        on_intermediate_text_async: Callable[[str], Awaitable[None]],
-        on_intermediate_text_sync: Callable[[str], None],
         session_id: str,
         parent_session_id: str,
         use_route_session_context: bool,
         session_dir: Path,
         tool_result_ceiling_tokens: int | None,
     ) -> MockChatClient:
-        client._on_intermediate_text_async = on_intermediate_text_async
-        client._on_intermediate_text_sync = on_intermediate_text_sync
         return client
 
     monkeypatch.setattr(sub_agent_module, "create_client", create_client)

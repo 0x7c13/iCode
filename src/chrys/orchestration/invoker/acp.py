@@ -286,7 +286,7 @@ class AcpConversation:
 
     @property
     def transcript_final_text(self) -> str | None:
-        """Final assistant segment not already published through ``InvocationMessage``."""
+        """The final assistant segment of the completed pass: the text after its last tool call start."""
         return self._transcript_final_text
 
     def _start_background(self, awaitable: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
@@ -409,6 +409,7 @@ class AcpConversation:
                 self._stop_reason = outcome.stop_reason
                 usage = outcome.usage
                 await self._account_usage(self._counters.transport_ordinal, usage, translator)
+                await translator.finish_content("completed" if outcome.stop_reason == "end_turn" else "failed")
                 await translator.flush_interrupted()
                 self._counters.completed_calls = translator.completed_count
                 if self._cascade_requested:
@@ -428,10 +429,8 @@ class AcpConversation:
                                 f"sub-agent '{self._tool_name}' returned no output",
                             )
                         )
-                    # Segment publication is independent of the configured
-                    # parent-result shape. Carry the UI delta for every mode
-                    # so a segment sealed before the terminal tool is not
-                    # appended to the live transcript a second time.
+                    # The final segment, whatever the parent-result shape:
+                    # a replayed transcript shows it after the sealed ones.
                     self._transcript_final_text = translator.unpublished_final_text()
                     return self._terminal(AcpExecutionResult(text, succeeded=True))
                 if outcome.stop_reason == "cancelled":

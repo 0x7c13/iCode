@@ -53,7 +53,7 @@ async def _populate(panel: ChatPanel) -> None:
         await panel.add_tool_start(call_id, "read_file", KIND_FILESYSTEM_READ, args={"path": f"src/module_{turn}.py"})
         await panel.add_tool_result(call_id, "read_file", "\n".join(f"line {index}" for index in range(6)), 12)
         await panel.add_agent_message(
-            f"## Turn {turn}\n\n- first point\n- second point\n\n```python\nvalue = {turn}\n```", is_final=True
+            f"## Turn {turn}\n\n- first point\n- second point\n\n```python\nvalue = {turn}\n```"
         )
 
 

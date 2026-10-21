@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from acp.schema import SessionNotification
 
@@ -15,10 +17,10 @@ from chrys.foundation.events.types import (
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
     InvocationCompactionStarted,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationMessage,
     InvocationPaused,
-    InvocationPresentationAttemptAccepted,
-    InvocationPresentationAttemptRejected,
     InvocationProgress,
     InvocationRetryAttempt,
     InvocationStarted,
@@ -27,12 +29,11 @@ from chrys.foundation.events.types import (
     InvocationToolCallResult,
     InvocationToolCallStart,
     InvocationToolCallStatusUpdated,
-    ProvisionalPresentation,
     SessionSaved,
     TodoListUpdated,
     UsageUpdate,
 )
-from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.models.invocations import ContentChannel, InvocationOrigin
 from chrys.foundation.models.todos import TodoItem
 from chrys.foundation.tool_kinds import (
     KIND_FILESYSTEM_READ,
@@ -51,131 +52,77 @@ from chrys.foundation.tool_result_metadata import (
 from chrys.kernel import Content
 from chrys.orchestration.invoker.acp_protocol import AcpUpdateTranslator
 
+_TURN = InvocationOrigin("turn", "", "turn-test", None)
 
-def test_bridge_maps_agent_text_and_thought_chunks() -> None:
+
+def _delta(segment_id: str, channel: ContentChannel, text: str) -> InvocationContentDelta:
+    return InvocationContentDelta(origin=_TURN, segment_id=segment_id, channel=channel, text=text)
+
+
+def _finished(segment_id: str, channel: ContentChannel = "answer") -> InvocationContentFinished:
+    return InvocationContentFinished(origin=_TURN, segment_id=segment_id, channel=channel)
+
+
+def test_bridge_maps_answer_and_reasoning_deltas_to_message_and_thought_chunks() -> None:
     bridge = AcpEventBridge()
 
-    message = bridge.updates_for_event(
-        InvocationMessage(text="hello", origin=InvocationOrigin("turn", "", "turn-test", None))
-    )[0]
+    updates = [
+        *bridge.updates_for_event(_delta("think", "reasoning", "Checking")),
+        *bridge.updates_for_event(_delta("think", "reasoning", " the parser.")),
+        *bridge.updates_for_event(_finished("think", "reasoning")),
+        *bridge.updates_for_event(_delta("summary", "reasoning_summary", "Parser checked.")),
+        *bridge.updates_for_event(_finished("summary", "reasoning_summary")),
+        *bridge.updates_for_event(_delta("answer", "answer", "Hel")),
+        *bridge.updates_for_event(_delta("answer", "answer", "lo")),
+        *bridge.updates_for_event(_finished("answer")),
+        # The final message carries no text: its answer already streamed.
+        *bridge.updates_for_event(InvocationMessage(text="Hello", is_final=True, origin=_TURN)),
+    ]
+
+    assert [(update.session_update, update.content.text) for update in updates] == [
+        ("agent_thought_chunk", "Checking"),
+        ("agent_thought_chunk", " the parser."),
+        ("agent_thought_chunk", "Parser checked."),
+        ("agent_message_chunk", "Hel"),
+        ("agent_message_chunk", "lo"),
+    ]
+    assert [update.field_meta["chrys"] for update in updates] == [
+        {"segmentId": "think", "channel": "reasoning"},
+        {"segmentId": "think", "channel": "reasoning"},
+        {"segmentId": "summary", "channel": "reasoning_summary"},
+        {"segmentId": "answer", "channel": "answer"},
+        {"segmentId": "answer", "channel": "answer"},
+    ]
+    # One message id per segment, in the UUID form ACP requires.
+    ids = [update.message_id for update in updates]
+    assert ids[0] == ids[1] and ids[3] == ids[4]
+    assert len({ids[0], ids[2], ids[3]}) == 3
+    assert all(str(uuid.UUID(message_id)) == message_id for message_id in ids)
+
+
+def test_bridge_skips_empty_deltas_and_keeps_the_legacy_thinking_chunk() -> None:
+    bridge = AcpEventBridge()
+
+    assert bridge.updates_for_event(_delta("answer", "answer", "")) == []
     thought = bridge.updates_for_event(AgentThinking(text="thinking"))[0]
 
-    assert message.session_update == "agent_message_chunk"
-    assert message.content.text == "hello"
     assert thought.session_update == "agent_thought_chunk"
     assert thought.content.text == "thinking"
 
 
-def test_bridge_emits_agent_message_deltas_for_streaming_snapshots() -> None:
+def test_a_retry_after_text_neither_retracts_nor_resends_it() -> None:
     bridge = AcpEventBridge()
 
-    updates = [
-        *bridge.updates_for_event(
-            InvocationMessage(text="Hel", is_final=False, origin=InvocationOrigin("turn", "", "turn-test", None))
-        ),
-        *bridge.updates_for_event(
-            InvocationMessage(text="Hello", is_final=False, origin=InvocationOrigin("turn", "", "turn-test", None))
-        ),
-        *bridge.updates_for_event(
-            InvocationMessage(text="Hello", is_final=True, origin=InvocationOrigin("turn", "", "turn-test", None))
-        ),
-    ]
-
-    assert [update.content.text for update in updates] == ["Hel", "lo"]
-
-
-def test_retry_attempt_resets_acp_partial_text_without_emitting_an_update() -> None:
-    bridge = AcpEventBridge()
-
-    first = bridge.updates_for_event(
-        InvocationMessage(text="failed partial", is_final=False, origin=InvocationOrigin("turn", "", "turn-test", None))
-    )
+    first = bridge.updates_for_event(_delta("partial", "answer", "failed partial"))
+    closed = bridge.updates_for_event(InvocationContentFinished(origin=_TURN, segment_id="partial", status="failed"))
     boundary = bridge.updates_for_event(
-        InvocationRetryAttempt(
-            message="wire dropped",
-            attempt=1,
-            max_attempts=2,
-            delay_seconds=0,
-            origin=InvocationOrigin("turn", "", "turn-test", None),
-        )
+        InvocationRetryAttempt(message="wire dropped", attempt=1, max_attempts=2, delay_seconds=0, origin=_TURN)
     )
-    retried = bridge.updates_for_event(
-        InvocationMessage(text="fresh answer", is_final=False, origin=InvocationOrigin("turn", "", "turn-test", None))
-    )
+    fresh = bridge.updates_for_event(_delta("fresh", "answer", "fresh answer"))
 
-    assert first[0].content.text == "failed partial"
-    assert boundary == []
-    assert retried[0].content.text == "fresh answer"
-
-
-def test_bridge_does_not_delta_against_intermediate_agent_text() -> None:
-    bridge = AcpEventBridge()
-
-    updates = [
-        *bridge.updates_for_event(
-            InvocationMessage(
-                text="Plan",
-                is_final=False,
-                is_intermediate=True,
-                origin=InvocationOrigin("turn", "", "turn-test", None),
-            )
-        ),
-        *bridge.updates_for_event(
-            InvocationMessage(
-                text="Plan complete", is_final=True, origin=InvocationOrigin("turn", "", "turn-test", None)
-            )
-        ),
-    ]
-
-    assert [update.content.text for update in updates] == ["Plan", "Plan complete"]
-
-
-def test_bridge_keeps_rejected_provisional_text_and_resets_the_stream_baseline() -> None:
-    bridge = AcpEventBridge()
-
-    provisional = bridge.updates_for_event(
-        InvocationMessage(
-            text="Checking sources.",
-            is_final=False,
-            is_intermediate=True,
-            presentation=ProvisionalPresentation("attempt-1", "segment-1"),
-            origin=InvocationOrigin("turn", "", "turn-test", None),
-        )
-    )
-    rejected = bridge.updates_for_event(
-        InvocationPresentationAttemptRejected(
-            attempt_id="attempt-1", origin=InvocationOrigin("turn", "", "turn-test", None)
-        )
-    )
-    accepted = bridge.updates_for_event(
-        InvocationPresentationAttemptAccepted(
-            attempt_id="attempt-2", segment_ids=("segment-2",), origin=InvocationOrigin("turn", "", "turn-test", None)
-        )
-    )
-    fresh = bridge.updates_for_event(
-        InvocationMessage(text="Fresh answer.", is_final=False, origin=InvocationOrigin("turn", "", "turn-test", None))
-    )
-
-    assert provisional[0].content.text == "Checking sources."
-    assert rejected == accepted == []
-    assert fresh[0].content.text == "Fresh answer."
-
-
-def test_bridge_warns_when_streaming_snapshots_are_not_cumulative(caplog) -> None:
-    bridge = AcpEventBridge()
-    caplog.set_level("WARNING", logger="chrys.app.acp.bridge")
-
-    updates = [
-        *bridge.updates_for_event(
-            InvocationMessage(text="Hello", is_final=False, origin=InvocationOrigin("turn", "", "turn-test", None))
-        ),
-        *bridge.updates_for_event(
-            InvocationMessage(text="Help", is_final=True, origin=InvocationOrigin("turn", "", "turn-test", None))
-        ),
-    ]
-
-    assert [update.content.text for update in updates] == ["Hello", "Help"]
-    assert "not cumulative" in caplog.text
+    assert [update.content.text for update in first + fresh] == ["failed partial", "fresh answer"]
+    assert closed == boundary == []
+    assert first[0].message_id != fresh[0].message_id
 
 
 def test_bridge_maps_tool_lifecycle_updates() -> None:

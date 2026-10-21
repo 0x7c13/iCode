@@ -14,6 +14,7 @@ import pytest
 
 from chrys.foundation.errors import (
     ROUTE_EXTENSION_KEY,
+    ContinuationVerdictError,
     ErrorKind,
     Origin,
     ProviderResponseError,
@@ -373,6 +374,18 @@ def test_a_retry_notice_for_a_context_overflow_announces_the_resend_after_compac
     _classified(monkeypatch, ErrorKind.CONTEXT_OVERFLOW, _DIRECT)
 
     message, hint = display_fields(RuntimeError("stand-in"), retry_notice=retry_notice)
+
+    assert (_key(message), hint) == (key, None)
+
+
+@pytest.mark.parametrize(("retry_notice", "key"), [(True, "retry.blank_response"), (False, None)])
+def test_a_retry_notice_for_a_response_that_showed_nothing_announces_the_one_resend(
+    retry_notice: bool, key: str | None
+) -> None:
+    blank = ContinuationVerdictError("empty contents")
+    blank.blank_response = True
+
+    message, hint = display_fields(blank, retry_notice=retry_notice)
 
     assert (_key(message), hint) == (key, None)
 

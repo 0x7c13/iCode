@@ -6,17 +6,23 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import create_autospec
 
 import pytest
 
 import chrys.orchestration.workflows.agent_node as node_module
+from chrys.foundation.errors import ProviderResponseError
+from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationMessage,
     InvocationToolCallStart,
     WorkflowNodeRetryRequest,
     WorkflowNodeStateChanged,
 )
+from chrys.kernel import ChatResponseUpdate, Content
 from chrys.orchestration.workflows.agent_archive import AgentNodeArchive, CoalescedCheckpoint
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.workflows.layout import run_dir
@@ -32,14 +38,64 @@ from tests.orchestration.workflows._hosting import (
     write_workflow,
 )
 from tests.support.pipeline_helpers import fail_nested_before_response_on_nth
-from tests.support.scripted_clients import (
-    HostedMockChatClient,
-    HostedMockResponse,
-    hosted_image_result,
-)
+from tests.support.scripted_clients import HostedMockChatClient, HostedMockResponse
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 from ._transcript_support import ArchiveClient, source
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from chrys.kernel import FinishReason, FinishReasonLiteral
+
+type _Shown = InvocationContentDelta | InvocationToolCallStart | InvocationMessage
+
+
+class _NodeTranscript:
+    """What the node shows, in order: each streamed segment whole, each tool start, the final message."""
+
+    _TYPES = (InvocationContentDelta, InvocationToolCallStart, InvocationMessage)
+
+    def __init__(self, bus: EventBus) -> None:
+        self._bus = bus
+        self.events: list[_Shown] = []
+
+    async def start(self) -> None:
+        for event_type in self._TYPES:
+            await self._bus.subscribe(event_type, self._record)
+
+    async def close(self) -> None:
+        for event_type in self._TYPES:
+            await self._bus.unsubscribe(event_type, self._record)
+
+    async def __aenter__(self) -> _NodeTranscript:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
+
+    async def _record(self, event: _Shown) -> None:
+        if event.origin.kind == "workflow_node":
+            self.events.append(event)
+
+    def shown(self) -> list[str]:
+        shown: list[str] = []
+        segment = None
+        for event in self.events:
+            if isinstance(event, InvocationContentDelta):
+                if event.segment_id == segment:
+                    shown[-1] += event.text
+                else:
+                    shown.append(event.text)
+                segment = event.segment_id
+                continue
+            segment = None
+            if isinstance(event, InvocationToolCallStart):
+                shown.append(f"hosted {event.tool_name}" if event.provider_hosted else event.tool_name)
+            else:
+                shown.append(f"final: {event.text}" if event.is_final else f"message: {event.text}")
+        return shown
 
 
 @pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled"])
@@ -54,14 +110,8 @@ async def test_attempt_archive_survives_shutdown_with_reused_call_ids(
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client], builtin_tools=True)
     write_workflow(project, "archive", source())
     host = make_host(tmp_path, project=project, profiles=[make_profile(builtins=["filesystem.read"])], stream=stream)
-    transcript: list[InvocationMessage | InvocationToolCallStart] = []
-
-    async def record(event: InvocationMessage | InvocationToolCallStart) -> None:
-        if event.origin.kind == "workflow_node":
-            transcript.append(event)
-
-    await host.event_bus.subscribe(InvocationMessage, record)
-    await host.event_bus.subscribe(InvocationToolCallStart, record)
+    transcript = _NodeTranscript(host.event_bus)
+    await transcript.start()
     task = None
     try:
         await confirm(host, "archive")
@@ -92,24 +142,19 @@ async def test_attempt_archive_survives_shutdown_with_reused_call_ids(
             await host.cancel_workflow()
         result, _events = await task
         assert result.outcome.value == ("node_failed" if outcome == "failed" else outcome)
-        assert [event.text if isinstance(event, InvocationMessage) else event.tool_name for event in transcript] == [
+        assert transcript.shown() == [
             "First inspection.",
             "read_file",
             "Second inspection.",
             "read_file",
-            *(["Done"] if outcome == "completed" else []),
+            *(["Done", "final: Done"] if outcome == "completed" else []),
         ]
-        prose = [event for event in transcript if isinstance(event, InvocationMessage)]
-        assert all(event.is_intermediate and not event.is_final for event in prose[:2])
-        if outcome == "completed":
-            assert prose[-1].is_final and not prose[-1].is_intermediate
         session_dir = host.workflow_session_dir
         assert session_dir is not None
         directory = run_dir(session_dir, result.run_id)
     finally:
         await host.shutdown()
-        await host.event_bus.unsubscribe(InvocationMessage, record)
-        await host.event_bus.unsubscribe(InvocationToolCallStart, record)
+        await transcript.close()
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
     stored = read_node_transcript(directory, "node@iter#1", 1)
@@ -141,7 +186,7 @@ async def test_attempt_archive_survives_shutdown_with_reused_call_ids(
 async def test_streamed_prose_of_an_unknown_tool_call_reaches_the_node_transcript(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An unknown tool starts no tool, which is what releases streamed prose, and the value leaves it out."""
+    """An unknown tool starts no tool; the prose streamed before it shows once, and the value leaves it out."""
     project = make_project(tmp_path)
     node_client = MockChatClient(
         responses=[
@@ -152,91 +197,127 @@ async def test_streamed_prose_of_an_unknown_tool_call_reaches_the_node_transcrip
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
     write_workflow(project, "archive", source())
     host = make_host(tmp_path, project=project, stream=True)
-    prose: list[tuple[str, bool]] = []
-
-    async def record(event: InvocationMessage) -> None:
-        if event.origin.kind == "workflow_node":
-            prose.append((event.text, event.is_intermediate))
-
-    await host.event_bus.subscribe(InvocationMessage, record)
     try:
-        await confirm(host, "archive")
-        result, _events = await run(host, "archive", input_text="Check")
+        async with _NodeTranscript(host.event_bus) as transcript:
+            await confirm(host, "archive")
+            result, _events = await run(host, "archive", input_text="Check")
         assert result.outcome.value == "completed"
-        assert prose == [("Let me check. ", True), ("Done", False)]
+        assert transcript.shown() == ["Let me check. ", "Done", "final: Done"]
         assert [item.value.text for item in result.outputs] == ["Done"]
     finally:
         await host.shutdown()
-        await host.event_bus.unsubscribe(InvocationMessage, record)
+
+
+def _hosted_image_item() -> Content:
+    """A completed hosted image result stamped with its provider item id, as every hosted adapter stamps it."""
+    return Content.from_image_generation_tool_result(
+        image_id="image-1",
+        outputs=[Content.from_uri("data:image/png;base64,QUJD", media_type="image/png")],
+        hosted_provider="openai",
+        provider_item_id="ig_1",
+        provider_phase="terminal",
+        provider_status="completed",
+    )
 
 
 @pytest.mark.parametrize("stream", [True, False], ids=["streamed", "blocking"])
 async def test_prose_before_hosted_output_reaches_the_node_transcript_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream: bool
 ) -> None:
-    """The prose precedes the next response's hosted output, and the run-end reconcile leaves it alone."""
+    """The prose precedes the next response's hosted output and shows once."""
     project = make_project(tmp_path)
     node_client = HostedMockChatClient(
         responses=[
             MockResponse(text="Let me check. ", tool_calls=[("no_such_tool", "c-1", {})]),
-            HostedMockResponse(text="Done", hosted=[hosted_image_result()]),
+            HostedMockResponse(text="Done", hosted=[_hosted_image_item()]),
         ]
     )
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
     write_workflow(project, "archive", source())
     host = make_host(tmp_path, project=project, stream=stream)
-    transcript: list[tuple[str, bool] | str] = []
-
-    async def record(event: InvocationMessage) -> None:
-        if event.origin.kind == "workflow_node":
-            transcript.append((event.text, event.is_intermediate))
-
-    async def record_start(event: InvocationToolCallStart) -> None:
-        if event.origin.kind == "workflow_node" and event.provider_hosted:
-            transcript.append("hosted start")
-
-    await host.event_bus.subscribe(InvocationMessage, record)
-    await host.event_bus.subscribe(InvocationToolCallStart, record_start)
     try:
-        await confirm(host, "archive")
-        result, _events = await run(host, "archive", input_text="Check")
+        async with _NodeTranscript(host.event_bus) as transcript:
+            await confirm(host, "archive")
+            result, _events = await run(host, "archive", input_text="Check")
         assert result.outcome.value == "completed"
-        assert transcript == [("Let me check. ", True), "hosted start", ("Done", False)]
+        assert transcript.shown() == ["Let me check. ", "hosted image", "Done", "final: Done"]
         assert [item.value.text for item in result.outputs] == ["Done"]
     finally:
         await host.shutdown()
-        await host.event_bus.unsubscribe(InvocationToolCallStart, record_start)
-        await host.event_bus.unsubscribe(InvocationMessage, record)
 
 
 async def test_prose_of_a_failed_pass_reaches_the_node_transcript(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A pass that fails after an unknown call still publishes the prose streamed with it."""
+    """A pass that fails after an unknown call keeps the prose it streamed, and no final message follows."""
     project = make_project(tmp_path)
     node_client = MockChatClient(
         responses=[MockResponse(text="Let me check. ", tool_calls=[("no_such_tool", "c-1", {})])]
     )
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
-    # No next response starts, so only the end of the failed pass can release the prose.
+    # The second response fails before it starts.
     fail_nested_before_response_on_nth(monkeypatch, 2)
     write_workflow(project, "archive", source())
     host = make_host(tmp_path, project=project, stream=True)
-    prose: list[tuple[str, bool]] = []
-
-    async def record(event: InvocationMessage) -> None:
-        if event.origin.kind == "workflow_node":
-            prose.append((event.text, event.is_intermediate))
-
-    await host.event_bus.subscribe(InvocationMessage, record)
     try:
-        await confirm(host, "archive")
-        result, _events = await run(host, "archive", input_text="Check")
+        async with _NodeTranscript(host.event_bus) as transcript:
+            await confirm(host, "archive")
+            result, _events = await run(host, "archive", input_text="Check")
         assert result.outcome.value == "node_failed"
-        assert prose == [("Let me check. ", True)]
+        assert transcript.shown() == ["Let me check. "]
     finally:
         await host.shutdown()
-        await host.event_bus.unsubscribe(InvocationMessage, record)
+
+
+@pytest.mark.parametrize("failure", ["stream_error", "error_carrying_hosted_work", "rejected_response"])
+async def test_a_hosted_card_shown_as_the_response_fails_never_completes_the_answer_before_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Hosted work the failed response ran shows as it fails, and the answer it streamed never completed."""
+    project = make_project(tmp_path)
+    node_client = MockChatClient(responses=[MockResponse(text="unused")])
+    if failure == "error_carrying_hosted_work":
+        # The error carries hosted work the response ran, which shows as it fails.
+        streamed = [Content.from_text("Partial ans")]
+    else:
+        # Held behind a call that never starts, the hosted card shows when the response is given up.
+        call = Content.from_function_call("c-1", "" if failure == "rejected_response" else "no_such_tool", arguments={})
+        streamed = [call, _hosted_image_item(), Content.from_text("Partial ans")]
+
+    async def cut(
+        _resp: MockResponse, model_id: str, _finish_reason: FinishReasonLiteral | FinishReason
+    ) -> AsyncIterator[ChatResponseUpdate]:
+        for content in streamed:
+            yield ChatResponseUpdate(role="assistant", contents=[content], model=model_id)
+        if failure == "stream_error":
+            raise RuntimeError("dropped")
+        if failure == "error_carrying_hosted_work":
+            raise ProviderResponseError(
+                "server_error", "dropped", retryable=False, observed_contents=(_hosted_image_item(),)
+            )
+
+    monkeypatch.setattr(node_client, "_stream_updates", cut)
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])
+    write_workflow(project, "archive", source())
+    host = make_host(tmp_path, project=project, stream=True)
+    ends: list[str] = []
+
+    async def record(event: InvocationContentFinished) -> None:
+        if event.origin.kind == "workflow_node" and event.channel == "answer":
+            ends.append(event.status)
+
+    await host.event_bus.subscribe(InvocationContentFinished, record)
+    try:
+        async with _NodeTranscript(host.event_bus) as transcript:
+            await confirm(host, "archive")
+            result, _events = await run(host, "archive", input_text="Check")
+        assert result.outcome.value == "node_failed"
+        assert transcript.shown() == ["Partial ans", "hosted image"]
+        # The node transcript keeps a completed segment before a card; the cut-off answer ends failed.
+        assert ends == ["failed"]
+    finally:
+        await host.shutdown()
+        await host.event_bus.unsubscribe(InvocationContentFinished, record)
 
 
 @pytest.mark.parametrize("close", ["cancel", "shutdown"])
@@ -258,8 +339,8 @@ async def test_closing_the_run_settles_prose_a_subscriber_holds(
     abandoned = asyncio.Event()
     delivered: list[str] = []
 
-    async def stuck(event: InvocationMessage) -> None:
-        if event.origin.kind == "workflow_node" and event.is_intermediate:
+    async def stuck(event: InvocationContentDelta) -> None:
+        if event.origin.kind == "workflow_node":
             publishing.set()
             try:
                 await asyncio.Event().wait()
@@ -267,11 +348,12 @@ async def test_closing_the_run_settles_prose_a_subscriber_holds(
                 abandoned.set()
                 raise
 
-    async def late(event: InvocationMessage) -> None:
-        if event.origin.kind == "workflow_node" and event.is_intermediate:
+    async def late(event: InvocationContentDelta | InvocationMessage) -> None:
+        if event.origin.kind == "workflow_node":
             delivered.append(event.text)
 
-    await host.event_bus.subscribe(InvocationMessage, stuck)
+    await host.event_bus.subscribe(InvocationContentDelta, stuck)
+    await host.event_bus.subscribe(InvocationContentDelta, late)
     await host.event_bus.subscribe(InvocationMessage, late)
     task = None
     try:
@@ -293,7 +375,8 @@ async def test_closing_the_run_settles_prose_a_subscriber_holds(
         assert delivered == []
     finally:
         await host.shutdown()
-        await host.event_bus.unsubscribe(InvocationMessage, stuck)
+        await host.event_bus.unsubscribe(InvocationContentDelta, stuck)
+        await host.event_bus.unsubscribe(InvocationContentDelta, late)
         await host.event_bus.unsubscribe(InvocationMessage, late)
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)

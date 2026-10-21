@@ -16,8 +16,6 @@ from chrys.foundation.trajectory.envelope import LinkRelation, MeasurementSource
 from chrys.foundation.trajectory.event_types import (
     EventType,
     ExchangeOutcome,
-    RetryMode,
-    RetryReason,
     ValidationOutcome,
     ValidationReason,
 )
@@ -47,7 +45,6 @@ def test_exchange_started_merges_facts_and_hangs_under_the_cycle() -> None:
     context = _exchange_context(sink, model_profile_id="gpt", agent_profile_id="main")
     trace = ExchangeTrace(context)
     assert trace.operation_id == context.exchange_operation_id
-    assert trace.generation == 0
     assert not trace.is_started and not trace.is_finished
     trace.started(payload={"continuation_mode": "none", "model_profile_id": "override"})
     trace.started(payload={"ignored": True})
@@ -200,60 +197,6 @@ async def test_a_client_owned_exchange_closes_itself_when_it_fails() -> None:
     assert finished.payload["error_kind"] == ErrorKind.UNKNOWN
 
 
-def test_exchange_reissue_rolls_onto_a_new_operation_and_resets_state() -> None:
-    sink = FakeSink()
-    context = _exchange_context(sink, model_profile_id="gpt")
-    trace = ExchangeTrace(context)
-    original_id = trace.operation_id
-    trace.set_context_revision(new_analytics_id())
-    trace.started()
-    trace.chunk_observed(visible=True)
-    trace.stall_observed()
-    trace.mark_outcome(ExchangeOutcome.STALLED)
-
-    new_id = trace.reissue()
-    assert is_valid_analytics_id(new_id) and new_id != original_id
-    assert trace.operation_id == new_id
-    assert trace.context.exchange_operation_id == new_id
-    assert trace.context.cycle_operation_id == context.cycle_operation_id
-    assert trace.context.exchange_facts == {"model_profile_id": "gpt"}
-    assert trace.generation == 1
-    assert not trace.is_started and not trace.is_finished
-    assert trace.context_revision_id is None
-    # The abandoned acquisition is closed under its own (original) operation id.
-    abandoned = sink.only(EventType.MODEL_EXCHANGE_FINISHED)
-    assert abandoned.operation_id == original_id
-    assert abandoned.payload["outcome"] == ExchangeOutcome.STALLED
-    assert abandoned.payload["chunk_count"] == 1
-
-    trace.started()
-    trace.finished(outcome=ExchangeOutcome.SUCCESS)
-    started = sink.of_type(EventType.MODEL_EXCHANGE_STARTED)
-    finished = sink.of_type(EventType.MODEL_EXCHANGE_FINISHED)
-    assert [event.operation_id for event in started] == [original_id, new_id]
-    assert finished[-1].operation_id == new_id
-    assert finished[-1].payload["outcome"] == ExchangeOutcome.SUCCESS
-    assert finished[-1].payload["chunk_count"] == 0
-    assert finished[-1].payload["stall_count"] == 0
-    assert "context_revision_id" not in finished[-1].payload
-
-
-def test_exchange_reissue_accepts_a_caller_chosen_id_and_does_not_abandon_an_unstarted_trace() -> None:
-    sink = FakeSink()
-    trace = ExchangeTrace(_exchange_context(sink))
-    chosen = new_analytics_id()
-    assert trace.reissue(chosen) == chosen
-    assert trace.operation_id == chosen
-    assert trace.generation == 1
-    assert sink.drafts == []
-    trace.started()
-    trace.finished(outcome=ExchangeOutcome.SUCCESS)
-    # Already finished: a second reissue closes nothing again.
-    trace.reissue()
-    assert trace.generation == 2
-    assert len(sink.of_type(EventType.MODEL_EXCHANGE_FINISHED)) == 1
-
-
 # ---------------------------------------------------------------------- ValidationTrace
 
 
@@ -274,9 +217,7 @@ async def test_validation_finished_rejected_links_to_the_exchange() -> None:
     context = _exchange_context(sink)
     exchange = ExchangeTrace(context)
     validation = ValidationTrace(exchange)
-    await validation.finished(
-        accepted=False, reason_code=ValidationReason.EMPTY_CONTENTS, retryable=True, gave_up=False
-    )
+    await validation.finished(accepted=False, reason_code=ValidationReason.EMPTY_CONTENTS)
     event = sink.only(EventType.MODEL_VALIDATION_FINISHED)
     assert is_valid_analytics_id(event.operation_id)
     assert event.operation_id != exchange.operation_id
@@ -289,116 +230,27 @@ async def test_validation_finished_rejected_links_to_the_exchange() -> None:
         "exchange_operation_id": exchange.operation_id,
         "attempt_index": 0,
         "reason_code": ValidationReason.EMPTY_CONTENTS,
-        "retryable": True,
     }
 
 
 @pytest.mark.asyncio
-async def test_validation_finished_accepted_and_gave_up_shapes() -> None:
+async def test_validation_finished_accepted_shape() -> None:
     sink = FakeSink()
     exchange = ExchangeTrace(_exchange_context(sink))
-    validation = ValidationTrace(exchange)
-    await validation.finished(accepted=True)
-    await validation.finished(
-        accepted=False, reason_code=ValidationReason.REASONING_ONLY, retryable=False, gave_up=True
-    )
-    accepted, rejected = sink.of_type(EventType.MODEL_VALIDATION_FINISHED)
-    assert accepted.payload == {
+    await ValidationTrace(exchange).finished(accepted=True)
+    assert sink.only(EventType.MODEL_VALIDATION_FINISHED).payload == {
         "outcome": ValidationOutcome.ACCEPTED,
         "exchange_operation_id": exchange.operation_id,
         "attempt_index": 0,
     }
-    assert rejected.payload["gave_up"] is True
-    assert rejected.payload["retryable"] is False
-    assert rejected.payload["reason_code"] == ValidationReason.REASONING_ONLY
 
 
 @pytest.mark.asyncio
-async def test_validation_retry_rolls_the_exchange_and_abandons_the_started_one() -> None:
+async def test_validation_emit_failures_are_swallowed() -> None:
     sink = FakeSink()
-    context = _exchange_context(sink)
-    exchange = ExchangeTrace(context)
-    validation = ValidationTrace(exchange)
-    first_id = exchange.operation_id
-    exchange.started()
-    await validation.finished(accepted=False, reason_code=ValidationReason.WHITESPACE_ONLY, retryable=True)
-    await validation.retry_scheduled(delay_seconds=1.5)
-    await validation.retry_started()
-
-    second_id = exchange.operation_id
-    assert second_id != first_id and is_valid_analytics_id(second_id)
-    assert exchange.generation == 1
-    assert validation.exchange_operation_id == second_id
-
-    scheduled = sink.only(EventType.RETRY_SCHEDULED)
-    started = sink.only(EventType.RETRY_STARTED)
-    assert scheduled.operation_id == second_id
-    assert started.operation_id == second_id
-    assert scheduled.parent_operation_id == context.cycle_operation_id
-    assert started.parent_operation_id == context.cycle_operation_id
-    assert scheduled.payload == {
-        "reason_code": RetryReason.VALIDATION_REJECTED,
-        "delay_ms": 1500,
-        "retry_mode": RetryMode.VALIDATION,
-        "previous_operation_id": first_id,
-        "committed_work_present": False,
-        "fallback_to_blocking": False,
-    }
-    assert started.payload == {
-        "retry_mode": RetryMode.VALIDATION,
-        "next_operation_id": second_id,
-        "previous_operation_id": first_id,
-    }
-    abandoned = sink.only(EventType.MODEL_EXCHANGE_FINISHED)
-    assert abandoned.operation_id == first_id
-    assert abandoned.payload["outcome"] == ExchangeOutcome.ABANDONED
-    assert sink.event_types == [
-        EventType.MODEL_EXCHANGE_STARTED,
-        EventType.MODEL_VALIDATION_FINISHED,
-        EventType.RETRY_SCHEDULED,
-        EventType.RETRY_STARTED,
-        EventType.MODEL_EXCHANGE_FINISHED,
-    ]
-
-    # The next verdict is attempt 1 against the re-issued exchange.
-    exchange.started()
-    exchange.finished(outcome=ExchangeOutcome.SUCCESS)
-    await validation.finished(accepted=True)
-    verdicts = sink.of_type(EventType.MODEL_VALIDATION_FINISHED)
-    assert verdicts[-1].payload["attempt_index"] == 1
-    assert verdicts[-1].payload["exchange_operation_id"] == second_id
-    assert verdicts[-1].parent_operation_id == second_id
-
-
-@pytest.mark.asyncio
-async def test_validation_retry_started_without_schedule_mints_its_own_id_and_clamps_delay() -> None:
-    sink = FakeSink()
-    exchange = ExchangeTrace(_exchange_context(sink))
-    validation = ValidationTrace(exchange)
-    first_id = exchange.operation_id
-    await validation.retry_started()
-    started = sink.only(EventType.RETRY_STARTED)
-    assert started.operation_id == exchange.operation_id != first_id
-    assert started.payload["next_operation_id"] == exchange.operation_id
-    # No exchange had started, so nothing is abandoned.
-    assert sink.of_type(EventType.MODEL_EXCHANGE_FINISHED) == []
-
-    await validation.retry_scheduled(delay_seconds=-2.0)
-    assert sink.only(EventType.RETRY_SCHEDULED).payload["delay_ms"] == 0
-
-
-@pytest.mark.asyncio
-async def test_validation_emit_failures_are_swallowed_and_the_exchange_still_rolls() -> None:
-    sink = FakeSink()
-    exchange = ExchangeTrace(_exchange_context(sink))
-    validation = ValidationTrace(exchange)
-    first_id = exchange.operation_id
+    validation = ValidationTrace(ExchangeTrace(_exchange_context(sink)))
     sink.fail_next = True
     await validation.finished(accepted=False, reason_code=ValidationReason.UNKNOWN)
-    sink.fail_next = True
-    await validation.retry_scheduled(delay_seconds=0)
-    sink.fail_next = True
-    await validation.retry_started()
     assert sink.drafts == []
-    assert exchange.operation_id != first_id
-    assert exchange.generation == 1
+    await validation.finished(accepted=True)
+    assert sink.only(EventType.MODEL_VALIDATION_FINISHED).payload["outcome"] == ValidationOutcome.ACCEPTED

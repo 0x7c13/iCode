@@ -40,7 +40,6 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from chrys.foundation.errors import ProviderResponseError, in_band_failure_retryable
 from chrys.foundation.hosted_tools import (
-    PRESENTATION_TEXT_SEGMENT_ID_KEY,
     HeldHostedEvidence,
     HostedRetrySafety,
     HostedToolPhase,
@@ -54,6 +53,7 @@ from chrys.kernel import (
 )
 from chrys.kernel.exchanges import TOOL_RESULT_CONTENT_TYPES
 from chrys.service.llm.chat_completions.decode import refused_calls_error
+from chrys.service.llm.reasoning_display import REASONING_SUMMARY_KEY
 from chrys.service.profiles.models.options import effective_store_option
 
 from .decode import (
@@ -419,8 +419,6 @@ class StreamState:
     def _message_text(self, event: Any, text: str, annotations: list[Annotation] | None = None) -> Content:
         """A text content of an output message, kept to receive its envelope when the item is done."""
         properties: dict[str, Any] = {}
-        if segment_id := _text_segment_id(event):
-            properties[PRESENTATION_TEXT_SEGMENT_ID_KEY] = segment_id
         index = getattr(event, "output_index", None)
         tracked = isinstance(index, int) and not isinstance(index, bool)
         if tracked and (envelope := self._slot(index).envelope):
@@ -725,24 +723,9 @@ def _output_order(index: Any) -> tuple[int, int]:
     return (1, 0)
 
 
-def _text_segment_id(event: Any) -> str:
-    """Which streamed text part *event* belongs to, unique within the response."""
-    item_id = getattr(event, "item_id", None)
-    index = getattr(event, "output_index", None)
-    part = getattr(event, "content_index", None)
-    if isinstance(item_id, str) and item_id:
-        segment = f"item:{item_id}"
-    elif isinstance(index, int) and not isinstance(index, bool):
-        segment = f"output:{index}"
-    else:
-        return ""
-    if isinstance(part, int) and not isinstance(part, bool):
-        return f"{segment}:content:{part}"
-    return segment
-
-
 def _reasoning_text(event: Any, text: str) -> Content:
-    properties = {"reasoning_text": True} if event.type.startswith("response.reasoning_text.") else None
+    is_text = event.type.startswith("response.reasoning_text.")
+    properties: dict[str, Any] = {"reasoning_text": True} if is_text else {REASONING_SUMMARY_KEY: True}
     return Content.from_text_reasoning(
         id=event.item_id, text=text, raw_representation=event, additional_properties=properties
     )

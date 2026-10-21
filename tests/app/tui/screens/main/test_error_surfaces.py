@@ -431,11 +431,11 @@ def test_pending_submit_error_restores_prompt_without_inline_retry_action() -> N
             assert error is True
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
-            chat_errors.append((message, action_label))
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
+            chat_errors.append((message, action_label, ends_turn))
 
     input_bar = _FakeInputBar()
-    chat_errors: list[tuple[str, str | None]] = []
+    chat_errors: list[tuple[str, str | None, bool]] = []
     running: list[bool] = []
 
     def query_one(cls: object) -> object:
@@ -462,7 +462,8 @@ def test_pending_submit_error_restores_prompt_without_inline_retry_action() -> N
     assert running == []
     assert input_bar.value == "blocked prompt"
     assert input_bar.unlocked is True
-    assert chat_errors == [("Prompt denied", None)]
+    # No turn ran, so the card ends none: a bare Retry must leave the last answer.
+    assert chat_errors == [("Prompt denied", None, False)]
 
 
 def test_pending_submit_error_display_localizes_chat_but_debug_keeps_protocol_english() -> None:
@@ -481,7 +482,7 @@ def test_pending_submit_error_display_localizes_chat_but_debug_keeps_protocol_en
             flashes.append(message)
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             chat_errors.append((message, action_label))
 
     input_bar = _FakeInputBar()
@@ -572,7 +573,13 @@ def test_backend_handler_defers_error_while_user_bubble_is_rendering() -> None:
 
     assert state.run.agent_running is True
     assert state.submit.blocked is False
-    assert state.render_gate.consume_deferred() == [event]
+    replayed: list[object] = []
+
+    async def replay(deferred: object) -> None:
+        replayed.append(deferred)
+
+    asyncio.run(state.render_gate.drain(replay))
+    assert replayed == [event]
 
 
 def test_live_turn_error_requests_terminal_absorb_after_render() -> None:
@@ -598,7 +605,7 @@ def test_live_turn_error_requests_terminal_absorb_after_render() -> None:
             order.append("unlock")
 
     class _FakeChatPanel:
-        async def add_error(self, _message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, _message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             assert action_label == "Retry"
             assert handler._state.run.agent_running is True
             assert input_bar.locked is True
@@ -651,7 +658,7 @@ def test_live_turn_error_render_failure_releases_input_without_absorb() -> None:
             self.locked = False
 
     class _FailingChatPanel:
-        async def add_error(self, _message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, _message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             assert action_label == "Retry"
             assert handler._state.run.agent_running is True
             raise RuntimeError("render failed")
@@ -798,7 +805,7 @@ def test_error_event_empty_message_uses_code_fallback() -> None:
             self.locked = False
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             assert action_label == "Retry"
             chat_errors.append(message)
 
@@ -867,7 +874,7 @@ def test_error_display_message_localizes_ui_surfaces_and_keeps_raw_debug() -> No
             self.locked = False
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             chat_errors.append(message)
 
     status = _FakeStatusBar()
@@ -942,7 +949,7 @@ def _make_agent_load_error_handler(dialog: object) -> tuple[BackendEventHandler,
         retry_mode = False
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
             assert action_label == "Retry"
             probe.chat_errors.append(message)
 

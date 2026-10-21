@@ -372,11 +372,9 @@ async def test_chat_works_after_interrupt(tmp_path: Path, agent_engine, monkeypa
     finals = await _final_agent_messages_after_strict_run(engine, events)
     assert len(finals) == 1, f"Expected 1 final message after retry, got {len(finals)}"
 
-    # History should now have the new conversation too.
-    # The interrupted run's leaked text response is dropped by
-    # _remove_trailing_agent_text, so we expect:
+    # History should now have the new conversation too:
     #   user("Start something") + user("Try again") + assistant("All good now.")
-    # plus any turn/status markers.
+    # plus whatever the interrupted run showed and any turn/status markers.
     msgs = _history_messages(engine)
     assert len(msgs) >= 3  # interrupted user + new user + new assistant
 

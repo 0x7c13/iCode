@@ -13,8 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 import pytest
 
 from chrys.foundation.config.settings import Settings
-from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import InvocationMessage
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.kernel import StallExhaustedAction
 from chrys.orchestration.sub_agents.tools import SubAgentTools
@@ -111,70 +109,6 @@ async def test_sub_agent_register_passes_child_and_parent_session_ids_to_client(
         assert generator._parent_session_id == "sess-123"
         # Sub-agent Phase-4 side calls report spend through the same sink.
         assert generator._report_usage is side_usage_sink
-    finally:
-        await tools.cleanup()
-
-
-async def test_shared_client_intermediate_callback_uses_current_invocation() -> None:
-    """A registered client must route presentation through the active call context."""
-    import chrys.orchestration.sub_agents.tools as sub_agent_module
-
-    profile = AgentProfile(
-        name="Explore",
-        display_name="Explore Agent",
-        instructions="Investigate.",
-        tools=ToolsConfig(builtins=[]),
-    )
-    fallback_profile = ModelProfile(id="parent-model", name="parent", provider="mock", model_id="mock")
-    agent_mock = MagicMock()
-    agent_mock.__aenter__ = AsyncMock(return_value=agent_mock)
-    agent_mock.__aexit__ = AsyncMock()
-    callbacks: dict[str, object] = {}
-    invocation_ids: list[str] = []
-    bus = EventBus()
-    messages: list[InvocationMessage] = []
-
-    async def capture_message(event: InvocationMessage) -> None:
-        messages.append(event)
-
-    await bus.subscribe(InvocationMessage, capture_message)
-
-    def create_client(*_args: object, **kwargs: object) -> MagicMock:
-        callbacks.update(kwargs)
-        return MagicMock(aclose=AsyncMock())
-
-    class _Controller(SubAgentPolicyDouble):
-        def __init__(self, *, shell, prompt: str, **_kwargs: object) -> None:
-            super().__init__(shell=shell, prompt=prompt)
-            invocation_id = shell.invocation_id
-            invocation_ids.append(invocation_id)
-
-        async def execute(self) -> str:
-            callback = callbacks["on_intermediate_text_async"]
-            assert callable(callback)
-            await callback("Inspecting files")
-            return "done"
-
-    tools = SubAgentTools(event_bus=bus, session_id="sess-123")
-    try:
-        with (
-            patch("chrys.orchestration.invoker.runtime.Agent", return_value=agent_mock),
-            patch("chrys.orchestration.sub_agents.tools.create_client", side_effect=create_client),
-            patch.object(sub_agent_module, "KernelSubAgentPolicy", _Controller),
-        ):
-            await tools.register(
-                SubAgentRef(profile="Explore", tool_name="explore"),
-                profile,
-                SessionEnvironment.capture(session_id="sess-123"),
-                settings=Settings(),
-                fallback_profile=fallback_profile,
-            )
-            assert await tools.get_tools()[0].func(prompt="hi") == "done"
-
-        assert len(invocation_ids) == 1
-        assert [(message.agent_name, message.origin.invocation_id, message.text) for message in messages] == [
-            ("Explore Agent", invocation_ids[0], "Inspecting files")
-        ]
     finally:
         await tools.cleanup()
 

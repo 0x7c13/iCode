@@ -37,6 +37,7 @@ from chrys.foundation.errors import (
     classify_error,
     clean_error_message,
     invalidates_continuation_token,
+    is_blank_response,
     is_context_overflow,
     is_thinking_binding_rejection,
 )
@@ -109,6 +110,20 @@ DEFAULT_MAX_CONSECUTIVE_ERRORS = 3
 CONTINUATION_POLL_INTERVAL_SECONDS: float = 2.0
 
 
+RESPONSE_READY_KWARG = "response_ready_observer"
+"""``client_kwargs`` key of the run's :data:`ResponseReadyObserver`."""
+
+type ResponseReadyObserver = Callable[[ChatResponse], Awaitable[None]]
+"""Awaited once per landed model response, before the loop runs its tools or returns it.
+
+Both drivers call it for every response, the final request without tools
+included, after the response is normalized (echoes removed, unexecutable
+calls stripped, fallback text added). A streamed response's updates were
+all yielded before it. An exception it raises fails the run before the
+response's tools run.
+"""
+
+
 class StallExhaustedAction(Enum):
     """Action taken when the stream-idle retry budget is exhausted."""
 
@@ -127,6 +142,10 @@ class WireRetryPolicy(Protocol):
     # or of unknown safety) that the current wire attempt already ran
     # server-side; None when the caller has no such probe.
     hosted_commits_in_flight: Callable[[], tuple[str, ...]] | None
+    # Whether the answer text the current call streamed was shown, for a
+    # caller that shows it only once a whole segment of it completes; None
+    # when every answer text the call yields shows as it arrives.
+    answer_shown: Callable[[], bool] | None
 
     def backoff_seconds(self, attempt: int) -> int: ...
 
@@ -535,7 +554,7 @@ def _strip_echoed_update(
     proxies and assembly, letting the loop drop only the logical message
     shell this update actually emptied. The marker is attached to the
     accepted update object rather than keyed by provider message ID, which
-    can collide across validation retries.
+    can collide across resent requests.
     """
     if any(item in echo_registry for item in update.contents):
         update = copy(update)
@@ -971,11 +990,7 @@ class _LoopTrajectory:
         if trace is None:
             return
         self._active_exchange = None
-        # A middleware beneath the loop may have re-issued the request in
-        # place (validation retry): the handle then names the final
-        # exchange and every re-issue was one more acquisition.
         self._last_exchange_id = trace.operation_id
-        self._cycle_exchange_count += trace.generation
         payload: dict[str, Any] = {}
         if exc is not None:
             payload["error_code"] = type(exc).__name__
@@ -1082,18 +1097,25 @@ class _LoopTrajectory:
             raise first_failure
 
 
+def _carries_answer_text(update: ChatResponseUpdate) -> bool:
+    """Whether a streamed update carries answer text a caller may show; reasoning may stream again."""
+    return any(content.type == "text" and content.text and not content.text.isspace() for content in update.contents)
+
+
 class _WireCaller:
     """The loop's logical model calls and their wire retry lanes.
 
     A logical call is one ``blocking_response`` or ``streaming_response``:
     every request it sends until a response lands — continuation polls,
-    transient and stall retries, the stall fallback to a blocking request
-    and one context-overflow resend. Retries need a wire policy, which a
-    service-side run never gets.
+    transient and stall retries, the stall fallback to a blocking request,
+    one context-overflow resend and one resend of a response that showed
+    nothing. Retries need a wire policy, which a service-side run never
+    gets, and stop once a streaming call's answer text showed: as it was
+    yielded, or when the policy's ``answer_shown`` says so.
 
     State, by lifetime: the continuation token last mirrored to the retry
-    owner lives for the run; the overflow-resend flag for one logical call
-    (the stall fallback inherits it); the transient and stall counters for
+    owner lives for the run; the two resend flags for one logical call
+    (the stall fallback inherits them); the transient and stall counters for
     one ``blocking_response`` call or the streaming attempts of one
     ``streaming_response``, so the stall fallback's blocking request starts
     a fresh transient budget; the provider stream and its usage chunks for
@@ -1206,12 +1228,17 @@ class _WireCaller:
             # sit stranded until commit destroys it.
             policy.before_retry()
         delay = policy.backoff_seconds(attempt - 1) if delay_seconds is None else delay_seconds
-        stalled = isinstance(exc, StreamStall)
+        if isinstance(exc, StreamStall):
+            reason_code = RetryReason.STREAM_STALL
+        elif retry_mode == RetryMode.VALIDATION:
+            reason_code = RetryReason.VALIDATION_REJECTED
+        else:
+            reason_code = RetryReason.TRANSIENT_ERROR
         if retry_mode is None:
             retry_mode = RetryMode.STALL_FALLBACK if fallback_to_blocking else RetryMode.WIRE
         recorder = self._recorder
         await self._trajectory.retry_scheduled(
-            reason_code=RetryReason.STREAM_STALL if stalled else RetryReason.TRANSIENT_ERROR,
+            reason_code=reason_code,
             retry_mode=retry_mode,
             delay_seconds=delay,
             fallback_to_blocking=fallback_to_blocking,
@@ -1273,9 +1300,16 @@ class _WireCaller:
             and not self._hosted_commits_vetoing_replay(policy)
         )
 
-    async def _schedule_overflow_resend(self, policy: WireRetryPolicy, exc: BaseException) -> None:
-        # The strategy holds the note, so the resend's client preparation
-        # compacts before the request goes out.
+    def _resends_blank_response(self, policy: WireRetryPolicy, exc: BaseException, *, resent: bool) -> bool:
+        # One immediate resend per logical call of a response that showed
+        # nothing, outside the transient and stall budgets: sampling again
+        # usually answers. Its rejection already dropped the continuation
+        # token; hosted work an attempt already ran must not rerun.
+        return not resent and is_blank_response(exc) and not self._hosted_commits_vetoing_replay(policy)
+
+    async def _schedule_resend(self, policy: WireRetryPolicy, exc: BaseException, *, retry_mode: str) -> None:
+        # After an overflow the strategy holds the note, so the resend's
+        # client preparation compacts before the request goes out.
         await self._schedule_retry(
             policy,
             exc,
@@ -1283,7 +1317,7 @@ class _WireCaller:
             attempt=1,
             max_attempts=1,
             delay_seconds=0,
-            retry_mode=RetryMode.CONTEXT_OVERFLOW,
+            retry_mode=retry_mode,
         )
 
     async def blocking_response(
@@ -1292,6 +1326,7 @@ class _WireCaller:
         *,
         request_message_observer: Callable[[Sequence[Message]], None],
         overflow_recovered: bool = False,
+        blank_resent: bool = False,
     ) -> ChatResponse:
         retry_attempt = 0
         while True:
@@ -1330,7 +1365,11 @@ class _WireCaller:
                     policy, noted=noted, recovered=overflow_recovered
                 ):
                     overflow_recovered = True
-                    await self._schedule_overflow_resend(policy, exc)
+                    await self._schedule_resend(policy, exc, retry_mode=RetryMode.CONTEXT_OVERFLOW)
+                    continue
+                if policy is not None and self._resends_blank_response(policy, exc, resent=blank_resent):
+                    blank_resent = True
+                    await self._schedule_resend(policy, exc, retry_mode=RetryMode.VALIDATION)
                     continue
                 if policy is None or not policy.is_retryable(exc) or retry_attempt >= policy.max_retries:
                     raise
@@ -1369,6 +1408,11 @@ class _WireCaller:
             retry_attempt = 0
             stall_retry_attempt = 0
             overflow_recovered = False
+            blank_resent = False
+            # Whether this call already yielded answer text: callers show it
+            # as it arrives (unless the policy says when it shows), so no
+            # retry may send the request again.
+            delivered_text = False
             while True:
                 policy = self._policy
                 if policy is not None and policy.is_interrupted():
@@ -1405,6 +1449,7 @@ class _WireCaller:
                                 # by a duplicate create.
                                 self._track_continuation_token(update.continuation_token)
                             stream_usage_chunks.extend(_stream_usage_chunks(update))
+                            delivered_text = delivered_text or _carries_answer_text(update)
                             yield update
                         response = await _watchdog_await(
                             inner_stream.get_final_response(),
@@ -1448,6 +1493,11 @@ class _WireCaller:
                     noted = self._note_context_overflow(exc)
                     if policy is None:
                         raise
+                    if policy.answer_shown() if policy.answer_shown is not None else delivered_text:
+                        # Every lane below (retry, stall retry, blocking
+                        # fallback, overflow and blank resends) would show it twice.
+                        logger.warning("Not replaying wire call: its streamed text was already delivered")
+                        raise
                     hosted_commits = self._hosted_commits_vetoing_replay(policy)
                     if hosted_commits:
                         logger.warning(
@@ -1458,7 +1508,13 @@ class _WireCaller:
                         raise
                     if self._resends_after_overflow(policy, noted=noted, recovered=overflow_recovered):
                         overflow_recovered = True
-                        await self._schedule_overflow_resend(policy, exc)
+                        await self._schedule_resend(policy, exc, retry_mode=RetryMode.CONTEXT_OVERFLOW)
+                        logical_stream._updates.clear()
+                        yield ChatResponseUpdate.retry_boundary()
+                        continue
+                    if self._resends_blank_response(policy, exc, resent=blank_resent):
+                        blank_resent = True
+                        await self._schedule_resend(policy, exc, retry_mode=RetryMode.VALIDATION)
                         logical_stream._updates.clear()
                         yield ChatResponseUpdate.retry_boundary()
                         continue
@@ -1481,6 +1537,7 @@ class _WireCaller:
                                 prepped,
                                 request_message_observer=request_message_observer,
                                 overflow_recovered=overflow_recovered,
+                                blank_resent=blank_resent,
                             )
                             return
                         stall_retry_attempt += 1
@@ -1575,6 +1632,7 @@ class _LoopRun:
         tool_result_ceiling_tokens: int | None,
         trajectory: _LoopTrajectory,
         wire: _WireCaller,
+        response_ready: ResponseReadyObserver | None,
     ) -> None:
         self._messages = messages
         self._options = options
@@ -1591,6 +1649,7 @@ class _LoopRun:
         self._tool_result_ceiling_tokens = tool_result_ceiling_tokens
         self._trajectory = trajectory
         self._wire = wire
+        self._response_ready_observer = response_ready
         self._response_format = options.get("response_format")
         # Per-run identity registry of every content the conversation
         # holds — seeded from caller history so a client echoing a
@@ -1660,6 +1719,12 @@ class _LoopRun:
         function_calls = _extract_function_calls(response)
         await self._trajectory.cycle_finished(response, function_calls)
         return function_calls
+
+    async def _response_ready(self, response: ChatResponse) -> None:
+        # The landed response, before any of its tools run and before the
+        # run returns it: what its caller shows of it must come first.
+        if self._response_ready_observer is not None:
+            await self._response_ready_observer(response)
 
     async def _run_tool_batch(
         self, response: ChatResponse, function_calls: list[Content]
@@ -1793,6 +1858,7 @@ class _LoopRun:
             self._queue_consumed_injections(response, consumed_injection_messages)
 
             function_calls = await self._finish_cycle(response)
+            await self._response_ready(response)
             if not (function_calls and self._options.get("tools")):
                 _prepend_fcc_messages(response, self._fcc_messages)
                 response.usage_details = self._aggregated_usage
@@ -1839,6 +1905,7 @@ class _LoopRun:
         await self._finish_cycle(response)
         stripped = _strip_unexecutable_calls_from_response(response)
         _ensure_exhaustion_fallback_response(response, fallback_text)
+        await self._response_ready(response)
         # Gate on the resolved storage mode, not response metadata: under
         # conversation storage the service holds the stripped calls even
         # when the parsed response failed to carry the handle, and a
@@ -1887,9 +1954,8 @@ class _LoopRun:
                 # memo). Delivered on the REQUEST path so the middleware
                 # pipeline attaches it to the stream its final handler
                 # resolves — beneath every middleware, which is the only
-                # placement that crosses semantic stream proxies (response
-                # validation drains the inner stream and replays it) and
-                # re-attaches on every validation retry. The provider
+                # placement that crosses semantic stream proxies and
+                # re-attaches whenever a middleware calls on again. The provider
                 # finalizer, every result hook, and the yielded updates all
                 # observe one echo-free sequence, so nothing is re-assembled
                 # behind a hook's back.
@@ -1920,6 +1986,7 @@ class _LoopRun:
 
                 # Continue only for unresolved local function calls.
                 function_calls = await self._finish_cycle(response)
+                await self._response_ready(response)
                 if not (function_calls and self._options.get("tools")):
                     self._final_messages = [*self._fcc_messages, *response.messages]
                     return
@@ -2058,6 +2125,7 @@ class _LoopRun:
                 # non-stop reason like "length" — and it must arrive only
                 # after every stripped update.
                 yield ChatResponseUpdate(role="assistant", contents=[], finish_reason=final_response.finish_reason)
+            await self._response_ready(final_response)
             self._count_streamed_usage(final_response)
             self._take_consumed_injections()
             self._record_response_state(final_response)
@@ -2139,8 +2207,9 @@ class ToolLoopLayer:
     need a single model call can use the inner chat layer directly.
 
     Per-run state arrives via ``client_kwargs``: ``session`` (continuation
-    bookkeeping target) and ``loop_recorder`` (chrys interrupt-recovery
-    recorder) are popped here; everything else flows to the inner layer
+    bookkeeping target), ``loop_recorder`` (chrys interrupt-recovery
+    recorder) and the :data:`RESPONSE_READY_KWARG` observer, among others,
+    are popped here; everything else flows to the inner layer
     untouched, with continuation ids written back into the same dict between
     iterations.
     """
@@ -2224,6 +2293,8 @@ class ToolLoopLayer:
         continuation_token_observer: Callable[[Any], None] | None = (
             raw_token_observer if callable(raw_token_observer) else None
         )
+        raw_response_ready = effective_client_kwargs.pop(RESPONSE_READY_KWARG, None)
+        response_ready: ResponseReadyObserver | None = raw_response_ready if callable(raw_response_ready) else None
         raw_trajectory = effective_client_kwargs.pop(TRAJECTORY_CONTEXT_KWARG, None)
         trajectory: TrajectoryContext | None = raw_trajectory if isinstance(raw_trajectory, TrajectoryContext) else None
 
@@ -2293,6 +2364,7 @@ class ToolLoopLayer:
             tool_result_ceiling_tokens=self.tool_result_ceiling_tokens,
             trajectory=run_trajectory,
             wire=wire,
+            response_ready=response_ready,
         )
         if not stream:
             return run.run_blocking()

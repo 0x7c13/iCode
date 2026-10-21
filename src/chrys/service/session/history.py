@@ -16,7 +16,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from collections.abc import Hashable, Mapping
+from collections.abc import Hashable, Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -37,7 +37,7 @@ from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.tool_invocation_order import read_tool_invocation_order
 from chrys.foundation.tool_kinds import KIND_SUB_AGENT
 from chrys.foundation.trajectory.metadata import ensure_analytics_item_id
-from chrys.kernel import Message
+from chrys.kernel import TOOL_CALL_CONTENT_TYPES, TOOL_RESULT_CONTENT_TYPES, Message
 from chrys.kernel.exchanges import (
     PREVALIDATION_ERROR_KINDS,
     EmptyIdPolicy,
@@ -229,7 +229,8 @@ def _trim_exchange_siblings(messages: list[Message], exchange: Exchange, pairing
     applied to a single message: all answered → keep; partially answered →
     drop only the unanswered call contents; nothing answered → pop the
     whole message, unless a hosted informational call shields it into the
-    surgical branch.
+    surgical branch. A popped sibling's answer text stays, as a message of
+    its own: the user saw it stream.
 
     Truthy ids are answered at KEY level: duplicate ids are shadowed by
     dispatch and one result answers every occurrence, so no duplicate of
@@ -272,6 +273,16 @@ def _trim_exchange_siblings(messages: list[Message], exchange: Exchange, pairing
             message.contents = [c for index, c in enumerate(message.contents) if index not in dropped]
             _sync_message_approval_from_contents(message)
             survived = True
+            continue
+        dropped = {occurrence.content_index for occurrence in unmatched}
+        if any(
+            c.type == "text" and (c.text or "").strip()
+            for index, c in enumerate(message.contents)
+            if index not in dropped
+        ):
+            # The kept text answers nothing, so the walk goes on as if the sibling was popped.
+            message.contents = [c for index, c in enumerate(message.contents) if index not in dropped]
+            _sync_message_approval_from_contents(message)
             continue
         messages.pop(sibling_index)
     return survived
@@ -579,34 +590,42 @@ class SessionHistoryManager:
             if m.additional_properties.get(HistoryMarkerKind.KEY) not in HistoryMarkerKind.STATUS_MARKERS
         ]
 
-    def remove_trailing_agent_text(self) -> None:
-        """Remove trailing text-only assistant message on interrupt.
+    def keep_partial_answer(self, contents: Sequence[Content]) -> None:
+        """Append the answer a failed pass showed for a response history does not hold.
 
-        When the user interrupts during the LLM's final response (no tool
-        calls), the response may have already been stored by ``after_run``
-        before the interrupt flag is checked.  This detects and removes
-        that leaked response.
+        The user saw it, so the saved turn keeps it, and the model reads it
+        when the user goes on with a message. A response that landed as the
+        pass ended may already be in history: contents it holds are skipped.
         """
         state = self._state
         if state is None:
             return
         messages = state.get("messages")
-        if not isinstance(messages, list) or not messages:
+        if not isinstance(messages, list):
             return
-
-        last = messages[-1]
-        if last.role != "assistant":
+        held = {id(content) for message in messages for content in message.contents}
+        text = "".join(content.text or "" for content in contents if id(content) not in held)
+        if not text.strip():
             return
+        message = Message("assistant", [text])
+        ensure_analytics_item_id(message.additional_properties)
+        messages.append(message)
 
-        if last.additional_properties.get(HistoryMarkerKind.KEY):
+    def remove_trailing_answer(self) -> None:
+        """Drop the answer a failed or interrupted pass left at the end of history.
+
+        A Continue asks for that answer again, and its request must not end
+        with assistant text, which some providers read as a prefill to extend.
+        A message in a tool exchange is never dropped.
+        """
+        state = self._state
+        if state is None:
             return
-
-        has_function_call = any(c.type == "function_call" for c in last.contents)
-        if has_function_call:
+        messages = state.get("messages")
+        if not isinstance(messages, list):
             return
-
-        logger.debug("remove_trailing_agent_text: removing leaked final response")
-        messages.pop()
+        while messages and _is_answer_message(messages[-1]):
+            messages.pop()
 
     # ------------------------------------------------------------------
     # Message repair
@@ -1614,3 +1633,12 @@ def _insert_consumed_injection_messages(messages: list[Message], injections: lis
     insertions.sort(key=lambda t: (t[0], t[1]), reverse=True)
     for idx, _order, msg in insertions:
         messages.insert(idx, msg)
+
+
+def _is_answer_message(message: Message) -> bool:
+    """An assistant message outside every tool exchange and marker: the answer text of a response."""
+    return (
+        message.role == "assistant"
+        and not message.additional_properties.get(HistoryMarkerKind.KEY)
+        and not any(c.type in TOOL_CALL_CONTENT_TYPES or c.type in TOOL_RESULT_CONTENT_TYPES for c in message.contents)
+    )

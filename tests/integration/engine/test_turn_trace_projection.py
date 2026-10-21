@@ -25,7 +25,6 @@ from chrys.foundation.events.types import Error, InvocationMessage, InvocationRe
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.util.chrys_headers import REQUEST_ATTEMPT_ID_HEADER
 from chrys.orchestration.engine.run.bindings import TurnBindings
-from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
 from chrys.service.analytics.turn_trace import scan_turn_trace, trace_payload_with_registry
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -120,7 +119,6 @@ async def _run_turn(
     pin_wire_inputs(monkeypatch)
     # Every lane backs off 0 s: the log, not the clock, is what this test reads.
     monkeypatch.setattr(TurnBindings, "_BACKOFF_SCHEDULE", (0,))
-    monkeypatch.setattr(ResponseValidationMiddleware, "_BACKOFF_SCHEDULE", (0.0,))
     wire = ScriptedWire(replies)
     route_clients_to(wire.transport, monkeypatch)
     models = ModelProfileRegistry()
@@ -252,17 +250,17 @@ async def test_a_wire_retry_is_a_second_model_call_with_its_own_attempt(
     assert [(retry.origin.kind, retry.scope) for retry in turn.retries] == [("turn", "wire")]
 
 
-# -------------------------------------------------------- validation resend
+# ------------------------------------------------------- validation verdict
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["send", "stream"])
-async def test_a_validation_resend_is_a_second_model_call_of_the_same_turn(
+async def test_an_empty_reply_is_sent_again_once_inside_its_pass(
     agent_engine: AgentEngineFactory,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     stream: bool,
 ) -> None:
-    """An empty reply is rejected and sent again: the turn keeps both calls."""
+    """A reply that showed nothing is sampled once more in place, recorded as a validation retry."""
     turn = await _run_turn(
         agent_engine,
         tmp_path,
@@ -276,10 +274,43 @@ async def test_a_validation_resend_is_a_second_model_call_of_the_same_turn(
     )
 
     assert len(turn.requests) == 2
-    assert len(turn.calls) == 2
+    # Both requests got a reply; validation rejected the first one.
+    assert [call["outcome"] for call in turn.calls] == ["success", "success"]
     assert turn.turn["retryCount"] == 1
     assert turn.turn["retries"][0]["retryMode"] == "validation"
     assert turn.turn["requestAttemptCount"] == 2
+    assert [passed["endReason"] for passed in turn.turn["passes"]] == ["completed"]
+    assert turn.attempt_ids == turn.sent_attempt_ids
+    assert [(retry.origin.kind, retry.scope) for retry in turn.retries] == [("turn", "wire")]
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["send", "stream"])
+async def test_a_second_empty_reply_ends_its_pass(
+    agent_engine: AgentEngineFactory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stream: bool,
+) -> None:
+    """The resend that is also empty fails its pass; the user's retry is the next pass."""
+    empty = [
+        *cc_replies([cc_text("", response_id="chatcmpl_empty")], stream=stream),
+        *cc_replies([cc_text("", response_id="chatcmpl_empty_again")], stream=stream),
+    ]
+    turn = await _run_turn(
+        agent_engine,
+        tmp_path,
+        monkeypatch,
+        stream=stream,
+        http_max_retries=0,
+        replies=[*empty, *_answer("chatcmpl_1", stream=stream)],
+        retry=True,
+    )
+
+    assert len(turn.requests) == 3
+    assert turn.turn["retryCount"] == 1
+    passes = turn.turn["passes"]
+    assert [passed["endReason"] for passed in passes] == ["error", "completed"]
+    assert [passed["modelCallCount"] for passed in passes] == [2, 1]
     assert turn.attempt_ids == turn.sent_attempt_ids
 
 

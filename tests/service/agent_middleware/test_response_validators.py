@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-import re
-
 import pytest
 
 from chrys.foundation.hosted_tools import HostedToolFamily, HostedToolPhase
@@ -15,9 +13,6 @@ from chrys.kernel import (
     Content,
     Message,
 )
-from chrys.service.agent_middleware.response_validation import (
-    ResponseValidationMiddleware,
-)
 from chrys.service.agent_middleware.validators import (
     CONTENT_FILTERED_REASON,
     HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON,
@@ -26,14 +21,11 @@ from chrys.service.agent_middleware.validators import (
     REASONING_EXHAUSTED_OUTPUT_REASON,
     UNNAMED_TOOL_CALL_REASON,
     DefaultResponseValidator,
-    RegexRule,
     ValidationResult,
 )
 from tests.service.agent_middleware._response_validation_fakes import (
     _assistant,
     _assistant_truncated,
-    _FakeCallNext,
-    _make_context,
     _search_without_final_text,
 )
 
@@ -130,7 +122,6 @@ class TestDefaultValidatorRules:
 
         assert result == ValidationResult.invalid(
             HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON,
-            terminal_on_giveup=True,
         )
 
     @pytest.mark.parametrize(
@@ -165,7 +156,6 @@ class TestDefaultValidatorRules:
 
         assert DefaultResponseValidator().validate(_assistant([content])) == ValidationResult.invalid(
             HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON,
-            terminal_on_giveup=True,
         )
 
     def test_terminal_tool_discovery_followed_by_final_text_is_valid(self) -> None:
@@ -212,53 +202,21 @@ class TestDefaultValidatorRules:
 
         assert DefaultResponseValidator().validate(response).ok
 
-    # -- Leaked tool-call markers -----------------------------------------
+    # -- Text is never judged by what it says ------------------------------
 
-    def test_leaked_minimax_tool_call_plain(self) -> None:
-        v = DefaultResponseValidator()
-        text = 'minimax:tool_call {"name":"read_file"} </minimax:tool_call>'
-        result = v.validate(_assistant([Content.from_text(text)]))
-        assert not result.ok
-        assert "leaked tool-call" in result.reason
-
-    def test_leaked_minimax_tool_call_with_prefix_text(self) -> None:
-        """Prefix text should not hide the leak."""
-        v = DefaultResponseValidator()
-        text = "Sure, I will check the file.\nminimax:tool_call {} </minimax:tool_call>"
-        result = v.validate(_assistant([Content.from_text(text)]))
-        assert not result.ok
-
-    def test_leaked_minimax_tool_call_with_suffix_text(self) -> None:
-        """Suffix text should not hide the leak."""
-        v = DefaultResponseValidator()
-        text = "minimax:tool_call {} </minimax:tool_call>\nI will do that now."
-        result = v.validate(_assistant([Content.from_text(text)]))
-        assert not result.ok
-
-    def test_leaked_minimax_tool_call_surrounded(self) -> None:
-        v = DefaultResponseValidator()
-        text = "Here is my plan.\nminimax:tool_call {} </minimax:tool_call>\nDone."
-        result = v.validate(_assistant([Content.from_text(text)]))
-        assert not result.ok
-
-    def test_leaked_tool_use_tag(self) -> None:
-        v = DefaultResponseValidator()
-        text = "<tool_use name='read_file'>...</tool_use>"
-        result = v.validate(_assistant([Content.from_text(text)]))
-        assert not result.ok
-
-    def test_leaked_function_call_tag(self) -> None:
-        v = DefaultResponseValidator()
-        text = "<function_call>...</function_call>"
-        result = v.validate(_assistant([Content.from_text(text)]))
-        assert not result.ok
-
-    def test_word_minimax_in_prose_is_not_flagged(self) -> None:
-        """Only the tool-call token patterns are flagged — prose is fine."""
-        v = DefaultResponseValidator()
-        text = "The MiniMax model was released in 2024."
-        result = v.validate(_assistant([Content.from_text(text)]))
-        assert result.ok
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'minimax:tool_call {"name":"read_file"} </minimax:tool_call>',
+            "Here is my plan.\nminimax:tool_call {} </minimax:tool_call>\nDone.",
+            "<tool_use name='read_file'>...</tool_use>",
+            "<function_call>...</function_call>",
+            "The MiniMax model was released in 2024.",
+        ],
+        ids=["minimax_marker", "marker_in_prose", "tool_use_tag", "function_call_tag", "prose"],
+    )
+    def test_tool_call_markers_in_text_are_answer_text(self, text: str) -> None:
+        assert DefaultResponseValidator().validate(_assistant([Content.from_text(text)])).ok
 
     def test_empty_response_no_messages(self) -> None:
         """ChatResponse with no messages at all."""
@@ -270,14 +228,12 @@ class TestDefaultValidatorRules:
         # Empty output + finish_reason="length" → no room to reply; terminal.
         v = DefaultResponseValidator()
         result = v.validate(_assistant_truncated([]))
-        assert result == ValidationResult.invalid(OUTPUT_TRUNCATED_REASON, retryable=False)
-        assert result.retryable is False
+        assert result == ValidationResult.invalid(OUTPUT_TRUNCATED_REASON)
 
     def test_length_finish_reason_whitespace_text_is_terminal(self) -> None:
         v = DefaultResponseValidator()
         result = v.validate(_assistant_truncated([Content.from_text("\n\n  \t")]))
         assert not result.ok
-        assert result.retryable is False
         assert result.reason == OUTPUT_TRUNCATED_REASON
 
     def test_length_finish_reason_with_real_text_is_valid(self) -> None:
@@ -287,38 +243,32 @@ class TestDefaultValidatorRules:
         result = v.validate(_assistant_truncated([Content.from_text("partial answer")]))
         assert result.ok
 
-    def test_length_finish_reason_with_reasoning_text_is_retryable(self) -> None:
+    def test_length_finish_reason_with_reasoning_text_is_reasoning_exhausted(self) -> None:
         # Reasoning-only output cut off by the output budget means the model
         # over-thought — the generated reasoning proves the input did NOT fill
-        # the context window, so a re-roll plausibly recovers.
-        # Give-up must still fail through the Error path (nothing visible to
-        # return), hence terminal_on_giveup.
+        # the context window, so the reason points at the output budget.
         v = DefaultResponseValidator()
         result = v.validate(_assistant_truncated([Content.from_text_reasoning(text="partial thought")]))
-        assert result == ValidationResult.invalid(REASONING_EXHAUSTED_OUTPUT_REASON, terminal_on_giveup=True)
-        assert result.retryable is True
+        assert result == ValidationResult.invalid(REASONING_EXHAUSTED_OUTPUT_REASON)
 
-    def test_length_finish_reason_with_protected_reasoning_is_retryable(self) -> None:
+    def test_length_finish_reason_with_protected_reasoning_is_reasoning_exhausted(self) -> None:
         # Signed/private reasoning is generated content too: the length cutoff
         # came from over-thinking, not a full context window.
         v = DefaultResponseValidator()
         result = v.validate(_assistant_truncated([Content.from_text_reasoning(protected_data="sig-123")]))
-        assert result == ValidationResult.invalid(REASONING_EXHAUSTED_OUTPUT_REASON, terminal_on_giveup=True)
+        assert result == ValidationResult.invalid(REASONING_EXHAUSTED_OUTPUT_REASON)
 
-    def test_stop_finish_reason_with_reasoning_text_is_retryable(self) -> None:
-        # Reasoning-only stop has no user-visible answer, but a fresh sample
-        # plausibly produces one — retry instead of failing on first sight.
-        # Exhausted retries still raise (terminal_on_giveup)
-        # rather than allowing a blank final AgentMessage.
+    def test_stop_finish_reason_with_reasoning_text_has_no_visible_output(self) -> None:
+        # Reasoning-only stop has no user-visible answer: the turn fails with
+        # the reason rather than a blank final AgentMessage.
         v = DefaultResponseValidator()
         result = v.validate(_assistant([Content.from_text_reasoning(text="complete thought")]))
-        assert result == ValidationResult.invalid(NO_VISIBLE_OUTPUT_REASON, terminal_on_giveup=True)
-        assert result.retryable is True
+        assert result == ValidationResult.invalid(NO_VISIBLE_OUTPUT_REASON)
 
-    def test_stop_finish_reason_with_protected_reasoning_is_retryable(self) -> None:
+    def test_stop_finish_reason_with_protected_reasoning_has_no_visible_output(self) -> None:
         v = DefaultResponseValidator()
         result = v.validate(_assistant([Content.from_text_reasoning(protected_data="sig-123")]))
-        assert result == ValidationResult.invalid(NO_VISIBLE_OUTPUT_REASON, terminal_on_giveup=True)
+        assert result == ValidationResult.invalid(NO_VISIBLE_OUTPUT_REASON)
 
     def test_reasoning_with_visible_text_is_valid(self) -> None:
         v = DefaultResponseValidator()
@@ -362,7 +312,7 @@ def _image_result() -> Content:
     )
 
 
-_FILTERED = ValidationResult.invalid(CONTENT_FILTERED_REASON, retryable=False)
+_FILTERED = ValidationResult.invalid(CONTENT_FILTERED_REASON)
 
 
 class TestContentFilteredWithoutAnswer:
@@ -394,7 +344,7 @@ class TestContentFilteredWithoutAnswer:
             ),
         ],
     )
-    def test_is_terminal_and_never_retried(self, response: ChatResponse) -> None:
+    def test_is_reported_as_filtered(self, response: ChatResponse) -> None:
         result = DefaultResponseValidator().validate(response)
 
         assert result == _FILTERED
@@ -424,35 +374,9 @@ class TestContentFilteredWithoutAnswer:
     def test_an_answer_the_filter_cut_short_is_kept(self, contents: list[Content]) -> None:
         assert DefaultResponseValidator().validate(_filtered(contents)).ok
 
-    @pytest.mark.parametrize(
-        ("validator", "code"),
-        [
-            pytest.param(DefaultResponseValidator(), ValidationReason.LEAKED_TOOL_CALL, id="leaked_marker"),
-            pytest.param(
-                DefaultResponseValidator(
-                    disable_leaked_tool_call=True,
-                    extra_rules=[RegexRule("no_drafts", re.compile("DRAFT"), "draft text")],
-                ),
-                ValidationReason.RULE_VIOLATION,
-                id="extra_rule",
-            ),
-        ],
-    )
-    def test_filtered_text_a_rule_rejects_is_reported_as_filtered(
-        self, validator: DefaultResponseValidator, code: ValidationReason
-    ) -> None:
-        # Retrying it would meet the same filter.
-        text = 'DRAFT minimax:tool_call {"name":"read_file"} </minimax:tool_call>'
-
-        filtered = validator.validate(_filtered([Content.from_text(text)]))
-        stopped = validator.validate(_assistant([Content.from_text(text)]))
-
-        assert (filtered, filtered.code) == (_FILTERED, ValidationReason.CONTENT_FILTERED)
-        assert (stopped.ok, stopped.retryable, stopped.code) == (False, True, code)
-
     def test_disabled_rules_stay_disabled(self) -> None:
         no_op = DefaultResponseValidator(
-            disable_empty_contents=True, disable_whitespace_text=True, disable_leaked_tool_call=True
+            disable_empty_contents=True, disable_whitespace_text=True, disable_unnamed_tool_call=True
         )
         whitespace_allowed = DefaultResponseValidator(disable_whitespace_text=True)
         empty_allowed = DefaultResponseValidator(disable_empty_contents=True)
@@ -491,12 +415,10 @@ class TestToolCallWithoutAName:
             ),
         ],
     )
-    def test_a_response_with_a_call_that_names_no_function_is_retried_and_fails_when_retries_run_out(
-        self, contents: list[Content]
-    ) -> None:
+    def test_a_response_with_a_call_that_names_no_function_is_rejected(self, contents: list[Content]) -> None:
         result = DefaultResponseValidator().validate(_assistant(contents))
 
-        assert result == ValidationResult.invalid(UNNAMED_TOOL_CALL_REASON, terminal_on_giveup=True)
+        assert result == ValidationResult.invalid(UNNAMED_TOOL_CALL_REASON)
         assert result.code == ValidationReason.UNNAMED_TOOL_CALL
 
     @pytest.mark.parametrize(
@@ -526,17 +448,6 @@ class TestToolCallWithoutAName:
     def test_the_rule_can_be_disabled(self) -> None:
         assert DefaultResponseValidator(disable_unnamed_tool_call=True).validate(_assistant([_unnamed_call()])).ok
 
-    async def test_a_named_call_on_the_next_attempt_is_kept(self) -> None:
-        named = _assistant([_unnamed_call("read_file")])
-        fake = _FakeCallNext([_assistant([_unnamed_call()]), named], stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
-
-        await ResponseValidationMiddleware(backoff_schedule=[0.0]).process(ctx, fake)
-
-        assert fake.call_count == 2
-        assert ctx.result is named
-
 
 # ---------------------------------------------------------------------------
 # Rule-interaction edge cases
@@ -544,31 +455,11 @@ class TestToolCallWithoutAName:
 
 
 class TestRuleInteractions:
-    async def test_multiple_text_fragments_concat_for_whitespace_check(self) -> None:
-        """contents=[text='', text='\\n', text='   '] — all empty, must retry."""
-        bad = _assistant([Content.from_text(""), Content.from_text("\n"), Content.from_text("   ")])
-        good = _assistant([Content.from_text("something")])
-        fake = _FakeCallNext([bad, good], stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
+    def test_multiple_text_fragments_concat_for_whitespace_check(self) -> None:
+        """contents=[text='', text='\\n', text='   '] — all blank together, so the response has no answer."""
+        response = _assistant([Content.from_text(""), Content.from_text("\n"), Content.from_text("   ")])
 
-        mw = ResponseValidationMiddleware(backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
-        assert fake.call_count == 2
+        result = DefaultResponseValidator().validate(response)
 
-    async def test_leaked_marker_in_second_text_fragment(self) -> None:
-        """Leak in ANY text fragment flags the response."""
-        bad = _assistant(
-            [
-                Content.from_text("Thinking...\n"),
-                Content.from_text("minimax:tool_call {} </minimax:tool_call>"),
-            ]
-        )
-        good = _assistant([Content.from_text("OK")])
-        fake = _FakeCallNext([bad, good], stream=False)
-        ctx = _make_context(stream=False)
-        fake.bind(ctx)
-
-        mw = ResponseValidationMiddleware(backoff_schedule=[0.0])
-        await mw.process(ctx, fake)
-        assert fake.call_count == 2
+        assert result == ValidationResult.invalid("empty or whitespace-only text response")
+        assert result.code == ValidationReason.WHITESPACE_ONLY

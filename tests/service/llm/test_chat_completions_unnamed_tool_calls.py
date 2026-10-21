@@ -2,9 +2,8 @@
 
 """Tool calls a Chat Completions answer sends without a function name.
 
-Such an answer is never run: response validation sends the request again,
-and a later answer that names its function runs. When the same failure comes
-back, the turn fails with it instead of keeping what the answer held.
+Such an answer is never run: response validation fails the turn with its
+reason, and the request is never sent again.
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
-from chrys.foundation.retry import RetryAttemptInfo
 from chrys.kernel import Message, ResponseStream, tool
 from chrys.kernel.middleware import ChatMiddlewareLayer
 from chrys.service.agent_middleware.response_validation import (
@@ -91,24 +89,17 @@ def _read(path: str, *, stream: bool) -> Reply:
 
 
 @asynccontextmanager
-async def _tool_loop(
-    *replies: Reply,
-) -> AsyncIterator[tuple[InvariantCheckedToolLoopLayer, ScriptedWire, list[str], list[RetryAttemptInfo]]]:
-    """A tool loop over *replies* with a ``read_file`` tool: the paths it read and the retries announced."""
+async def _tool_loop(*replies: Reply) -> AsyncIterator[tuple[InvariantCheckedToolLoopLayer, ScriptedWire, list[str]]]:
+    """A tool loop over *replies* with a ``read_file`` tool, and the paths it read."""
     reads: list[str] = []
-    retries: list[RetryAttemptInfo] = []
-
-    async def publish_retry(info: RetryAttemptInfo) -> None:
-        retries.append(info)
-
     wire = ScriptedWire(replies)
     # No proxy from the environment may route around the scripted transport.
     http_client = httpx.AsyncClient(transport=wire.transport, trust_env=False)
     sdk_client = AsyncOpenAI(api_key="sk-test", base_url="https://api.test/v1", max_retries=0, http_client=http_client)
     client = ChatCompletionsClient(model="test", sdk_client=sdk_client)
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,), publish_retry=publish_retry)
+    validation = ResponseValidationMiddleware()
     try:
-        yield InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(client, middleware=[validation])), wire, reads, retries
+        yield InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(client, middleware=[validation])), wire, reads
     finally:
         await client.aclose()
 
@@ -158,43 +149,21 @@ _FIRST_ANSWERS = [
 
 
 @pytest.mark.parametrize(("first", "stream"), _FIRST_ANSWERS)
-async def test_an_answer_with_a_call_without_a_name_is_sent_again_and_none_of_it_runs(
+async def test_an_answer_with_a_call_without_a_name_fails_the_turn_and_none_of_it_runs(
     first: Reply, stream: bool
 ) -> None:
-    async with _tool_loop(first, _read("a", stream=stream), _text("done", stream=stream)) as (
-        layer,
-        wire,
-        reads,
-        retries,
-    ):
-        text = await _run(layer, reads, stream=stream)
-
-    assert text == "done"
-    assert reads == ["a"]
-    assert len(wire.requests) == 3
-    assert [info.reason for info in retries] == [UNNAMED_TOOL_CALL_REASON]
-
-
-@pytest.mark.parametrize("stream", [True, False], ids=["stream", "blocking"])
-async def test_a_call_without_a_name_on_the_next_attempt_too_fails_the_turn(stream: bool) -> None:
-    # The second call differs in its id and index: the failure is still the same.
-    second = _call(1, "call_2", '{"path": "again"}')
-    answers = (_calls_streamed(_NAMELESS), _calls_streamed(second))
-    if not stream:
-        answers = (_calls_completed(_NAMELESS), _calls_completed(second))
-
-    async with _tool_loop(*answers, _text("never sent", stream=stream)) as (layer, wire, reads, retries):
+    async with _tool_loop(first, _read("a", stream=stream)) as (layer, wire, reads):
         with pytest.raises(TerminalResponseValidationError) as raised:
             await _run(layer, reads, stream=stream)
 
     assert str(raised.value) == UNNAMED_TOOL_CALL_REASON
+    assert raised.value.__cause__ is None
     assert reads == []
-    assert len(wire.requests) == 2
-    assert len(retries) == 1
+    assert len(wire.requests) == 1
 
 
 @pytest.mark.parametrize("stream", [True, False], ids=["stream", "blocking"])
-async def test_a_nameless_call_cut_off_at_the_length_limit_is_still_dropped_without_a_retry(stream: bool) -> None:
+async def test_a_nameless_call_cut_off_at_the_length_limit_is_dropped_and_the_answer_kept(stream: bool) -> None:
     if stream:
         cut_off = _streamed(
             _chunk({"role": "assistant", "content": "Partial"}),
@@ -204,8 +173,8 @@ async def test_a_nameless_call_cut_off_at_the_length_limit_is_still_dropped_with
         nameless = {key: value for key, value in _NAMELESS.items() if key != "index"}
         cut_off = _completion({"role": "assistant", "content": "Partial", "tool_calls": [nameless]}, "length")
 
-    async with _tool_loop(cut_off) as (layer, wire, reads, retries):
+    async with _tool_loop(cut_off) as (layer, wire, reads):
         text = await _run(layer, reads, stream=stream)
 
     assert text == "Partial"
-    assert (reads, len(wire.requests), retries) == ([], 1, [])
+    assert (reads, len(wire.requests)) == ([], 1)

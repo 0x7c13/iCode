@@ -19,7 +19,6 @@ from chrys.app.tui.widgets.chat.replay import HistoryReplayRenderer
 from chrys.app.tui.widgets.chat.toc_model import TurnTocModel
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
-from chrys.foundation.events.types import ProvisionalPresentation
 from chrys.foundation.models.ask_user import AskUserOption, AskUserQuestion
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.kernel import (
@@ -843,7 +842,7 @@ async def test_invocation_link_fallback_uses_internal_tool_name_queue(
         "Explore_invocation.json",
         tool_name="explore_agent",
     )
-    registry.add_sub_agent_message("Explore Agent", "invocation", "Still routed.")
+    registry.add_sub_agent_answer("Explore Agent", "invocation", "segment", "Still routed.")
     await registry.add_sub_agent_tool_start(
         "Explore Agent",
         "invocation",
@@ -1176,7 +1175,7 @@ async def test_live_renderer_uses_status_port_for_failed_turn_cleanup() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_renderer_processed_empty_intermediate_is_noop() -> None:
+async def test_live_renderer_whitespace_only_answer_segment_is_noop() -> None:
     calls: list[str] = []
     status = _FakeStatus(calls)
     registry = ToolGroupRegistry(_FakeMount(calls), _FakeUi(calls), status)
@@ -1191,9 +1190,10 @@ async def test_live_renderer_processed_empty_intermediate_is_noop() -> None:
         registry,
     )
 
-    await renderer.add_agent_message("<think>   </think>", is_intermediate=True)
+    await renderer.add_answer_delta("blank", "   \n")
+    renderer.finish_answer_segment("blank", completed=True)
 
-    assert calls == ["remove_status"]
+    assert calls == []
     assert registry.current_tool_group is group
 
 
@@ -1212,8 +1212,8 @@ async def test_live_renderer_derives_checkmark_for_successful_structured_only_ou
     )
     renderer.profile_name = "Code Agent"
 
-    await renderer.add_agent_message("", is_final=True, structured_output_completed=True)
-    await renderer.add_agent_message("", is_final=True)
+    await renderer.add_agent_message("", structured_output_completed=True)
+    await renderer.add_agent_message("")
 
     messages = [widget for widget in mount.widgets if isinstance(widget, AgentMessage)]
     assert len(messages) == 1
@@ -1235,7 +1235,7 @@ async def test_live_renderer_normalizes_whitespace_structured_completion_to_chec
         ToolGroupRegistry(_FakeMount(calls), _FakeUi(calls), status),
     )
 
-    await renderer.add_agent_message(" \n\t", is_final=True, structured_output_completed=True)
+    await renderer.add_agent_message(" \n\t", structured_output_completed=True)
 
     messages = [widget for widget in mount.widgets if isinstance(widget, AgentMessage)]
     assert len(messages) == 1
@@ -1244,7 +1244,7 @@ async def test_live_renderer_normalizes_whitespace_structured_completion_to_chec
 
 
 @pytest.mark.asyncio
-async def test_live_renderer_commits_matching_provisional_messages_and_retracts_the_rest() -> None:
+async def test_live_renderer_streams_each_segment_into_its_own_message_and_never_repeats_the_final() -> None:
     calls: list[str] = []
     status = _FakeStatus(calls)
     mount = _FakeMount(calls)
@@ -1257,29 +1257,21 @@ async def test_live_renderer_commits_matching_provisional_messages_and_retracts_
         ToolGroupRegistry(_FakeMount(calls), _FakeUi(calls), status),
     )
 
-    await renderer.add_agent_message(
-        "accepted",
-        is_intermediate=True,
-        presentation=ProvisionalPresentation("attempt-1", "segment-1"),
-    )
-    await renderer.add_agent_message(
-        "discarded sibling",
-        is_intermediate=True,
-        presentation=ProvisionalPresentation("attempt-1", "segment-2"),
-    )
-    await renderer.add_agent_message(
-        "rejected attempt",
-        is_intermediate=True,
-        presentation=ProvisionalPresentation("attempt-2", "segment-3"),
-    )
+    await renderer.add_answer_delta("partial", "Half an ")
+    await renderer.add_answer_delta("partial", "answer")
+    # A failed segment keeps its text; nothing is retracted.
+    renderer.finish_answer_segment("partial", completed=False)
+    await renderer.add_answer_delta("answer", "\n\nThe ")
+    await renderer.add_answer_delta("answer", "answer.")
+    renderer.finish_answer_segment("answer", completed=True)
+    await renderer.add_agent_message("The answer.")
 
-    await renderer.accept_presentation_attempt("attempt-1", ("segment-1",))
-    assert len(mount.widgets) == 2
-    assert calls.count("remove:AgentMessage") == 1
-
-    await renderer.reject_presentation_attempt("attempt-2")
-    assert len(mount.widgets) == 1
-    assert calls.count("remove:AgentMessage") == 2
+    messages = [widget for widget in mount.widgets if isinstance(widget, AgentMessage)]
+    assert [(message.text, message._is_final) for message in messages] == [
+        ("Half an answer", True),
+        ("The answer.", True),
+    ]
+    assert "remove:AgentMessage" not in calls
 
 
 @pytest.mark.asyncio

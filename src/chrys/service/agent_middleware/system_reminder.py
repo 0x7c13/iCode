@@ -1003,7 +1003,7 @@ class SystemReminderMiddleware(ChatMiddleware):
         """Return a request observer that records *items* once a request carries them.
 
         Observers run before every final-handler invocation, and again with
-        the prepared provider request; a validation retry re-sends the same
+        the prepared provider request; a resent request carries the same
         enriched list.  The record is appended once per enrichment.
         """
         recorded = False

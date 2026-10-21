@@ -37,6 +37,7 @@ from chrys.kernel import (
 )
 from chrys.service.llm.chat_completions.decode import add_deepseek_cache_usage, refused_calls_error
 from chrys.service.llm.openai_timestamps import openai_created_at_iso
+from chrys.service.llm.reasoning_display import REASONING_SUMMARY_KEY
 from chrys.service.profiles.models.options import effective_store_option
 
 from .hosted import decode_hosted_item, to_payload
@@ -283,11 +284,11 @@ def decode_reasoning_item(item: Any, *, streamed: bool) -> list[Content]:
     """A reasoning item's text parts, then its summaries.
 
     An item with neither still yields one empty content, so its encrypted
-    payload and its place among the outputs survive. Two differences between
-    the blocking and the streamed shape stay as they are: a blocking item
-    puts its payload on the first content only and pairs each text part with
-    the summary at its index; a streamed one puts the payload on every
-    content and pairs nothing.
+    payload and its place among the outputs survive. Summaries carry the
+    summary flag (:mod:`chrys.service.llm.reasoning_display`). One difference
+    between the blocking and the streamed shape stays as it is: a blocking
+    item puts its payload on the first content only, a streamed one on every
+    content.
     """
     item_id = (getattr(item, "id", None) or None) if streamed else item.id
     payload = getattr(item, "encrypted_content", None)
@@ -305,13 +306,10 @@ def decode_reasoning_item(item: Any, *, streamed: bool) -> list[Content]:
             )
         )
 
-    for index, part in enumerate(getattr(item, "content", None) or []):
-        properties: dict[str, Any] = {"reasoning_text": True}
-        if not streamed and index < len(summaries):
-            properties["summary"] = summaries[index]
-        add(part.text, part, properties)
+    for part in getattr(item, "content", None) or []:
+        add(part.text, part, {"reasoning_text": True})
     for summary in summaries:
-        add(summary.text, summary)
+        add(summary.text, summary, {REASONING_SUMMARY_KEY: True})
     if not contents:
         add("", item)
     return contents

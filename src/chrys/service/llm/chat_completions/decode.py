@@ -244,9 +244,9 @@ def decode_completion(
             metadata[CONTEXT_WINDOW_FILLED_KEY] = True
         if reason is not None:
             finish = FinishReason(reason)
-        # Text, then calls, then reasoning: unlike a delta, a whole message
-        # has no chunk boundary that could split its text.
-        contents = [*text_contents(choice), *choice_calls, *message_reasoning(choice.message, origin=origin)]
+        # Reasoning, then text, then calls: the order a streamed message
+        # arrives in.
+        contents = [*message_reasoning(choice.message, origin=origin), *text_contents(choice), *choice_calls]
         messages.append(
             Message(
                 role="assistant",

@@ -30,9 +30,6 @@ from chrys.app.tui.widgets.chat.tool_call import (
     ToolGroup,
 )
 from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
-from chrys.foundation.events.types import (
-    ProvisionalPresentation,
-)
 from chrys.foundation.platform.files import atomic_write_owner_only_text
 from chrys.foundation.tool_kinds import (
     KIND_FILESYSTEM_READ,
@@ -74,7 +71,7 @@ async def test_sub_agent_final_result_is_detail_only_and_detail_stays_live() -> 
     final_result = "# Result\n\nThe complete answer"
     async with ToolApp().run_test() as pilot:
         card = pilot.app.query_one(SubAgentToolCall)
-        card.add_assistant_message("I will inspect the tests.")
+        card.add_answer("plan", "I will inspect the tests.")
         await card.add_inner_tool_start(
             "inner1",
             "read_file",
@@ -101,6 +98,7 @@ async def test_sub_agent_final_result_is_detail_only_and_detail_stays_live() -> 
         await pilot.pause()
         assert detail_group.collapsed is False
         card.complete_inner_tool("inner1", "done", 20)
+        card.add_answer("answer", final_result)
         card.set_complete(
             final_result,
             50,
@@ -129,30 +127,33 @@ async def test_sub_agent_final_result_is_detail_only_and_detail_stays_live() -> 
         assert persisted_loads == []
 
 
-async def test_sub_agent_transcript_result_records_only_unpublished_final_segment() -> None:
+async def test_sub_agent_transcript_result_never_repeats_the_streamed_final_segment() -> None:
     async with LocalizedWidgetApp(
         lambda: SubAgentToolCall("c1", "External", args={"prompt": "investigate"})
     ).run_test() as pilot:
         card = pilot.app.query_one(SubAgentToolCall)
-        card.add_assistant_message("First published segment.")
+        card.add_answer("first", "First segment.")
+        card.add_answer("final", "Final segment.")
         card.set_complete(
-            "First published segment.\n\nFinal unpublished segment.",
+            "First segment.\n\nFinal segment.",
             50,
-            metadata={SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY: "Final unpublished segment."},
+            metadata={SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY: "Final segment."},
         )
 
         detail = await mount_sub_agent_detail(card, pilot)
         await wait_for(
-            lambda: len(detail.query(AgentMessage)) == 2,
+            lambda: (
+                len(detail.query(AgentMessage)) == 2
+                and not detail._pending
+                and not detail._draining
+                and not detail._drain_scheduled
+            ),
             pilot=pilot,
-            description="deduplicated ACP transcript result",
+            description="ACP transcript without a repeated final segment",
         )
 
-        assert [message.text for message in detail.query(AgentMessage)] == [
-            "First published segment.",
-            "Final unpublished segment.",
-        ]
-        assert card.result_text == "First published segment.\n\nFinal unpublished segment."
+        assert [message.text for message in detail.query(AgentMessage)] == ["First segment.", "Final segment."]
+        assert card.result_text == "First segment.\n\nFinal segment."
 
 
 async def test_sub_agent_transcript_result_does_not_repeat_when_no_final_segment_remains() -> None:
@@ -160,7 +161,7 @@ async def test_sub_agent_transcript_result_does_not_repeat_when_no_final_segment
         lambda: SubAgentToolCall("c1", "External", args={"prompt": "investigate"})
     ).run_test() as pilot:
         card = pilot.app.query_one(SubAgentToolCall)
-        card.add_assistant_message("Already published segment.")
+        card.add_answer("segment", "Already published segment.")
         card.set_complete(
             "Already published segment.",
             50,
@@ -183,6 +184,30 @@ async def test_sub_agent_transcript_result_does_not_repeat_when_no_final_segment
         assert card.result_text == "Already published segment."
 
 
+async def test_an_open_detail_view_settles_the_answer_when_no_final_segment_remains() -> None:
+    """A hosted image that starts before the answer and finishes after it leaves the override empty."""
+    async with LocalizedWidgetApp(
+        lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "draw"})
+    ).run_test() as pilot:
+        card = pilot.app.query_one(SubAgentToolCall)
+        detail = await mount_sub_agent_detail(card, pilot)
+        await card.add_inner_tool_start("image-1", "image_generation", {}, provider_hosted=True)
+        card.add_answer("segment", "Here it is.")
+        await wait_for(lambda: len(detail.query(AgentMessage)) == 1, pilot=pilot, description="the answer segment")
+        (message,) = detail.query(AgentMessage)
+        assert message.has_class("--streaming")
+
+        card.complete_inner_tool("image-1", "done", 20)
+        card.set_complete("Here it is.", 50, metadata={SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY: ""})
+
+        await wait_for(
+            lambda: not message.has_class("--streaming") and not detail._pending and not detail._draining,
+            pilot=pilot,
+            description="the answer settles as the result",
+        )
+        assert [m.text for m in detail.query(AgentMessage)] == ["Here it is."]
+
+
 async def test_sub_agent_empty_override_keeps_parent_fallback_when_durable_replay_is_unavailable() -> None:
     async def load(_log_file: str) -> PersistedSubAgentTranscript | None:
         return None
@@ -191,7 +216,7 @@ async def test_sub_agent_empty_override_keeps_parent_fallback_when_durable_repla
         def compose(self) -> ComposeResult:
             card = SubAgentToolCall("c1", "External", args={"prompt": "investigate"})
             card.configure_transcript_loader(load)
-            card.add_assistant_message("Already published segment.")
+            card.add_answer("segment", "Already published segment.")
             card.set_complete(
                 "Already published segment.",
                 50,
@@ -389,16 +414,16 @@ async def test_sub_agent_persisted_cancelled_acp_interrupts_unfinished_tool(tmp_
         assert record.canonical_status == "interrupted"
 
 
-async def test_sub_agent_surface_preserves_message_tool_boundaries_and_retracts_provisional_text() -> None:
+async def test_sub_agent_surface_preserves_message_tool_boundaries() -> None:
     async with LocalizedWidgetApp(
         lambda: SubAgentToolCall("c1", "Explore", args={"prompt": "investigate"})
     ).run_test() as pilot:
         card = pilot.app.query_one(SubAgentToolCall)
         surface = await mount_sub_agent_detail(card, pilot)
-        card.add_assistant_message("First plan")
+        card.add_answer("first", "First plan")
         await card.add_inner_tool_start("inner-1", "read_file", {"path": "a.py"})
         card.complete_inner_tool("inner-1", "ok", 10)
-        card.add_assistant_message("Second plan")
+        card.add_answer("second", "Second plan")
         await card.add_inner_tool_start("inner-2", "grep", {"pattern": "needle"})
 
         await wait_for(
@@ -413,22 +438,13 @@ async def test_sub_agent_surface_preserves_message_tool_boundaries_and_retracts_
             AgentMessage,
             ToolGroup,
         ]
-
-        card.add_assistant_message(
-            "Discard me",
-            presentation=ProvisionalPresentation("attempt-1", "segment-1"),
-        )
-        await wait_for(
-            lambda: any(message.text == "Discard me" for message in surface.query(AgentMessage)),
-            pilot=pilot,
-            description="provisional sub-agent message",
-        )
-        card.reject_presentation_attempt("attempt-1")
-        await wait_for(
-            lambda: not any(message.text == "Discard me" for message in surface.query(AgentMessage)),
-            pilot=pilot,
-            description="retracted sub-agent message",
-        )
+        assert [message.text for message in surface.query(AgentMessage)] == ["First plan", "Second plan"]
+        # A reopened view reads the journal in the same order.
+        assert [
+            operation.text
+            for operation in card._transcript_journal.operations
+            if isinstance(operation, TranscriptAssistantOp)
+        ] == ["First plan", "Second plan"]
 
 
 async def test_sub_agent_compact_activity_keeps_only_latest_assistant_or_tool() -> None:
@@ -438,8 +454,8 @@ async def test_sub_agent_compact_activity_keeps_only_latest_assistant_or_tool() 
         card = pilot.app.query_one(SubAgentToolCall)
         latest = card.query_one("#sa-activity-text", Static)
 
-        card.add_assistant_message("First plan")
-        assert latest.render().plain == "First plan"
+        card.add_answer("first", "First plan\nwith details")
+        assert latest.render().plain == "First plan with details"
 
         await card.add_inner_tool_start(
             "inner-1",
@@ -452,7 +468,7 @@ async def test_sub_agent_compact_activity_keeps_only_latest_assistant_or_tool() 
         card.complete_inner_tool("inner-1", "ok", 10)
         assert latest.render().plain == "Searching for needle"
 
-        card.add_assistant_message("Second plan")
+        card.add_answer("second", "Second plan")
         assert latest.render().plain == "Second plan"
         assert not list(card.query(AgentMessage))
         assert not list(card.query(ToolGroup))
@@ -698,7 +714,7 @@ async def test_running_sub_agent_detail_stays_live_when_terminal_audit_is_alread
 
     async with LocalizedWidgetApp(lambda: card).run_test() as pilot:
         detail = await mount_sub_agent_detail(card, pilot)
-        card.add_assistant_message("Live work after opening.")
+        card.add_answer("segment", "Live work after opening.")
         card.set_error("Error: failed after the detail modal opened")
         await wait_for(
             lambda: (
@@ -753,12 +769,14 @@ async def test_running_sub_agent_detail_captures_completion_before_surface_mount
 async def test_terminal_sub_agent_keeps_bounded_fallback_with_display_name() -> None:
     card = SubAgentToolCall("c1", "Explore", args={"prompt": "investigate"})
     card.claim_invocation("invocation", "Explore Agent")
-    card.add_assistant_message("working", profile_name="explore_agent")
+    card.add_answer("work", "working", profile_name="explore_agent")
+    card.add_answer("answer", "final answer", profile_name="explore_agent")
     card.set_complete("final answer", metadata={"sub_agent_log_file": "incomplete.json"})
 
     assert card._transcript_profile_name == "Explore Agent"
     assert card._transcript_journal.operations == (
-        TranscriptAssistantOp("working"),
+        TranscriptAssistantOp("working", segment_id="work"),
+        TranscriptAssistantOp("final answer", segment_id="answer"),
         TranscriptAssistantOp("final answer", final=True),
     )
 
@@ -779,8 +797,8 @@ async def test_terminal_sub_agent_keeps_bounded_fallback_with_display_name() -> 
 def test_terminal_sub_agent_journal_is_bounded_and_rejects_late_events() -> None:
     journal = AgentTranscriptJournal()
     oversized = "x" * 20_000
-    for _ in range(300):
-        journal.record(TranscriptAssistantOp(oversized))
+    for index in range(300):
+        journal.record(TranscriptAssistantOp(oversized, segment_id=f"segment-{index}"))
 
     journal.finalize_retention(durable_replay_available=False)
     retained = journal.operations
@@ -809,7 +827,7 @@ async def test_terminal_audit_from_invocation_start_lazily_releases_cancelled_ca
     card.configure_transcript_loader(load)
     card.claim_invocation("invocation", "Explore Agent", "Explore_terminal.json")
     for index in range(300):
-        card.add_assistant_message(f"message-{index}")
+        card.add_answer(f"segment-{index}", f"message-{index}")
     card.set_cascade_aborted()
 
     assert card._transcript_journal.operations

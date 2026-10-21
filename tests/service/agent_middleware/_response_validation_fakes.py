@@ -30,23 +30,12 @@ def _assistant_truncated(contents: list[Any]) -> ChatResponse:
     return ChatResponse(messages=[Message(role="assistant", contents=contents)], finish_reason="length")
 
 
-# The three distinct invalid shapes the default validator catches.  Used
-# to construct exhaustion sequences that walk through different
-# ``ValidationResult.reason`` strings on consecutive attempts so the
-# middleware's fail-fast (identical-reason short-circuit) does not fire
-# and the loop actually reaches MAX_RETRIES.
 def _bad_empty() -> ChatResponse:
     return _assistant([])  # reason: "empty contents"
 
 
 def _bad_whitespace() -> ChatResponse:
     return _assistant([Content.from_text("\n\n  \t\n")])  # reason: "empty or whitespace-only text response"
-
-
-def _bad_leaked() -> ChatResponse:
-    return _assistant(
-        [Content.from_text("minimax:tool_call {} </minimax:tool_call>")]
-    )  # reason: "leaked tool-call marker..."
 
 
 def _search_without_final_text(*, intermediate_text: str = "Checking sources.") -> ChatResponse:
@@ -70,22 +59,6 @@ def _search_without_final_text(*, intermediate_text: str = "Checking sources.") 
             ),
         ]
     )
-
-
-def _varied_bads(n: int, *, last: ChatResponse | None = None) -> list[ChatResponse]:
-    """Build n bad responses cycling through distinct reasons.
-
-    Each consecutive pair has a different ``ValidationResult.reason`` so
-    fail-fast does not short-circuit the retry loop.  When ``last`` is
-    given, it overrides the final response — useful for tests that need
-    the give-up path to scrub a specific shape (e.g. drop an empty
-    assistant message).
-    """
-    factories = [_bad_empty, _bad_whitespace, _bad_leaked]
-    out = [factories[i % len(factories)]() for i in range(n)]
-    if last is not None and out:
-        out[-1] = last
-    return out
 
 
 def _make_context(stream: bool = False) -> ChatContext:
@@ -164,11 +137,12 @@ class _ObservationHook:
     def __init__(self) -> None:
         self.events: list[tuple[object, ...]] = []
 
-    async def begin_response(self, *, response_index: int | None = None, batch_id: int | None = None) -> None:
-        self.events.append(("response", response_index, batch_id))
+    async def begin_response(self, *, response_index: int | None = None) -> None:
+        self.events.append(("response", response_index))
 
-    async def observe_contents(self, contents: list[Any], *, is_final: bool = False) -> None:
-        self.events.append(("contents", is_final, tuple(content.type for content in contents)))
+    async def observe_contents(self, contents: list[Any], *, is_final: bool = False, failed: bool = False) -> None:
+        kind = "failed_contents" if failed else "contents"
+        self.events.append((kind, is_final, tuple(content.type for content in contents)))
 
     async def attempt_started(self, *, continuation: bool = False) -> None:
         self.events.append(("started", continuation))
@@ -183,16 +157,6 @@ class _ObservationHook:
                 tuple(tuple(content.type for content in message.contents) for message in messages),
             )
         )
-
-
-def _bad_hosted_mcp() -> ChatResponse:
-    return _assistant(
-        [
-            Content.from_mcp_server_tool_call("mc1", "create_issue", server_name="github"),
-            Content.from_mcp_server_tool_result("mc1", output=[Content.from_text("created #42")]),
-            Content.from_text("<tool_use>malformed</tool_use>"),
-        ]
-    )
 
 
 def _service_context(stream: bool = False, exchange: ExchangeTrace | None = None) -> ChatContext:
@@ -211,11 +175,22 @@ def _service_context(stream: bool = False, exchange: ExchangeTrace | None = None
     )
 
 
+def _traced_context(stream: bool, exchange: ExchangeTrace) -> ChatContext:
+    """Local-storage ``ChatContext`` carrying a trajectory exchange, so verdicts can be asserted on a sink."""
+    return ChatContext(
+        client=None,  # type: ignore[arg-type]
+        messages=[Message("user", ["hi"])],
+        options=None,
+        stream=stream,
+        kwargs={"client_kwargs": {TRAJECTORY_EXCHANGE_KWARG: exchange}},
+    )
+
+
 async def _final_response(ctx: ChatContext, *, stream: bool) -> ChatResponse:
     """Resolve ``ctx.result`` to the final ``ChatResponse`` in either mode.
 
-    Streaming results are finalized through the validating proxy (which
-    consumes any updates not yet pulled); blocking results are returned as is.
+    Streaming results are finalized through the stream's result hooks (which
+    consume any updates not yet pulled); blocking results are returned as is.
     """
     if stream:
         assert isinstance(ctx.result, ResponseStream)

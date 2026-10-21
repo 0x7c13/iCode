@@ -152,8 +152,7 @@ class MockChatClient(BaseChatClient):
         responses: Sequence[MockResponse] | None = None,
         default_model_id: str = "mock-model",
         middleware: Sequence[Any] | None = None,
-        on_intermediate_text_async: Callable[[str], Awaitable[None]] | None = None,
-        on_intermediate_text_sync: Callable[[str], None] | None = None,
+        on_intermediate_text: Callable[[str], None] | None = None,
         tool_result_ceiling_tokens: int | None = None,
     ) -> None:
         super().__init__()
@@ -161,8 +160,7 @@ class MockChatClient(BaseChatClient):
         self._default_model_id = default_model_id
         self._call_index: int = 0
         self._call_history: list[tuple[Sequence[Message], Mapping[str, Any]]] = []
-        self._on_intermediate_text_async = on_intermediate_text_async
-        self._on_intermediate_text_sync = on_intermediate_text_sync
+        self._on_intermediate_text = on_intermediate_text
         split = split_middleware(list(middleware) if middleware else None)
         self._tool_loop = ToolLoopLayer(
             ChatMiddlewareLayer(_ModelCall(self), middleware=split.chat),
@@ -298,9 +296,10 @@ class MockChatClient(BaseChatClient):
         finish_reason = self._finish_reason(resp)
 
         # Internal side calls (e.g. the Phase-4 last-words completer) never
-        # join the conversation, so the intermediate-text callbacks stay
-        # silent for them, as they do for a real wire client.
+        # join the conversation, so the intermediate-text callback stays
+        # silent for them, as it does for a real wire client.
         suppress_intermediate = in_internal_side_call()
+        on_text = None if suppress_intermediate else self._on_intermediate_text
         recorder = open_exchange(
             messages,
             options,
@@ -313,28 +312,26 @@ class MockChatClient(BaseChatClient):
             result = self._build_response_stream(self._stream_updates(resp, model_id, finish_reason))
             if recorder is not None:
                 recorder.attach_stream(result)
-            sync_cb = None if suppress_intermediate else self._on_intermediate_text_sync
-            if sync_cb is not None:
+            if on_text is not None:
 
                 def _on_finalized(response: ChatResponse) -> ChatResponse:
                     if (signal := intermediate_text_signal(response)) is not None:
-                        sync_cb(signal)
+                        on_text(signal)
                     return response
 
                 result.with_result_hook(_on_finalized)
             return result
 
-        async_cb = None if suppress_intermediate else self._on_intermediate_text_async
         if recorder is not None:
-            return recorder.wrap_awaitable(self._mock_response(resp, model_id, finish_reason, async_cb))
-        return self._mock_response(resp, model_id, finish_reason, async_cb)
+            return recorder.wrap_awaitable(self._mock_response(resp, model_id, finish_reason, on_text))
+        return self._mock_response(resp, model_id, finish_reason, on_text)
 
     async def _mock_response(
         self,
         resp: MockResponse,
         model_id: str,
         finish_reason: FinishReasonLiteral | FinishReason,
-        async_cb: Callable[[str], Awaitable[None]] | None,
+        on_text: Callable[[str], None] | None,
     ) -> ChatResponse[Any]:
         if resp.delay > 0:
             await asyncio.sleep(resp.delay)
@@ -347,9 +344,8 @@ class MockChatClient(BaseChatClient):
         )
         if resp.usage_details is not None:
             response.usage_details = resp.usage_details.copy()
-        # Fire the intermediate-text callback (non-streaming path).
-        if async_cb is not None and (signal := intermediate_text_signal(response)) is not None:
-            await async_cb(signal)
+        if on_text is not None and (signal := intermediate_text_signal(response)) is not None:
+            on_text(signal)
         return response
 
     async def _stream_updates(

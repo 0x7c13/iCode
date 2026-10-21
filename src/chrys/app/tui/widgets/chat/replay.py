@@ -18,7 +18,6 @@ from chrys.app.tui.widgets.chat.messages import (
     InterruptedMessage,
     UserMessage,
     format_message_created_at,
-    process_think_tags,
     resolve_interrupted_message_copy,
 )
 from chrys.app.tui.widgets.chat.ports import ChatMountPort, TranscriptLocalizationPort, TranscriptUiPort
@@ -996,7 +995,7 @@ class HistoryReplayRenderer:
                         is_intermediate=True,
                     )
                     for itext in entry.intermediate_texts
-                    if process_think_tags(itext, intermediate=True)
+                    if itext.strip()
                 )
                 contents = entry.contents
                 status_text = self._resolve_status(entry.status_code, entry.status_count)
@@ -1093,7 +1092,7 @@ class HistoryReplayRenderer:
                         is_compressed=True,
                     )
                     for text in entry.intermediate_texts
-                    if process_think_tags(text, intermediate=True)
+                    if text.strip()
                 )
                 visible_contents = [
                     content
@@ -1140,7 +1139,7 @@ class HistoryReplayRenderer:
         async def flush_text() -> None:
             text = join_text_blocks(reconstruct_text_blocks(pending_text)).strip()
             pending_text.clear()
-            if text and process_think_tags(text, intermediate=is_intermediate):
+            if text:
                 replay_widgets.append(
                     AgentMessage(
                         text,

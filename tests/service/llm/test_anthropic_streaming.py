@@ -260,6 +260,45 @@ async def test_a_message_stop_alone_ends_the_stream() -> None:
     assert [call.call_id for call in await _stream_function_calls(events)] == ["call-a"]
 
 
+async def test_a_connection_held_open_after_the_message_stop_is_not_waited_for() -> None:
+    class _HeldOpen:
+        def __init__(self) -> None:
+            self.closed = 0
+            self._events = [_tool_start(0, "call-a", "zsh"), _json_delta(0, '{"command":"ls"}'), *_tool_use_tail(3)]
+
+        def __aiter__(self) -> _HeldOpen:
+            return self
+
+        async def __anext__(self) -> BetaRawMessageStreamEvent:
+            if not self._events:
+                # Where a gateway holding the connection open blocks the read.
+                raise AssertionError("read past the message stop")
+            return self._events.pop(0)
+
+        async def close(self) -> None:
+            self.closed += 1
+
+    sdk_stream = _HeldOpen()
+
+    class _Messages:
+        async def create(self, **_kwargs: object) -> _HeldOpen:
+            return sdk_stream
+
+    client = AnthropicMessagesClient(
+        model="claude-test",
+        sdk_client=SimpleNamespace(
+            base_url="https://api.anthropic.com", default_headers={}, beta=SimpleNamespace(messages=_Messages())
+        ),  # type: ignore[arg-type]
+    )
+    stream = client._inner_get_response(messages=[Message("user", ["hi"])], options={}, stream=True)
+    assert isinstance(stream, ResponseStream)
+
+    updates = [update async for update in stream]
+
+    assert [call.call_id for call in _sent_calls(updates)] == ["call-a"]
+    assert sdk_stream.closed == 1
+
+
 async def test_a_message_refused_with_calls_raises_before_any_call_is_sent() -> None:
     events = [
         _tool_start(0, "call-a", "zsh"),

@@ -300,11 +300,11 @@ async def test_responses_streaming_hosted_usage_uses_finalized_response_shape() 
 
 
 @pytest.mark.asyncio
-async def test_responses_validation_failure_cannot_poison_context_calibration() -> None:
-    """Rejected hosted responses only expose usage, so the dialect gate is conservative."""
+async def test_responses_failed_response_cannot_poison_context_calibration() -> None:
+    """A failed response only exposes usage, so the dialect gate is conservative."""
     from unittest.mock import MagicMock
 
-    from chrys.service.agent_middleware.response_validation import TerminalResponseValidationError
+    from chrys.foundation.errors import ProviderResponseError
     from chrys.service.context.compaction import UnifiedContextStrategy
     from chrys.service.context.middleware.usage import UsageTrackingMiddleware
 
@@ -321,8 +321,10 @@ async def test_responses_validation_failure_cannot_poison_context_calibration() 
     context.stream = False
 
     async def call_next() -> None:
-        raise TerminalResponseValidationError(
-            "hosted search returned no final text",
+        raise ProviderResponseError(
+            "server_error",
+            "The model failed.",
+            retryable=True,
             usage_details={
                 "input_token_count": 80_000,
                 "output_token_count": 500,
@@ -330,7 +332,7 @@ async def test_responses_validation_failure_cannot_poison_context_calibration() 
             },
         )
 
-    with pytest.raises(TerminalResponseValidationError):
+    with pytest.raises(ProviderResponseError):
         await middleware.process(context, call_next)
 
     assert reported[0][:4] == (80_500, 80_000, 500, 10_000)
@@ -339,12 +341,12 @@ async def test_responses_validation_failure_cannot_poison_context_calibration() 
 
 
 @pytest.mark.asyncio
-async def test_streaming_responses_validation_failure_cannot_poison_context_calibration() -> None:
+async def test_streaming_responses_failed_response_cannot_poison_context_calibration() -> None:
     """Lazy stream failures retain the same hosted-aggregate guard as blocking failures."""
     from unittest.mock import MagicMock
 
+    from chrys.foundation.errors import ProviderResponseError
     from chrys.kernel import ChatResponse, ChatResponseUpdate, ResponseStream
-    from chrys.service.agent_middleware.response_validation import TerminalResponseValidationError
     from chrys.service.context.compaction import UnifiedContextStrategy
     from chrys.service.context.middleware.usage import UsageTrackingMiddleware
 
@@ -357,8 +359,10 @@ async def test_streaming_responses_validation_failure_cannot_poison_context_cali
         compaction_strategy=strategy,
         use_local_context_estimate_for_hosted_usage=True,
     )
-    validation_error = TerminalResponseValidationError(
-        "hosted search returned no final text",
+    provider_error = ProviderResponseError(
+        "server_error",
+        "The model failed.",
+        retryable=True,
         usage_details={
             "input_token_count": 80_000,
             "output_token_count": 500,
@@ -368,7 +372,7 @@ async def test_streaming_responses_validation_failure_cannot_poison_context_cali
 
     async def updates():
         yield ChatResponseUpdate(role="assistant", contents=[])
-        raise validation_error
+        raise provider_error
 
     context = MagicMock()
     context.stream = True
@@ -378,7 +382,7 @@ async def test_streaming_responses_validation_failure_cannot_poison_context_cali
         return None
 
     await middleware.process(context, call_next)
-    with pytest.raises(TerminalResponseValidationError):
+    with pytest.raises(ProviderResponseError):
         _ = [update async for update in context.result]
 
     assert reported[0][:4] == (80_500, 80_000, 500, 10_000)

@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any, Protocol, TypedDict, TypeGuard, cast
 from chrys.foundation.errors import clean_error_message, is_retryable
 from chrys.foundation.retry import (
     HistorySnapshot,
-    RetryAttemptInfo,
     StreamRetryLoop,
     StreamStall,
     StreamStallExhausted,
@@ -33,10 +32,6 @@ from chrys.foundation.trajectory.event_types import EventType as TrajectoryEvent
 from chrys.foundation.trajectory.event_types import ModelRunEndReason, RetryMode, RetryReason
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.kernel import is_retry_boundary_update, resolve_storage_mode_and_handles, wire_progress_scope
-from chrys.service.agent_middleware.response_validation import (
-    RetryableResponseValidationError,
-    hosted_commits_from_error,
-)
 from chrys.service.context.providers.history import PRE_OUTPUT_HISTORY_LEN_STATE_KEY
 
 if TYPE_CHECKING:
@@ -64,23 +59,6 @@ class AgentRunKwargs(TypedDict, total=False):
 def is_string_keyed_dict(value: object) -> TypeGuard[dict[str, Any]]:
     """Narrow internal kwargs dictionaries whose producers use string keys."""
     return isinstance(value, dict)
-
-
-def _validation_retry_exemption(exc: BaseException) -> RetryAttemptInfo | None:
-    """Expose the middleware-owned stored validation budget to the retry loop.
-
-    The exemption is bounded because response validation terminally gives up
-    when its carried retry budget or identical-reason guard is reached.
-    """
-    if not isinstance(exc, RetryableResponseValidationError):
-        return None
-    exemption = exc.exemption
-    return RetryAttemptInfo(
-        reason=str(exc),
-        attempt=exemption.attempt,
-        max_attempts=exemption.max_attempts,
-        delay_seconds=exemption.delay_seconds,
-    )
 
 
 def has_live_continuation_token(run_kwargs: Mapping[str, object] | None) -> bool:
@@ -127,8 +105,6 @@ def _run_retry_reason(exc: BaseException) -> str:
     """Closed reason code for a whole-run retry decision."""
     if isinstance(exc, StreamStall | StreamStallExhausted):
         return RetryReason.STREAM_STALL
-    if isinstance(exc, RetryableResponseValidationError):
-        return RetryReason.VALIDATION_REJECTED
     return RetryReason.TRANSIENT_ERROR
 
 
@@ -138,7 +114,8 @@ class WireRetryPolicyAdapter:
     Budgets and backoff accept values (the TurnBindings's per-run snapshot) or
     readers (the child controller's live configuration). No budget or stall
     action is defaulted across those policies. An absent pre-retry callback
-    means no injection transaction; an absent hosted probe remains None.
+    means no injection transaction; an absent hosted or answer probe remains
+    None.
     """
 
     def __init__(
@@ -154,6 +131,7 @@ class WireRetryPolicyAdapter:
         publish_retry: Callable[[str, int, int, int, BaseException], Awaitable[None]],
         prepare_retry: Callable[[], None] | None = None,
         hosted_commits_in_flight: Callable[[], tuple[str, ...]] | None = None,
+        answer_shown: Callable[[], bool] | None = None,
     ) -> None:
         self._max_retries = max_retries
         self.stall_timeout_seconds = stall_timeout_seconds
@@ -166,6 +144,7 @@ class WireRetryPolicyAdapter:
         self.prepare_retry = prepare_retry
         # Describes only the current wire attempt, never the pass total.
         self.hosted_commits_in_flight = hosted_commits_in_flight
+        self.answer_shown = answer_shown
 
     @property
     def max_retries(self) -> int:
@@ -229,11 +208,10 @@ class InterruptProbe(Protocol):
 
 
 class StreamObserver(Protocol):
-    """Observe raw updates and publish caller projection before finalize."""
+    """Present each streamed update as it arrives; the pass's content projector."""
 
-    def on_update(self, update: AgentResponseUpdate) -> None: ...
+    async def on_update(self, update: AgentResponseUpdate) -> None: ...
     async def on_retry_boundary(self) -> None: ...
-    async def before_finalize(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +273,7 @@ class WireRecipe:
     publish_retry: Callable[[str, int, int, int, BaseException], Awaitable[None]]
     prepare_retry: Callable[[], None] | None
     hosted_commits_in_flight: Callable[[], tuple[str, ...]] | None
+    answer_shown: Callable[[], bool] | None
 
     def build(self) -> WireRetryPolicyAdapter:
         return WireRetryPolicyAdapter(
@@ -308,6 +287,7 @@ class WireRecipe:
             publish_retry=self.publish_retry,
             prepare_retry=self.prepare_retry,
             hosted_commits_in_flight=self.hosted_commits_in_flight,
+            answer_shown=self.answer_shown,
         )
 
 
@@ -589,7 +569,8 @@ class AttemptRunner:
         retry_participant: RetryParticipant | None,
         interrupt: InterruptProbe,
         trace: ModelRunTrace,
-        stream_observer: Callable[[], StreamObserver] | None,
+        stream_observer: Callable[[], StreamObserver | None] | None,
+        content_exposed: Callable[[], bool],
         publish_retry: Callable[[str, int, int, int, BaseException], Awaitable[None]],
         interruptible_sleep: Callable[[int], Awaitable[bool]],
         max_retries: Callable[[], int],
@@ -607,6 +588,7 @@ class AttemptRunner:
         self._interrupt = interrupt
         self.trace = trace
         self._stream_observer = stream_observer
+        self._content_exposed = content_exposed
         self._publish_retry_notice = publish_retry
         self._interruptible_sleep = interruptible_sleep
         self._effective_max_retries = max_retries
@@ -635,24 +617,21 @@ class AttemptRunner:
                     self._retry_participant.end_retry()
         return await self._run_blocking(message, run_kwargs, service_side=service_side)
 
-    def _may_retry_attempt(self, exc: BaseException, run_kwargs: Mapping[str, object] | None = None) -> bool:
-        """Whole-run retry gate: answered tool work must never re-execute.
+    def _may_retry_attempt(self, run_kwargs: Mapping[str, object] | None = None) -> bool:
+        """Whole-run retry gate: what the run already did or showed must never repeat.
 
-        Locally answered results are counted by the loop recorder.  Provider-
-        hosted calls (hosted MCP, hosted shell) execute inside the failed
-        exchange itself and never reach the recorder — their evidence rides
-        on the raised validation error (the middleware swallows the invalid
-        response before the kernel loop sees it) or, for stalls and transport
-        drops mid-stream, on the middleware's run-scoped observation probe.
-        A live continuation token exempts the gate: the retry then resumes
-        the already-created background response instead of re-creating the
-        request, so nothing hosted runs twice.
+        Answer text that went out cannot be taken back, so a run that showed
+        any is never sent again; reasoning may stream again. Locally answered results are
+        counted by the loop recorder. Provider-hosted calls (hosted MCP,
+        hosted shell) execute inside the failed exchange itself and never
+        reach the recorder: the validation middleware's run-scoped probe
+        counts them. A live continuation token exempts the hosted gate: the
+        retry then resumes the already-created background response instead
+        of re-creating the request, so nothing hosted runs twice.
         """
-        if self._committed_count():
+        if self._content_exposed() or self._committed_count():
             return False
-        hosted = hosted_commits_from_error(exc)
-        if not hosted:
-            hosted = self._hosted_commits_probe()
+        hosted = self._hosted_commits_probe()
         if hosted and not has_live_continuation_token(run_kwargs):
             logger.warning(
                 "Not retrying failed attempt: provider-hosted tool call(s) already executed (%s)",
@@ -739,8 +718,7 @@ class AttemptRunner:
                     interruptible_sleep=self._interruptible_sleep,
                     clean_error_message=clean_error_message,
                     after_restore=lambda: self._restore_service_retry_inputs(run_kwargs),
-                    may_retry=lambda exc: self._may_retry_attempt(exc, run_kwargs),
-                    retry_exemption=_validation_retry_exemption,
+                    may_retry=lambda _exc: self._may_retry_attempt(run_kwargs),
                 )
                 result = await loop.run(lambda: self._run_agent(message, run_kwargs))
             else:
@@ -776,11 +754,11 @@ class AttemptRunner:
             clean_error_message=clean_error_message,
             restore_on_stall_exhaustion=isinstance(self._stall_exhaustion, RestoreAndFallback),
             after_restore=lambda: self._restore_service_retry_inputs(run_kwargs),
-            may_retry=lambda exc: self._may_retry_attempt(exc, run_kwargs),
-            retry_exemption=_validation_retry_exemption,
+            may_retry=lambda _exc: self._may_retry_attempt(run_kwargs),
         )
 
         async def _attempt() -> AgentResponse[Any]:
+            await self._abandon_unlanded_stream()
             return await self._stream_single_attempt(current_input, run_kwargs)
 
         if self._retry_participant is not None:
@@ -795,10 +773,17 @@ class AttemptRunner:
                 # blocking replacement, including any consumed injection.
                 await self._stall_exhaustion.reject_stream("Streaming stalled; using blocking fallback")
                 await self.trace.retry_scheduled(exc=exc, delay_seconds=0, fallback_to_blocking=True)
+                await self._abandon_unlanded_stream()
                 return await self._run_agent(current_input, run_kwargs)
         finally:
             if self._retry_participant is not None:
                 self._retry_participant.end_retry()
+
+    async def _abandon_unlanded_stream(self) -> None:
+        """A fresh run replaces what an abandoned attempt streamed without landing a response."""
+        observer = self._stream_observer() if self._stream_observer is not None else None
+        if observer is not None:
+            await observer.on_retry_boundary()
 
     async def _publish_retry_attempt(
         self,
@@ -821,8 +806,8 @@ class AttemptRunner:
     ) -> AgentResponse[Any]:
         """Consume one stream in its owning task and finalize under the watchdog.
 
-        Retry boundaries are observed before ordinary updates. The caller's
-        final text projection runs after iterator completion, before finalize.
+        Every update reaches the caller's stream observer as it arrives; a
+        retry boundary reaches it before the fresh attempt's updates.
         """
         import time as _time
 
@@ -920,7 +905,9 @@ class AttemptRunner:
                             continue
 
                     if observer is not None:
-                        observer.on_update(update)
+                        await observer.on_update(update)
+                        # Showing the update is not waiting on the stream.
+                        last_wait_start = _time.monotonic()
                     has_function_call = False
                     has_function_result = False
                     text_chunk = ""
@@ -937,9 +924,6 @@ class AttemptRunner:
                         expecting_tool_result = True
 
                     await asyncio.sleep(0)  # yield to event loop between chunks
-
-                if observer is not None:
-                    await observer.before_finalize()
 
                 # Also guard finalize with the same per-chunk timeout — it
                 # shouldn't block once the iterator exhausts, but it's still

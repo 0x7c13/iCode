@@ -15,6 +15,7 @@ from chrys.foundation.events.types import (
     ApprovalRequest,
     ApprovalResponse,
     Event,
+    InvocationContentDelta,
     InvocationMessage,
     InvocationStarted,
     InvocationToolCallResult,
@@ -197,7 +198,9 @@ async def test_an_agent_node_runs_on_the_bound_profile_and_its_invocation_is_pin
         assert [e.state for e in review_states] == ["running", "completed"]
         assert review_states[0].invocation_id
         assert review_states[0].invocation_id == review_states[1].invocation_id
-        assert not of_type(events, InvocationMessage)  # node-origin invocation events stay off the headless stream
+        # Node-origin invocation events stay off the headless stream.
+        assert not of_type(events, InvocationMessage)
+        assert not of_type(events, InvocationContentDelta)
         assert not of_type(events, WorkflowRunNotice)
         session_dir = host.workflow_session_dir
         assert session_dir is not None
@@ -251,8 +254,11 @@ async def test_node_activity_reaches_the_stream_only_on_request_and_only_for_thi
         starts = of_type(streamed, InvocationToolCallStart)
         assert [(e.tool_name, e.origin.root.invocation_id in announced) for e in starts] == [("read_file", True)]
         assert [e.call_id for e in of_type(streamed, InvocationToolCallResult)] == [starts[0].call_id]
-        commentary = [e.text for e in of_type(streamed, InvocationMessage) if e.is_intermediate]
-        assert commentary == ["Reading it."]
+        segments: dict[str, str] = {}
+        for delta in of_type(streamed, InvocationContentDelta):
+            assert (delta.origin.kind, delta.origin.invocation_id in announced) == ("workflow_node", True)
+            segments[delta.segment_id] = segments.get(delta.segment_id, "") + delta.text
+        assert list(segments.values()) == ["Reading it.", "LGTM"]
         # Node activity arrives between the node's running and completed states.
         kinds = [type(e) for e in streamed if isinstance(e, WorkflowNodeStateChanged | InvocationToolCallStart)]
         assert kinds.index(InvocationToolCallStart) > kinds.index(WorkflowNodeStateChanged)

@@ -5,13 +5,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from chrys.foundation.config.settings import DEFAULT_WORKSPACE_MRU_MAX_ENTRIES
-from chrys.foundation.events.types import AgentRuntimeDetails, InvocationMessage
+from chrys.foundation.events.types import AgentRuntimeDetails
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.platform import safe_getcwd
 from chrys.service.approval.policy import ApprovalMode
@@ -19,13 +19,19 @@ from chrys.service.approval.policy import ApprovalMode
 if TYPE_CHECKING:
     from chrys.foundation.config.settings_store import SettingsHandle
     from chrys.foundation.events.bus import EventBus
-    from chrys.foundation.events.types import BackgroundTasksChanged, Error
+    from chrys.foundation.events.types import (
+        BackgroundTasksChanged,
+        Error,
+        InvocationContentDelta,
+        InvocationContentFinished,
+        InvocationMessage,
+    )
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.state.store import StateStore
 
-    DeferredTurnEvent = InvocationMessage | Error
+    DeferredTurnEvent = InvocationMessage | InvocationContentDelta | InvocationContentFinished | Error
 
 
 @dataclass
@@ -237,58 +243,47 @@ class PendingInjectionState:
 
 @dataclass
 class TurnRenderGate:
-    """Defers fast backend events while the accepted user bubble mounts."""
+    """Defers fast backend events while the accepted user bubble mounts, then replays them in order."""
 
     active: bool = False
     _deferred: list[DeferredTurnEvent] = field(default_factory=list)
+    _replaying: DeferredTurnEvent | None = None
 
     def begin(self) -> None:
         """Start deferring backend events for the current user render."""
         self.active = True
         self._deferred.clear()
 
+    def defers(self, event: DeferredTurnEvent) -> bool:
+        """Whether *event* waits its turn: the gate is up and it is not the event being replayed."""
+        return self.active and event is not self._replaying
+
     def defer(self, event: DeferredTurnEvent) -> None:
         """Record an event to flush after user rendering completes."""
         self._deferred.append(event)
 
-    def consume_deferred(self) -> list[DeferredTurnEvent]:
-        """Return deferred messages in arrival order and clear the gate buffer."""
-        deferred = self._deferred
-        self._deferred = []
-        return deferred
-
     def finish(self, *, rendered: bool) -> None:
-        """Stop deferring, dropping messages when user rendering failed."""
-        self.active = False
+        """End the user render: a failed one stops deferring and drops what it deferred.
+
+        A rendered one keeps deferring until :meth:`drain` has replayed the backlog.
+        """
         if not rendered:
+            self.active = False
             self._deferred.clear()
 
-    def accept_presentation_attempt(self, attempt_id: str, segment_ids: tuple[str, ...]) -> None:
-        """Commit accepted deferred provisional messages and drop non-canonical ones."""
-        accepted = set(segment_ids)
-        retained: list[DeferredTurnEvent] = []
-        for event in self._deferred:
-            if (
-                not isinstance(event, InvocationMessage)
-                or event.presentation is None
-                or event.presentation.attempt_id != attempt_id
-            ):
-                retained.append(event)
-                continue
-            if event.presentation.segment_id not in accepted:
-                continue
-            retained.append(replace(event, presentation=None))
-        self._deferred = retained
+    async def drain(self, replay: Callable[[DeferredTurnEvent], Awaitable[None]]) -> None:
+        """Replay the deferred events in arrival order, then stop deferring.
 
-    def reject_presentation_attempt(self, attempt_id: str) -> None:
-        """Drop deferred provisional messages from a rejected attempt."""
-        self._deferred = [
-            event
-            for event in self._deferred
-            if not isinstance(event, InvocationMessage)
-            or event.presentation is None
-            or event.presentation.attempt_id != attempt_id
-        ]
+        A replay can await a mount: events arriving meanwhile queue behind the
+        backlog, so streamed text, which only appends, keeps its order.
+        """
+        try:
+            while self._deferred:
+                self._replaying = self._deferred.pop(0)
+                await replay(self._replaying)
+        finally:
+            self._replaying = None
+            self.active = False
 
 
 @dataclass

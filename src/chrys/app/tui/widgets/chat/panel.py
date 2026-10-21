@@ -38,7 +38,6 @@ if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.widgets import PromptDraft
     from chrys.app.update_check import UpdateNotice
-    from chrys.foundation.events.types import ProvisionalPresentation
     from chrys.foundation.models.ask_user import AskUserQuestion
     from chrys.service.context.providers.history import CompressedBlock
     from chrys.service.session.sub_agent_transcript import PersistedSubAgentTranscript
@@ -143,7 +142,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             self,
             self,
             self,
-            finalize_agent_message=self._finalize_current_agent_message,
+            finalize_agent_message=self._settle_answer_before_tools,
             tool_groups_expanded=tool_groups_expanded,
             tool_widget_configurator=self._configure_tool_widget,
         )
@@ -266,9 +265,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     def _current_agent_msg(self, message: AgentMessage | None) -> None:
         self._live_renderer.current_agent_msg = message
 
-    def _finalize_current_agent_message(self) -> None:
-        """Terminate live streamed prose before another transcript boundary."""
-        self._live_renderer._finalize_current_agent_message()
+    def _settle_answer_before_tools(self) -> None:
+        """Show the streamed answer text a tool batch follows as intermediate text."""
+        self._live_renderer.settle_answer_before_tools()
 
     @property
     def _profile_name(self) -> str:
@@ -1124,43 +1123,27 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Remove a trailing failed turn (Error/Interrupted + its preceding UserMessage)."""
         await self._live_renderer._remove_failed_turn()
 
+    async def add_answer_delta(self, segment_id: str, text: str) -> None:
+        """Stream new answer text into its segment's message (one message per segment)."""
+        await self._live_renderer.add_answer_delta(segment_id, text)
+
+    def finish_answer_segment(self, segment_id: str, *, completed: bool) -> None:
+        """Close a streamed answer segment; a failed or interrupted one keeps its partial text."""
+        self._live_renderer.finish_answer_segment(segment_id, completed=completed)
+
     async def add_agent_message(
         self,
         text: str,
-        is_final: bool = True,
         *,
-        is_intermediate: bool = False,
         structured_output_completed: bool = False,
-        presentation: ProvisionalPresentation | None = None,
         created_at: Any = None,
     ) -> None:
-        """Display or update an agent message (supports streaming).
-
-        Args:
-            text: The message text.
-            is_final: Whether this is the last message of the agent turn.
-            is_intermediate: If ``True``, this is intermediate text returned
-                alongside tool calls.  Non-empty prose is rendered as a
-                complete message and closes the current tool group (the next
-                tool batch opens a new one); empty or think-only text is
-                ignored and leaves the open group untouched.
-        """
+        """Complete the turn's answer, whose text already streamed as deltas."""
         await self._live_renderer.add_agent_message(
             text,
-            is_final=is_final,
-            is_intermediate=is_intermediate,
             structured_output_completed=structured_output_completed,
-            presentation=presentation,
             created_at=created_at,
         )
-
-    async def accept_presentation_attempt(self, attempt_id: str, segment_ids: tuple[str, ...]) -> None:
-        """Commit the canonical provisional messages for one response attempt."""
-        await self._live_renderer.accept_presentation_attempt(attempt_id, segment_ids)
-
-    async def reject_presentation_attempt(self, attempt_id: str) -> None:
-        """Retract provisional messages for one rejected response attempt."""
-        await self._live_renderer.reject_presentation_attempt(attempt_id)
 
     def _schedule_anchor_sync(self) -> None:
         """Sync scroll position to the bottom after the next refresh.
@@ -1331,34 +1314,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             tool_name=tool_name,
         )
 
-    def add_sub_agent_message(
-        self,
-        agent_name: str,
-        invocation_id: str,
-        text: str,
-        *,
-        presentation: ProvisionalPresentation | None = None,
-    ) -> None:
-        """Route one intermediate assistant message to a nested transcript."""
-        self._tool_registry.add_sub_agent_message(
-            agent_name,
-            invocation_id,
-            text,
-            presentation=presentation,
-        )
-
-    def accept_sub_agent_presentation(
-        self,
-        invocation_id: str,
-        attempt_id: str,
-        segment_ids: tuple[str, ...],
-    ) -> None:
-        """Commit provisional assistant messages in a nested transcript."""
-        self._tool_registry.accept_sub_agent_presentation(invocation_id, attempt_id, segment_ids)
-
-    def reject_sub_agent_presentation(self, invocation_id: str, attempt_id: str) -> None:
-        """Retract provisional assistant messages in a nested transcript."""
-        self._tool_registry.reject_sub_agent_presentation(invocation_id, attempt_id)
+    def add_sub_agent_answer(self, agent_name: str, invocation_id: str, segment_id: str, text: str) -> None:
+        """Add one whole answer segment of a sub-agent to its nested transcript."""
+        self._tool_registry.add_sub_agent_answer(agent_name, invocation_id, segment_id, text)
 
     async def add_sub_agent_tool_start(
         self,
@@ -1621,9 +1579,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Display an interruption notice, replacing any trailing error/interrupted widget."""
         await self._live_renderer.add_interrupted(reason, source)
 
-    async def add_error(self, text: str, *, action_label: str | None = "Retry") -> None:
+    async def add_error(self, text: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
         """Display an error message, replacing any trailing error/interrupted widget."""
-        await self._live_renderer.add_error(text, action_label=action_label)
+        await self._live_renderer.add_error(text, action_label=action_label, ends_turn=ends_turn)
 
     async def add_retry(self, message: str, attempt: int, max_attempts: int, delay_seconds: int) -> None:
         """Display a retry notice, replacing any trailing status widget."""
@@ -1652,7 +1610,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         2. Closes the open tool group and clears
            ``_current_tool_group``/``_unlinked_sub_agents`` so the next
            ``ToolCallStart`` creates a fresh group.
-        3. Clears ``_current_agent_msg`` so the next intermediate text
+        3. Clears ``_current_agent_msg`` so the next streamed text
            mounts a new widget under which the next group will attach.
 
         Completed tool cards from the failed attempt stay visible — they
@@ -1668,6 +1626,18 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         last = self._find_trailing_status()
         if isinstance(last, (ErrorMessage, InterruptedMessage)):
             last.hide_action()
+
+    async def remove_answer_before_failure(self) -> None:
+        """Remove the answer text a failed or interrupted pass showed right before its status.
+
+        A bare Continue or Retry drops that text from history and asks for the
+        reply again, so the transcript drops it too; a tool exchange stays.
+        """
+        status = self._find_trailing_status()
+        if not (isinstance(status, InterruptedMessage) or (isinstance(status, ErrorMessage) and status.ends_turn)):
+            return
+        while isinstance(answer := self.preceding_content(status), AgentMessage):
+            await remove_shielded(answer)
 
     def set_trailing_status_action_disabled(self, disabled: bool) -> None:
         """Keep the retry action visible but unavailable during admission."""

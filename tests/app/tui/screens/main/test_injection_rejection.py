@@ -27,7 +27,7 @@ from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
-    InvocationMessage,
+    InvocationContentDelta,
     UserInjectResult,
     UserInterrupt,
     UserMessage,
@@ -136,9 +136,9 @@ def _text(message: MessageRef | str) -> str:
     return message if isinstance(message, str) else format_message(message)
 
 
-def _agent_message(text: str) -> InvocationMessage:
-    return InvocationMessage(
-        text=text, is_final=False, is_intermediate=True, origin=InvocationOrigin("turn", "", "turn-test", None)
+def _answer_delta(text: str) -> InvocationContentDelta:
+    return InvocationContentDelta(
+        origin=InvocationOrigin("turn", "", "turn-test", None), segment_id="s1", channel="answer", text=text
     )
 
 
@@ -174,8 +174,13 @@ class _Harness:
             ) -> None:
                 harness.flashes.append(_text(message))
 
+            def show(self, text: object) -> None:
+                pass
+
         class _ChatPanel:
-            async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+            async def add_error(
+                self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True
+            ) -> None:
                 harness.chat_errors.append(message)
 
             async def add_user_message(
@@ -189,14 +194,14 @@ class _Harness:
                 assert is_injection is True
                 harness.shown.append(("bubble", text))
 
+            async def add_answer_delta(self, segment_id: str, text: str) -> None:
+                harness.shown.append(("agent", text))
+
             async def add_agent_message(
                 self,
                 text: str,
                 *,
-                is_final: bool,
-                is_intermediate: bool = False,
                 structured_output_completed: bool = False,
-                presentation: object = None,
                 created_at: Any = None,
             ) -> None:
                 harness.shown.append(("agent", text))
@@ -246,6 +251,7 @@ class _Harness:
             # stays queued, as when the hook answers before it gets to run.
             start_worker=self.workers.append,
             handle_agent_message=self.handler.on_agent_message,
+            handle_agent_content=self.handler.on_agent_content,
             handle_error=self.handler.on_error,
             set_agent_running=self.handler.set_agent_running,
             set_has_messages=lambda _has: None,
@@ -432,9 +438,9 @@ async def test_mid_run_message_whose_run_ended_first_shows_the_turn_it_opened(me
             h.input_bar.value = "edited draft"
         event.started_turn = True
         # The new run's task: its first event comes once the publish returned.
-        first_events.append(asyncio.create_task(h.bus.publish(_agent_message("first step"))))
+        first_events.append(asyncio.create_task(h.bus.publish(_answer_delta("first step"))))
 
-    await h.bus.subscribe(InvocationMessage, h.handler.on_agent_message)
+    await h.bus.subscribe(InvocationContentDelta, h.handler.on_agent_content)
     await h.start(admit_as_new_turn)
     await h.send_mid_run(_TEXT)
     await asyncio.gather(*first_events)

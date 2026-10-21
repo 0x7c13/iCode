@@ -283,9 +283,7 @@ async def test_choice_error_prevents_all_tool_calls_even_beside_a_successful_cho
 
     async with scripted_openai([completion, _completion(content="done")]) as wire:
         client = ChatCompletionsClient(model="test", sdk_client=wire.client)
-        layer = InvariantCheckedToolLoopLayer(
-            ChatMiddlewareLayer(client, middleware=[ResponseValidationMiddleware(backoff_schedule=(0,))])
-        )
+        layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(client, middleware=[ResponseValidationMiddleware()]))
         with pytest.raises(ProviderResponseError) as raised:
             await layer.get_response([Message("user", ["go"])], stream=False, options={"tools": [read_file]})
 
@@ -527,9 +525,7 @@ async def _tool_runs(chunks: Sequence[ChatCompletionChunk | str]) -> tuple[list[
 
     async with scripted_openai([chunks, [_text("done", finish_reason="stop")]]) as wire:
         client = ChatCompletionsClient(model="test", sdk_client=wire.client)
-        layer = InvariantCheckedToolLoopLayer(
-            ChatMiddlewareLayer(client, middleware=[ResponseValidationMiddleware(backoff_schedule=(0,))])
-        )
+        layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(client, middleware=[ResponseValidationMiddleware()]))
         result = layer.get_response([Message("user", ["go"])], stream=True, options={"tools": [read_file]})
         assert isinstance(result, ResponseStream)
         try:
@@ -808,7 +804,7 @@ async def test_a_settled_stream_that_goes_quiet_fails_as_it_settled_before_it_st
 ) -> None:
     # What may follow is only its usage, waited on far shorter than a stall.
     monkeypatch.setattr(chat_completions_client, "_ENDED_STREAM_WAIT_SECONDS", 0)
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
 
     async with scripted_openai([chunks], held_open=True) as wire:
         client = ChatCompletionsClient(model="test", sdk_client=wire.client)

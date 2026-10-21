@@ -21,6 +21,7 @@ from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.orchestration.engine.build.builder import build_agent
 from chrys.orchestration.invoker import runtime as runtime_factory_module
+from chrys.service.agent_middleware import ResponseBatchCounter
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.mcp.adapter import MCPAdapter
 from chrys.service.mcp.cache import MCPConnectionCache
@@ -355,9 +356,8 @@ async def test_real_stdio_parent_and_sub_agent_share_connection_but_not_wrappers
             bus=EventBus(),
             agent_registry=agent_registry,
             injection=MagicMock(),
-            intermediate_buffer=MagicMock(),
-            on_intermediate_async=MagicMock(),
-            on_intermediate_sync=MagicMock(),
+            batch_counter=ResponseBatchCounter(),
+            on_intermediate=MagicMock(),
             on_usage=MagicMock(),
             model_registry=model_registry,
             approval_mode=ApprovalMode.BYPASS,
@@ -503,9 +503,8 @@ async def test_real_build_wires_mcp_instructions_provider(tmp_path: Path) -> Non
             bus=EventBus(),
             agent_registry=agent_registry,
             injection=MagicMock(),
-            intermediate_buffer=MagicMock(),
-            on_intermediate_async=MagicMock(),
-            on_intermediate_sync=MagicMock(),
+            batch_counter=ResponseBatchCounter(),
+            on_intermediate=MagicMock(),
             on_usage=MagicMock(),
             model_registry=model_registry,
             approval_mode=ApprovalMode.BYPASS,

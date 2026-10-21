@@ -36,6 +36,7 @@ from tests.kernel._fakes import (
     _TerminateFunction,
     _text_update,
     _user,
+    _WireRetryPolicy,
 )
 from tests.support.transcript_invariants import InvariantCheckedToolLoopLayer
 
@@ -150,16 +151,13 @@ class TestStreamingReconstruction:
 
     @pytest.mark.asyncio
     async def test_echo_stripping_survives_response_validation_proxy(self) -> None:
-        """The strip filter must reach BENEATH a draining stream proxy.
+        """The strip filter reaches the provider stream beneath the validation middleware.
 
-        ``ResponseValidationMiddleware`` returns its own ``ResponseStream``
-        whose generator drains the provider stream, preview-finalizes, and
-        replays updates — ``with_update_filter`` push-down cannot cross that
-        semantic boundary (the proxy's source is a plain generator), so the
-        filter is delivered on the request path and the middleware pipeline
-        attaches it to the stream its final handler resolves. Without that,
-        the proxy's cached final response is assembled UNFILTERED and the
-        laundering P1 returns in the production topology.
+        ``ResponseValidationMiddleware`` observes the stream through hooks and
+        judges its final response; the filter is delivered on the request
+        path and the middleware pipeline attaches it to the stream its final
+        handler resolves, so the final response is assembled filtered in the
+        production topology too.
         """
         from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
 
@@ -178,9 +176,7 @@ class TestStreamingReconstruction:
                 [_text_update("done")],
             ]
         )
-        layer = InvariantCheckedToolLoopLayer(
-            ChatMiddlewareLayer(wire, middleware=[ResponseValidationMiddleware(backoff_schedule=[0.0])])
-        )
+        layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(wire, middleware=[ResponseValidationMiddleware()]))
 
         stream = layer.get_response([_user()], stream=True, options={"tools": [_make_tool(events)]})
         _ = [u async for u in stream]
@@ -190,42 +186,50 @@ class TestStreamingReconstruction:
         assert [c.arguments["text"] for c in _call_contents(final)] == ["old", "new"]
 
     @pytest.mark.asyncio
-    async def test_echo_stripping_reattaches_on_validation_retry(self) -> None:
-        """Every validation retry's fresh provider stream gets the filter.
+    async def test_echo_stripping_reattaches_on_blank_resend(self) -> None:
+        """A blank resend's fresh provider stream gets the filter too.
 
         Attempt one of the second loop turn returns whitespace-only text
-        (invalid, retried inside the validation proxy); the retry attempt
-        carries the echo-laundering shape. The filter must cover the RETRY
-        attempt's inner stream, not just the first.
+        (blank, resent once in place); the resend replays the first turn's
+        call fragments, which would re-merge into a new call and
+        re-execute. The filter must cover the RESENT stream, not just the
+        first.
         """
         from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
 
         events: list[str] = []
-        landed = Content.from_function_call("c1", "echo", arguments={"text": "old"})
-        fresh_same_id = Content.from_function_call("c1", "echo", arguments={"text": "new"})
+        frag_a = Content.from_function_call(call_id="c1", name="echo", arguments='{"text": "on')
+        frag_b = Content.from_function_call(call_id="c1", name="echo", arguments='ce"}')
+        fresh = Content.from_function_call("c2", "echo", arguments={"text": "fresh"})
         wire = _ScriptedClient(
             [
-                [ChatResponseUpdate(contents=[landed], role="assistant")],
+                [
+                    ChatResponseUpdate(contents=[frag_a], role="assistant"),
+                    ChatResponseUpdate(contents=[frag_b], role="assistant"),
+                ],
                 [_text_update("   \n  ")],
                 [
-                    ChatResponseUpdate(contents=[landed], role="assistant"),
-                    ChatResponseUpdate(contents=[landed], role="assistant"),
-                    ChatResponseUpdate(contents=[Content.from_text("thinking")], role="assistant"),
-                    ChatResponseUpdate(contents=[fresh_same_id], role="assistant"),
+                    ChatResponseUpdate(contents=[frag_a], role="assistant"),
+                    ChatResponseUpdate(contents=[frag_b], role="assistant"),
+                    ChatResponseUpdate(contents=[fresh], role="assistant"),
                 ],
                 [_text_update("done")],
             ]
         )
-        layer = InvariantCheckedToolLoopLayer(
-            ChatMiddlewareLayer(wire, middleware=[ResponseValidationMiddleware(backoff_schedule=[0.0])])
-        )
+        layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(wire, middleware=[ResponseValidationMiddleware()]))
 
-        stream = layer.get_response([_user()], stream=True, options={"tools": [_make_tool(events)]})
+        stream = layer.get_response(
+            [_user()],
+            stream=True,
+            options={"tools": [_make_tool(events)]},
+            client_kwargs={"wire_retry_policy": _WireRetryPolicy()},
+        )
         _ = [u async for u in stream]
         final = await stream.get_final_response()
 
-        assert events == ["tool:echo:old", "tool:echo:new"]
-        assert [c.arguments["text"] for c in _call_contents(final)] == ["old", "new"]
+        assert len(wire.calls) == 4
+        assert events == ["tool:echo:once", "tool:echo:fresh"]
+        assert [c.call_id for c in _call_contents(final)] == ["c1", "c2"]
 
     @pytest.mark.asyncio
     async def test_echo_stripping_drops_only_the_message_shell_it_emptied(self) -> None:
@@ -261,14 +265,14 @@ class TestStreamingReconstruction:
         ]
 
     @pytest.mark.asyncio
-    async def test_echo_emptied_marker_isolated_from_validation_retry_message_id_collision(self) -> None:
-        """A rejected attempt cannot mark a same-id accepted shell as echo.
+    async def test_echo_emptied_marker_isolated_from_blank_resend_message_id_collision(self) -> None:
+        """A resent attempt cannot mark a same-id accepted shell as echo.
 
         Providers may restart positional message IDs on every response.
-        The rejected attempt strips an echo from ``msg_0``; the accepted
-        attempt legitimately emits an empty ``msg_0`` tool message. Cleanup
-        must follow accepted update identity, not an ID set shared across
-        validation retries.
+        The first attempt is only an echo in ``msg_0``: stripped, it shows
+        nothing and is resent once; the resend legitimately emits an empty
+        ``msg_0`` tool message. Cleanup must follow accepted update identity,
+        not an ID set shared across the resend.
         """
         from chrys.service.agent_middleware.response_validation import ResponseValidationMiddleware
 
@@ -286,11 +290,13 @@ class TestStreamingReconstruction:
                 ],
             ]
         )
-        layer = InvariantCheckedToolLoopLayer(
-            ChatMiddlewareLayer(wire, middleware=[ResponseValidationMiddleware(backoff_schedule=[0.0])])
-        )
+        layer = InvariantCheckedToolLoopLayer(ChatMiddlewareLayer(wire, middleware=[ResponseValidationMiddleware()]))
 
-        stream = layer.get_response([Message("user", [historical])], stream=True)
+        stream = layer.get_response(
+            [Message("user", [historical])],
+            stream=True,
+            client_kwargs={"wire_retry_policy": _WireRetryPolicy()},
+        )
         _ = [update async for update in stream]
         final = await stream.get_final_response()
 

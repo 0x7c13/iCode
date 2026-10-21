@@ -68,9 +68,10 @@ def test_parse_reasoning_content_from_response() -> None:
     parsed = decode_completion(response, {}, variant=DEEPSEEK)
 
     assert len(parsed.messages) == 1
-    assert parsed.messages[0].contents[0].text == "Need to inspect the file."
-    assert parsed.messages[0].contents[1].protected_data == json.dumps("Step-by-step thinking...")
-    assert parsed.messages[0].contents[1].additional_properties["openai_reasoning_format"] == "reasoning_content"
+    reasoning, answer = parsed.messages[0].contents
+    assert answer.text == "Need to inspect the file."
+    assert reasoning.text == "Step-by-step thinking..."
+    assert reasoning.additional_properties["openai_reasoning_format"] == "reasoning_content"
     assert parsed.messages[0].additional_properties["reasoning_content"] == "Step-by-step thinking..."
     # Content-level metadata drives replay; message-level metadata preserves the raw provider field.
     assert parsed.messages[0].additional_properties["openai_reasoning_format"] == "reasoning_content"

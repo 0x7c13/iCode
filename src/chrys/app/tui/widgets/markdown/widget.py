@@ -60,6 +60,7 @@ from chrys.app.tui.widgets.markdown.parser import (
     _create_markdown_parser,
     _parse_tokens,
     _wrap_cell_text,
+    highlight_code,
 )
 from chrys.app.tui.widgets.markdown.stream import MarkdownStream
 from chrys.foundation.i18n import msg
@@ -454,6 +455,8 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         self._diagram_compile_cache: OrderedDict[tuple[str, str], CompiledDiagram] = OrderedDict()
         """Small per-widget cache reused across streaming Markdown reparses."""
         self._math_compile_cache: OrderedDict[str, CompiledMath] = OrderedDict()
+        self._fence_highlights: dict[tuple[str, str], Content] = {}
+        """The last parse's highlighted closed fences by language and code, for a streamed reparse to reuse."""
         self._math_rows: dict[int, tuple[str, ...]] = {}
         self._block_strips: dict[int, list[Strip]] = {}
         """Cached strips for long non-table/fence blocks, keyed by block index.
@@ -696,13 +699,30 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
             else _configure_markdown_parser(self._parser_factory())
         )
         tokens = parser.parse(markdown)
-        return _parse_tokens(
+        previous = self._fence_highlights
+        highlights: dict[tuple[str, str], Content] = {}
+
+        def highlight_closed_fence(code: str, language: str) -> Content:
+            # A streamed reparse leaves closed fences unchanged. A fence is kept
+            # under the Content's own text, so the map holds no second copy of
+            # the code, and only when that text is the code itself.
+            highlighted = previous.get((language, code))
+            if highlighted is None:
+                highlighted = highlight_code(code, language)
+            if highlighted.plain == code:
+                highlights[language, highlighted.plain] = highlighted
+            return highlighted
+
+        blocks = _parse_tokens(
             tokens,
             compile_diagram=self._compile_mermaid_cached,
             open_links=self._open_links,
             math_enabled=bool(parser.options.get(MATH_ENABLED, False)),
             math_compiler=self._compile_math_cached,
+            highlight_closed_fence=highlight_closed_fence,
         )
+        self._fence_highlights = highlights
+        return blocks
 
     def _compile_math_cached(self, source: str) -> CompiledMath:
         """Bound both successful and failed compilations across streamed reparses."""
@@ -1723,18 +1743,8 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
             pending.announce_contents = pending.announce_contents or announce_contents
             return AwaitComplete(asyncio.shield(pending.task))
 
-        # Drop the old document's render caches once per parse; installing the
-        # new blocks clears them again.
-        self._line_cache.clear()
-        self._table_layouts.clear()
-        self._table_strips.clear()
-        self._fence_layouts.clear()
-        self._fence_line_strips.clear()
-        self._fence_source_line_strips.clear()
-        self._block_strips.clear()
-        self._block_style_cache.clear()
-        self._plain_selection_cache = None
-        self._lines_cache_result = None
+        # The render caches stay until the new blocks are installed: the old
+        # blocks still paint meanwhile, and a table without its layout paints blank.
         pending = _PendingParse(self._run_parse, announce_contents=announce_contents)
         self._pending_parse = pending
         return AwaitComplete(asyncio.shield(pending.task))
@@ -1793,6 +1803,14 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         self._width_at_last_layout = 0
         self._total_lines = 0
         self._block_line_info.clear()
+        self._line_cache.clear()
+        self._table_layouts.clear()
+        self._table_strips.clear()
+        self._fence_layouts.clear()
+        self._fence_line_strips.clear()
+        self._fence_source_line_strips.clear()
+        self._block_strips.clear()
+        self._block_style_cache.clear()
         self._diagram_action_lines.clear()
         self._diagram_action_widths.clear()
         self._plain_selection_cache = None

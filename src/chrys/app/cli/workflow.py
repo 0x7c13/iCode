@@ -413,16 +413,21 @@ async def _run_command(args: argparse.Namespace) -> int:
                     raise WorkflowRunTimeoutError("Workflow run timed out during preview.")
         run_id = ""
         on_event = None if progress is None else guarded(progress.handle)
-        async for event in host.iter_workflow_events(
-            target,
-            input_text=args.input,
-            timeout=timeout,
-            include_node_activity=progress is not None,
-        ):
-            if isinstance(event, WorkflowRunAccepted):
-                run_id = event.run_id
-            if on_event is not None:
-                on_event(event)
+        try:
+            async for event in host.iter_workflow_events(
+                target,
+                input_text=args.input,
+                timeout=timeout,
+                include_node_activity=progress is not None,
+            ):
+                if isinstance(event, WorkflowRunAccepted):
+                    run_id = event.run_id
+                if on_event is not None:
+                    on_event(event)
+        except BaseException:
+            if progress is not None:
+                progress.failed()
+            raise
         result = host.engine.workflows.result(run_id)
         if result is None:
             error_message = "Workflow run ended without a recorded result."

@@ -364,8 +364,7 @@ def _build_openai_sdk_client(
 
 async def create_client(
     profile: ModelProfile,
-    on_intermediate_text_async: Callable[[str], Awaitable[None]] | None = None,
-    on_intermediate_text_sync: Callable[[str], None] | None = None,
+    on_intermediate_text: Callable[[str], None] | None = None,
     session_id: str | None = None,
     parent_session_id: str | None = None,
     use_route_session_context: bool = False,
@@ -384,13 +383,9 @@ async def create_client(
         profile: The ``ModelProfile`` to bind this client to.  Provides
             provider, model id, HTTP transport tuning, headers, and
             credentials.
-        on_intermediate_text_async: Async callback for **non-streaming** mode.
-            Awaited when the LLM returns text alongside tool calls,
-            enabling real-time rendering of intermediate agent messages.
-        on_intermediate_text_sync: Sync callback for **streaming** mode.
-            Called from a ``result_hook`` after the stream finalizes.
-            Must not block — typically stores text in an
-            ``IntermediateTextBuffer``.
+        on_intermediate_text: Called with the intermediate-text signal of a
+            response that asks for tools, once it lands and before the tool
+            loop sees it, streamed or not. Must not block.
         session_id: Current session ID for the ``X-Session-ID`` and
             ``Chrys-Session-Id`` headers.
         parent_session_id: Optional parent session ID for sub-agent LLM
@@ -412,8 +407,7 @@ async def create_client(
     # Tool-loop knobs for ToolLoopLayer. Intentional headroom on iterations:
     # long autonomous sessions can chain many tool calls.
     stack_kwargs: dict[str, Any] = {
-        "on_intermediate_text_async": on_intermediate_text_async,
-        "on_intermediate_text_sync": on_intermediate_text_sync,
+        "on_intermediate_text": on_intermediate_text,
         "tool_result_ceiling_tokens": tool_result_ceiling_tokens,
     }
     if provider == "mock":
@@ -568,8 +562,7 @@ def _assemble_stack(
     session_id: str | None,
     parent_session_id: str | None,
     use_route_session_context: bool,
-    on_intermediate_text_async: Callable[[str], Awaitable[None]] | None,
-    on_intermediate_text_sync: Callable[[str], None] | None,
+    on_intermediate_text: Callable[[str], None] | None,
     max_iterations: int,
     max_consecutive_errors: int,
     tool_result_ceiling_tokens: int | None,
@@ -589,10 +582,7 @@ def _assemble_stack(
     wire_client: Any = client_cls.from_sdk_client(
         sdk_client,
         model=model_id,
-        observer=WireCallObserver(
-            on_intermediate_text_async=on_intermediate_text_async,
-            on_intermediate_text_sync=on_intermediate_text_sync,
-        ),
+        observer=WireCallObserver(on_intermediate_text=on_intermediate_text),
         request_headers=RequestHeaders(
             session_id=session_id,
             parent_session_id=parent_session_id,

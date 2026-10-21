@@ -622,17 +622,17 @@ msgstr ""
 msgid "restore.sub_agents_discarded"
 msgstr ""
 
+#. English: The model returned no answer. Asking again once.
+#. chrys-meta={"fingerprint":"30a11dd3813c3ef0ba11e8b1536fd934e6b41bf8f72b6b99c05a5e96f67564a0","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "retry.blank_response"
+msgstr ""
+
 #. English: The context window is full. Compacting the context before one
 #. retry.
 #. chrys-meta={"fingerprint":"4590c026541e884340855fb290e2e5e0e43ee38b846f8c90257d1e986fe28054","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/errors/display.py
 msgid "retry.context_overflow"
-msgstr ""
-
-#. English: Invalid response: {reason}
-#. chrys-meta={"fingerprint":"1015c4dc6fb6325fb498abc40fc15262f621140c328d1290f38881be09991edb","multiline":true,"placeholders":["reason"]}
-#: src/chrys/orchestration/engine/build/builder.py
-msgid "retry.invalid_response"
 msgstr ""
 
 #. English: LAST_WORDS compaction: {reason}
@@ -4824,12 +4824,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"e6e6dfdb2d65e249b008daa00de3cd67f8bd1f26899424681ab8084c7581521b","multiline":false,"placeholders":["session_id"]}
 #: src/chrys/app/tui/widgets/chat/chrome.py
 msgid "tui.chat.session_title"
-msgstr ""
-
-#. English: Think: {body}
-#. chrys-meta={"fingerprint":"d88314825eae958e626da4118def6dcca22c908e6aa352343aafcf501ac71d05","multiline":true,"placeholders":["body"]}
-#: src/chrys/app/tui/widgets/chat/messages.py
-msgid "tui.chat.think_prefix"
 msgstr ""
 
 #. English: New version found: {version} Run: {command} to upgrade

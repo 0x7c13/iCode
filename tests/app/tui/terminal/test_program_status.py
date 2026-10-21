@@ -29,6 +29,8 @@ from chrys.foundation.events.types import (
     ExecutionChanged,
     InvocationAborted,
     InvocationCascadeAborted,
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationMessage,
     InvocationPaused,
     InvocationResumed,
@@ -356,7 +358,8 @@ async def test_streaming_fragments_are_ignored(monkeypatch: pytest.MonkeyPatch) 
         (
             ExecutionChanged(snapshot=ExecutionSnapshot("turn")),
             InvocationMessage(origin=_turn_origin(), text="part", is_final=False),
-            InvocationMessage(origin=_turn_origin(), text="summary", is_intermediate=True),
+            InvocationContentDelta(origin=_turn_origin(), segment_id="s1", text="part"),
+            InvocationContentFinished(origin=_turn_origin(), segment_id="s1"),
         ),
     )
 

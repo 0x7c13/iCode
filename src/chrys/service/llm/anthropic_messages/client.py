@@ -236,6 +236,10 @@ class AnthropicMessagesClient(WireClient):
                 async for event in events:
                     for update in state.updates_for(event):
                         yield update
+                    # The message's last event: a gateway may hold the
+                    # connection open after it, and the reply must not wait.
+                    if event.type == "message_stop":
+                        break
                 state.finish()
             finally:
                 if events is not None:

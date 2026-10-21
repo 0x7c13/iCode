@@ -21,6 +21,7 @@ import chrys.orchestration.workflows.coordinator as coordinator_module
 import chrys.orchestration.workflows.preview as preview_module
 import chrys.service.workflows.environment as environment_module
 import chrys.service.workflows.store as store_module
+from chrys.foundation.errors.provider import ProviderResponseError
 from chrys.foundation.events.types import (
     Error,
     Event,
@@ -49,7 +50,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.util.session_ids import session_short_id
-from chrys.kernel import UsageDetails
+from chrys.kernel import Content, UsageDetails
 from chrys.orchestration.engine.execution import PreAdmissionPreparationTracker
 from chrys.orchestration.engine.run.coordinator import TurnCoordinator
 from chrys.orchestration.session_host import HeadlessRunError, WorkflowRunRejectedError, WorkflowRunTimeoutError
@@ -57,10 +58,6 @@ from chrys.orchestration.workflows.agent_node import WorkflowAgentShell
 from chrys.orchestration.workflows.preview import PreparedWorkflow
 from chrys.orchestration.workflows.worker_client import WorkflowWorkerClient
 from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware
-from chrys.service.agent_middleware.response_validation import (
-    RetryableResponseValidationError,
-    ValidationRetryExemption,
-)
 from chrys.service.llm.mock import MockChatClient, MockResponse
 from chrys.service.session.persistence import SessionPersistence
 from chrys.service.workflows.interpreter import InterpreterError
@@ -1812,17 +1809,22 @@ async def test_a_transient_failure_after_hosted_tool_calls_is_not_retried(
 ) -> None:
     """The kernel's whole-run gate, kept at the node boundary: hosted calls the failed exchange ran never run twice."""
     client = MockChatClient(responses=[MockResponse(text="never sent")])
-    # Stored validation failures reach the whole-run owner only under service-side storage.
+    # A failed call reaches the whole-run owner only under service-side storage.
     monkeypatch.setattr(client, "STORES_BY_DEFAULT", True)
 
-    def _invalid_after_hosted_work() -> MockResponse:
-        raise RetryableResponseValidationError(
-            "stored response failed validation",
-            exemption=ValidationRetryExemption(attempt=1, max_attempts=3, delay_seconds=1),
-            hosted_commits=("hosted_shell:call_1",),
+    def _failed_after_hosted_work() -> MockResponse:
+        # The adapter found the failure after the provider ran hosted work it never yielded.
+        raise ProviderResponseError(
+            "stream_truncated",
+            "the response failed",
+            retryable=True,
+            observed_contents=(
+                Content.from_mcp_server_tool_call("mc1", "create_issue", server_name="github"),
+                Content.from_mcp_server_tool_result("mc1", output=[Content.from_text("created #42")]),
+            ),
         )
 
-    monkeypatch.setattr(client, "_next_response", _invalid_after_hosted_work)
+    monkeypatch.setattr(client, "_next_response", _failed_after_hosted_work)
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), client, MockChatClient(responses=[])])
     project = make_project(tmp_path)
     write_workflow(

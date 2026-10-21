@@ -287,7 +287,7 @@ class ProgramStatusReporter:
         # Only the chat turn's own final message completes the root record.
         # Sub-agent finals are fragments of the parent's working turn, and
         # workflow-node traffic belongs to the workflow's record.
-        if not event.is_final or event.is_intermediate:
+        if not event.is_final:
             return
         if event.origin.kind != "turn" or event.origin.root.kind != "turn":
             return

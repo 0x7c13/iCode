@@ -107,7 +107,7 @@ async def test_live_group_activity_survives_manual_expand_and_falls_back_by_rece
         assert _title(group) == "Writing report.md"
         assert indicator.display is True
 
-        await panel.add_agent_message("Moving on", is_intermediate=True)
+        await panel.add_answer_delta("s1", "Moving on")
         assert _title(group).startswith("▶ Tools (3/3")
         assert indicator.display is False
         assert indicator._auto_refresh_timer._active.is_set() is False
@@ -222,7 +222,7 @@ async def test_sub_agent_inner_activity_updates_parent_header_and_retains_latest
         group = panel.query_one(ToolGroup)
         assert _title(group) == "Running Explore Agent"
 
-        panel.add_sub_agent_message("Explore Agent", "invocation", "Let me inspect the notes.")
+        panel.add_sub_agent_answer("Explore Agent", "invocation", "segment", "Let me inspect the notes.")
 
         assert _title(group) == "Running Explore Agent: Let me inspect the notes."
 

@@ -646,9 +646,11 @@ Automatic retry after a node failure depends on the error type and the node's `R
 
 If retrying could make the model provider run one of its own tools a second time, such as an MCP server or shell the provider runs, the node is not retried automatically. Provider-run search and code execution are safe to repeat and don't stop retries; neither do iCode's own file, Shell or MCP tools.
 
-When a non-ACP agent's attempt fails or times out, the retry continues from its conversation so far: tool calls that already finished do not run again, and node details show the new attempt's transcript continuing the previous one. An external ACP agent starts a new session with the same input, and the new attempt's transcript shows only that session. If the agent finished and a later step of the node failed, such as an outgoing condition, a retry runs the agent again from its input.
+Once an agent node's model has started writing its reply, a request that fails is not sent again within the same attempt: the attempt fails, and the node is retried as described in this section.
 
-`Retry(max_attempts=1)` turns off node retries only: a failed model request is still retried within the attempt.
+When a non-ACP agent's attempt fails or times out, the retry continues from its conversation so far: tool calls that already finished do not run again, and node details show the new attempt's transcript continuing the previous one. A reply the failure cut off is written again, and the new attempt's transcript shows only the new reply. An external ACP agent starts a new session with the same input, and the new attempt's transcript shows only that session. If the agent finished and a later step of the node failed, such as an outgoing condition, a retry runs the agent again from its input.
+
+`Retry(max_attempts=1)` turns off node retries only: a failed model request is still retried within the attempt, unless the model had already started writing its reply.
 
 In the TUI, a failed node that is not retried automatically, either because retries are exhausted or because they do not apply, enters `awaiting_retry`. The user can inspect diagnostics and retry, or cancel the entire run. Manual retry applies only to nodes in this state in the current run.
 

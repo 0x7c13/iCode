@@ -29,6 +29,7 @@ from chrys.foundation.events.types import (
     ApprovalResponse,
     ApprovalReviewed,
     Event,
+    InvocationContentDelta,
     InvocationMessage,
     InvocationToolCallResult,
     InvocationToolCallStart,
@@ -229,6 +230,7 @@ async def create_test_engine(
     # not-judging) from one still working.
     for event_type in (
         SessionReady,
+        InvocationContentDelta,
         InvocationMessage,
         InvocationToolCallStart,
         InvocationToolCallResult,
@@ -274,11 +276,10 @@ async def create_test_engine(
     test_tools = tools if tools is not None else list(ALL_TEST_TOOLS)
 
     # Monkey-patch create_client to return our mock with callbacks forwarded.
-    # The engine passes on_intermediate_text_async/sync to create_client;
-    # we forward them to the mock client so batch_id boundaries work.
+    # The engine passes on_intermediate_text to create_client;
+    # we forward it to the mock client so batch_id boundaries work.
     async def _patched_create_client(s: Any = None, **kw: Any) -> MockChatClient:
-        mock_client._on_intermediate_text_async = kw.get("on_intermediate_text_async")
-        mock_client._on_intermediate_text_sync = kw.get("on_intermediate_text_sync")
+        mock_client._on_intermediate_text = kw.get("on_intermediate_text")
         return mock_client
 
     create_client_patcher = pytest.MonkeyPatch()
@@ -515,11 +516,13 @@ def extract_final_messages(events: list[Event]) -> list[str]:
     return [e.text for e in events if (isinstance(e, InvocationMessage) and e.origin.kind == "turn") and e.is_final]
 
 
-def extract_intermediate_messages(events: list[Event]) -> list[str]:
-    """Extract text from intermediate AgentMessage events."""
-    return [
-        e.text for e in events if (isinstance(e, InvocationMessage) and e.origin.kind == "turn") and e.is_intermediate
-    ]
+def extract_answer_segments(events: list[Event]) -> list[str]:
+    """Join the main turn's streamed answer deltas into one text per segment, in opening order."""
+    segments: dict[str, str] = {}
+    for e in events:
+        if isinstance(e, InvocationContentDelta) and e.origin.kind == "turn" and e.channel == "answer":
+            segments[e.segment_id] = segments.get(e.segment_id, "") + e.text
+    return list(segments.values())
 
 
 def extract_approval_requests(events: list[Event]) -> list[dict[str, Any]]:

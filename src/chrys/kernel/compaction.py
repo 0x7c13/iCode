@@ -61,8 +61,9 @@ GROUP_TOKEN_ESTIMATOR_VERSION_KEY = "token_estimator_v"
 # Version 1 was implicit and serialized non-ASCII text as ``\\uXXXX`` escapes.
 # Version 3 excluded provider-hosted wire replay mirrors. Version 4 additionally
 # excludes opaque Responses reasoning state, which providers do not tokenize as
-# ordinary prompt text.
-TOKEN_ESTIMATOR_VERSION = 4
+# ordinary prompt text. Version 5 counts Chat Completions ``reasoning_details``
+# once, as their replayed payload.
+TOKEN_ESTIMATOR_VERSION = 5
 EXCLUDED_KEY = "_excluded"
 EXCLUDE_REASON_KEY = "_exclude_reason"
 SUMMARY_OF_MESSAGE_IDS_KEY = "_summary_of_message_ids"
@@ -804,6 +805,13 @@ def _serialize_content(content: Content) -> dict[str, Any]:
     # reasoning_content/reasoning_details payloads.
     if content.type == "text_reasoning" and content.id is not None:
         payload.pop("protected_data", None)
+    # Chat Completions ``reasoning_details`` replay as their protected payload;
+    # the text beside it is that payload's readable copy, shown but never sent.
+    if (
+        content.type == "text_reasoning"
+        and content.additional_properties.get("openai_reasoning_format") == "reasoning_details"
+    ):
+        payload.pop("text", None)
     return _redact_serialized_image_uris(payload)
 
 
@@ -1061,6 +1069,18 @@ def annotate_token_counts(
 
     for message in messages[start_index:]:
         _write_token_count(message, _message_token_estimate(message, tokenizer))
+
+
+def recount_user_messages(messages: list[Message], *, tokenizer: TokenizerProtocol) -> None:
+    """Count every user message again.
+
+    A user message reaches compaction as this call's copy, carrying this call's
+    reminders, while its count sits in the annotation it shares with history: a
+    count taken under another call's reminders is stale.
+    """
+    for message in messages:
+        if message.role == "user":
+            _write_token_count(message, _message_token_estimate(message, tokenizer))
 
 
 def included_messages(messages: list[Message]) -> list[Message]:

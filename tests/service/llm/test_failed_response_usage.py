@@ -140,9 +140,10 @@ async def _counted(
     def on_usage(total: int, input_tokens: int, output_tokens: int, *_calibration: object) -> None:
         counted.append((total, input_tokens, output_tokens))
 
-    validation = ResponseValidationMiddleware(backoff_schedule=(0,))
+    validation = ResponseValidationMiddleware()
     layer = InvariantCheckedToolLoopLayer(
-        ChatMiddlewareLayer(client, middleware=[UsageTrackingMiddleware(on_usage=on_usage), validation])
+        # Production order: usage innermost, so it counts every landed response validation judges.
+        ChatMiddlewareLayer(client, middleware=[validation, UsageTrackingMiddleware(on_usage=on_usage)])
     )
     result = layer.get_response(
         [Message("user", ["hi"])],
@@ -290,6 +291,26 @@ async def test_each_attempt_of_a_wire_retry_counts_its_usage(stream: bool) -> No
         assert await _counted(client, stream=stream, wire_retry=True) == [_REPORTED, _REPORTED]
 
 
+_RECOVERED_CHUNKS = [_chunk(content="Sunny.", finish_reason="stop"), _chunk(usage=True)]
+
+
+@pytest.mark.parametrize(
+    "failed",
+    [
+        pytest.param([_chunk(usage=True)], id="cut_off_after_its_usage"),
+        pytest.param([_chunk(usage=True), _chunk(finish_reason="network_error")], id="failed_after_its_usage"),
+        pytest.param([_chunk(finish_reason="network_error"), _chunk(usage=True)], id="failed_then_its_usage"),
+    ],
+)
+async def test_each_attempt_of_a_chat_completions_retry_counts_its_usage(failed: list[ChatCompletionChunk]) -> None:
+    async with _chat_completions(failed, _RECOVERED_CHUNKS) as client:
+        counted = await _counted(
+            client, stream=True, wire_retry=True, options={STREAM_REQUIRES_FINISH_REASON_OPTION: True}
+        )
+
+    assert counted == [_REPORTED, _REPORTED]
+
+
 @pytest.mark.parametrize(
     "failed",
     [
@@ -303,12 +324,13 @@ async def test_each_attempt_of_a_wire_retry_counts_its_usage(stream: bool) -> No
         ),
     ],
 )
-async def test_each_attempt_of_a_chat_completions_retry_counts_its_usage(failed: list[ChatCompletionChunk]) -> None:
-    recovered = [_chunk(content="Sunny.", finish_reason="stop"), _chunk(usage=True)]
-
-    async with _chat_completions(failed, recovered) as client:
+async def test_a_chat_completions_stream_that_failed_after_its_text_counts_its_usage_and_is_not_retried(
+    failed: list[ChatCompletionChunk],
+) -> None:
+    # The scripted recovery is never requested: the caller already showed "Partial".
+    async with _chat_completions(failed, _RECOVERED_CHUNKS) as client:
         counted = await _counted(
             client, stream=True, wire_retry=True, options={STREAM_REQUIRES_FINISH_REASON_OPTION: True}
         )
 
-    assert counted == [_REPORTED, _REPORTED]
+    assert counted == [_REPORTED]

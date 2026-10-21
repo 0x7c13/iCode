@@ -15,7 +15,7 @@ from chrys.foundation.events.types import Warning
 from chrys.foundation.models.session_env import SessionEnvironment
 from chrys.foundation.retry import TRANSIENT_RETRY_BACKOFF_SECONDS, StreamStall
 from chrys.foundation.tool_kinds import KIND_ASK_USER, KIND_FILESYSTEM_READ, KIND_SHELL, get_tool_kind
-from chrys.kernel import LoopRecorder, StallExhaustedAction
+from chrys.kernel import RESPONSE_READY_KWARG, LoopRecorder, StallExhaustedAction
 from chrys.orchestration.invoker.acp import AcpConversation, AcpInvocationCounters
 from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker, AcpUpdateTranslator
 from chrys.orchestration.invoker.acp_spec import resolve_acp_spec
@@ -61,7 +61,6 @@ from chrys.orchestration.sub_agents.registration import (
 )
 from chrys.orchestration.sub_agents.tools import SubAgentTools
 from chrys.service.agent_middleware.control.sleep import SleepMiddleware
-from chrys.service.agent_middleware.events.intermediate_text import IntermediateTextBuffer
 from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware
 from chrys.service.approval.policy import ApprovalPolicy
 from chrys.service.approval.turn_context import TurnContextHolder
@@ -89,8 +88,8 @@ if TYPE_CHECKING:
     from chrys.foundation.config.settings import Settings
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.workspace import Workspace
-    from chrys.foundation.retry import RetryAttemptInfo
-    from chrys.kernel import Message
+    from chrys.kernel import ChatResponse, Message
+    from chrys.orchestration.invoker.content_projection import ContentProjector
     from chrys.orchestration.session_usage import SessionUsagePublisher
     from chrys.orchestration.workflows.agent_archive import AgentNodeArchive
     from chrys.service.agent_middleware.control.approval import ApprovalMiddleware
@@ -145,11 +144,12 @@ class AgentNodeCallbacks:
     """Lifecycle and accounting callbacks retained by the activation shell."""
 
     observer: KernelPassObserver
-    publish_intermediate: Callable[[str], Awaitable[None]]
+    content: Callable[[], ContentProjector | None]
+    """The projector of the pass in flight, which publishes its model text."""
+    response_ready: Callable[[ChatResponse], Awaitable[None]]
     checkpoint: Callable[[], Coroutine[Any, Any, None]]
     usage: Callable[..., None]
     side_call_usage: Callable[[Mapping[str, Any]], None]
-    validation_retry: Callable[[RetryAttemptInfo], Awaitable[None]]
     wire_retry: Callable[[str, int, int, int, BaseException], Awaitable[None]]
     service_retry: Callable[[str, int, int, int, BaseException], Awaitable[None]]
     interruptible_sleep: Callable[[int], Awaitable[bool]]
@@ -199,7 +199,6 @@ async def build_kernel_node(
     res: AgentNodeResources,
     archive: AgentNodeArchive,
     callbacks: AgentNodeCallbacks,
-    intermediate_buffer: IntermediateTextBuffer,
     stats: SubAgentLogStats,
 ) -> KernelNodeParts:
     session_id = res.session_id
@@ -211,8 +210,6 @@ async def build_kernel_node(
     chat_options = effective_chat_options(model)
     client = await create_client(
         model,
-        on_intermediate_text_async=callbacks.publish_intermediate,
-        on_intermediate_text_sync=intermediate_buffer.store,
         session_id=derive_llm_route_session_id(
             session_id,
             route_kind="workflow-node",
@@ -389,7 +386,6 @@ async def build_kernel_node(
         res.bus,
         display_name,
         invocation_id,
-        intermediate_buffer=intermediate_buffer,
         mutation_tracker=res.mutation_tracker,
         hook_manager=res.hook_manager,
         profile_name=profile.name,
@@ -436,6 +432,9 @@ async def build_kernel_node(
     approval.bind_publisher(callbacks.emitter())
     middleware.append(approval)
     middleware.append(SleepMiddleware(res.bus, session_id=session_id, background_tasks=res.background_tasks))
+    # Innermost last: validation judges each landed response; usage, under it, counts every one first.
+    validation = create_validation(conversation)
+    middleware.append(validation)
     middleware.append(
         UsageTrackingMiddleware(
             max_context_tokens=ctx.usage_middleware.max_context_tokens,
@@ -445,8 +444,6 @@ async def build_kernel_node(
             use_local_context_estimate_for_hosted_usage=ctx.use_local_context_estimate_for_hosted_usage,
         )
     )
-    validation = create_validation(conversation, publish_retry=callbacks.validation_retry)
-    middleware.append(validation)
 
     loop_recorder = LoopRecorder(
         capture_service_loop_messages=uses_responses_compact_continuation(model, chat_options),
@@ -485,9 +482,11 @@ async def build_kernel_node(
             publish_retry=callbacks.wire_retry,
             prepare_retry=None,
             hosted_commits_in_flight=validation.hosted_commits_in_flight,
+            answer_shown=None,
         ).build()
     # A background response a failed poll left running is resumed by the retry, never created twice.
     client_kwargs["continuation_token_observer"] = continuation_token_observer_for(run_kwargs)
+    client_kwargs[RESPONSE_READY_KWARG] = callbacks.response_ready
 
     def check_abort() -> None:
         if callbacks.observer.abort_cause() is not None:
@@ -521,7 +520,8 @@ async def build_kernel_node(
         retry_participant=None,
         interrupt=_AbortProbe(callbacks.observer),
         trace=attempt_trace,
-        stream_observer=None,
+        stream_observer=callbacks.content,
+        content_exposed=lambda: (projector := callbacks.content()) is not None and projector.exposed,
         publish_retry=callbacks.service_retry,
         interruptible_sleep=callbacks.interruptible_sleep,
         max_retries=lambda: max_retries,
@@ -545,7 +545,6 @@ async def build_kernel_node(
         start_hooks=(
             web_tools.begin_pass,
             lambda: validation.set_observation_hook(sub_event_mw.begin_hosted_pass()),
-            validation.reset_service_retry_state,
             lambda: validation.begin_pass_hosted_baseline(
                 resumes_background_response=has_live_continuation_token(run_kwargs)
             ),
@@ -611,6 +610,8 @@ async def _register_sub_agents(
         # The workflow surfaces (graph, node transcript, headless run) show no per-child card, so a
         # failed child cannot wait for a decision: it ends, and its error reaches the node's model.
         human_failure_decisions=False,
+        # Nor any of a child's text, so the text it wrote never stops a retry.
+        shows_answer_text=False,
     )
     conversation.own(sub_agent_tools.cleanup)
     acp_depth = acp_sub_agent_depth()

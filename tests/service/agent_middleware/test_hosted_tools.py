@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict
 from typing import Any
@@ -19,7 +20,6 @@ from chrys.foundation.events.types import (
     InvocationToolCallStatusUpdated,
 )
 from chrys.foundation.hosted_tools import (
-    PRESENTATION_TEXT_SEGMENT_ID_KEY,
     HostedRetrySafety,
     HostedToolPhase,
     HostedToolStatus,
@@ -43,10 +43,7 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     HostedToolStartOp,
     HostedToolStatusOp,
     ImageHostedAdapter,
-    IntermediateTextOp,
     McpHostedAdapter,
-    PresentationAttemptAcceptedOp,
-    PresentationAttemptRejectedOp,
     ResponsePresentationPlan,
     SearchHostedAdapter,
     ShellHostedAdapter,
@@ -54,6 +51,15 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     get_hosted_adapter,
 )
 from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware
+from tests.support.waiting import wait_for
+
+HOSTED_OPERATION_TYPES = (
+    HostedToolStartOp,
+    HostedToolArgsOp,
+    HostedToolProgressOp,
+    HostedToolStatusOp,
+    HostedToolResultOp,
+)
 
 
 def _search_call(
@@ -107,6 +113,14 @@ def _assistant(contents: list[Content]) -> Message:
 
 def _operation_types(plan: ResponsePresentationPlan) -> list[type[object]]:
     return [type(operation) for operation in plan.operations]
+
+
+async def _present_blocking(bridge: HostedPresentationBridge, messages: list[Message]) -> None:
+    """Drive one non-streaming response the way validation and the run's completion do."""
+    await bridge.attempt_started()
+    await bridge.observe_contents([content for message in messages for content in message.contents], is_final=True)
+    await bridge.attempt_accepted(messages)
+    await bridge.reconcile_accepted(messages, final=True)
 
 
 class TestHostedAdapters:
@@ -256,30 +270,42 @@ class TestHostedAdapters:
 
 
 class TestResponsePresentationPlan:
-    def test_text_call_result_text(self) -> None:
+    def test_text_call_result_text_plans_only_the_card_and_the_final_text(self) -> None:
         plan = ResponsePresentationPlan.from_messages(
             [_assistant([Content.from_text("before"), _search_call(), _search_result(), Content.from_text("after")])]
         )
 
         assert _operation_types(plan) == [
-            IntermediateTextOp,
             HostedToolStartOp,
             HostedToolArgsOp,
             HostedToolStatusOp,
             HostedToolArgsOp,
             HostedToolResultOp,
         ]
-        assert plan.operations[0].text == "before"
         assert plan.final_text == "after"
 
-    def test_call_first_starts_without_intermediate_text(self) -> None:
+    def test_mixed_transcript_plans_only_hosted_card_operations(self) -> None:
+        local = Content.from_function_call("local_1", "read_file", arguments={"path": "x"})
         plan = ResponsePresentationPlan.from_messages(
-            [_assistant([_search_call(), _search_result(), Content.from_text("answer")])]
+            [
+                _assistant(
+                    [
+                        Content.from_text_reasoning(id="reasoning_1", text="thinking"),
+                        Content.from_text("Let me look. "),
+                        local,
+                    ]
+                ),
+                Message(role="tool", contents=[Content.from_function_result(call_id="local_1", result="contents")]),
+                _assistant(
+                    [Content.from_text("Searching. "), _search_call(), _search_result(), Content.from_text("ok")]
+                ),
+            ]
         )
 
-        assert isinstance(plan.operations[0], HostedToolStartOp)
-        assert not any(isinstance(operation, IntermediateTextOp) for operation in plan.operations)
-        assert plan.final_text == "answer"
+        assert plan.operations
+        assert all(isinstance(operation, HOSTED_OPERATION_TYPES) for operation in plan.operations)
+        assert {operation.view.tool_name for operation in plan.operations} == {"web_search"}
+        assert plan.final_text == "ok"
 
     def test_standalone_hosted_result_preserves_its_payload(self) -> None:
         result = Content.from_hosted_tool_result(
@@ -299,13 +325,11 @@ class TestResponsePresentationPlan:
         assert result_operation.view.result_text == "valuable output"
         assert plan.structured_output_completed is True
 
-    def test_text_between_call_and_result_is_intermediate(self) -> None:
+    def test_text_between_call_and_result_is_not_final(self) -> None:
         plan = ResponsePresentationPlan.from_messages(
             [_assistant([_search_call(), Content.from_text("working"), _search_result(), Content.from_text("answer")])]
         )
 
-        intermediate = [operation.text for operation in plan.operations if isinstance(operation, IntermediateTextOp)]
-        assert intermediate == ["working"]
         assert plan.final_text == "answer"
 
     def test_running_call_at_end_has_empty_final_text(self) -> None:
@@ -313,9 +337,6 @@ class TestResponsePresentationPlan:
             [_assistant([_search_call(), Content.from_text("still working")])]
         )
 
-        assert [operation.text for operation in plan.operations if isinstance(operation, IntermediateTextOp)] == [
-            "still working"
-        ]
         assert plan.final_text == ""
 
     def test_completed_image_without_text_is_successful_structured_output(self) -> None:
@@ -369,9 +390,6 @@ class TestResponsePresentationPlan:
 
         starts = [operation for operation in plan.operations if isinstance(operation, HostedToolStartOp)]
         assert len(starts) == 2
-        assert [operation.text for operation in plan.operations if isinstance(operation, IntermediateTextOp)] == [
-            "before local"
-        ]
         assert all(operation.view.tool_name != "read_file" for operation in starts)
         assert plan.final_text == "answer"
 
@@ -388,11 +406,8 @@ class TestResponsePresentationPlan:
         )
 
         assert plan.final_text == "Final answer."
-        assert [operation.text for operation in plan.operations if isinstance(operation, IntermediateTextOp)] == [
-            "checking"
-        ]
 
-    def test_text_between_local_call_and_its_result_stays_intermediate(self) -> None:
+    def test_text_between_local_call_and_its_result_is_not_final(self) -> None:
         local = Content.from_function_call("local_1", "read_file", arguments={"path": "x"})
         plan = ResponsePresentationPlan.from_messages(
             [
@@ -403,9 +418,6 @@ class TestResponsePresentationPlan:
         )
 
         assert plan.final_text == "Done."
-        assert [operation.text for operation in plan.operations if isinstance(operation, IntermediateTextOp)] == [
-            "running it"
-        ]
 
     def test_informational_function_call_requires_explicit_hosted_marker(self) -> None:
         old_call = Content.from_function_call("old_1", "legacy_hosted", informational_only=True)
@@ -458,14 +470,11 @@ class TestHostedPresentationBridgeStreaming:
         ]
         assert operations[0].presentation_id == "hosted:3:0:0:0"
 
-    async def test_local_only_segmented_text_stays_on_legacy_path(self, sink: tuple[list[object], object]) -> None:
+    async def test_local_only_segmented_text_publishes_nothing(self, sink: tuple[list[object], object]) -> None:
         operations, publish = sink
         bridge = HostedPresentationBridge(publish)
         await bridge.attempt_started()
-        text = Content.from_text(
-            "Before local tool.",
-            additional_properties={PRESENTATION_TEXT_SEGMENT_ID_KEY: "item:msg_1:content:0"},
-        )
+        text = Content.from_text("Before local tool.")
         local_call = Content.from_function_call("local_1", "read_file", arguments={"path": "README.md"})
 
         await bridge.observe_contents([text, local_call])
@@ -493,125 +502,64 @@ class TestHostedPresentationBridgeStreaming:
         assert args_index < types.index(HostedToolResultOp)
         assert operations[args_index].view.arguments == {"query": "Chrys"}
 
-    async def test_text_first_waits_for_accepted_reconciliation(self, sink: tuple[list[object], object]) -> None:
+    async def test_text_before_a_hosted_call_does_not_hold_its_card(self, sink: tuple[list[object], object]) -> None:
         operations, publish = sink
         bridge = HostedPresentationBridge(publish)
         await bridge.attempt_started()
         await bridge.observe_contents([Content.from_text("before"), _search_call()])
-        assert operations == []
+        assert [type(operation) for operation in operations] == [
+            HostedToolStartOp,
+            HostedToolArgsOp,
+            HostedToolStatusOp,
+        ]
 
         await bridge.reconcile_accepted(
             [_assistant([Content.from_text("before"), _search_call(), _search_result(), Content.from_text("answer")])]
         )
 
-        assert isinstance(operations[0], IntermediateTextOp)
-        assert any(isinstance(operation, HostedToolStartOp) for operation in operations)
-        assert isinstance(operations[-1], FinalTextOp)
-        assert operations[-1].text == "answer"
+        assert [type(operation) for operation in operations] == [
+            HostedToolStartOp,
+            HostedToolArgsOp,
+            HostedToolStatusOp,
+            HostedToolResultOp,
+            FinalTextOp,
+        ]
+        assert operations[-1] == FinalTextOp("answer")
 
-    async def test_sealed_stream_text_publishes_incrementally_and_commits_without_duplication(
+    async def test_bridge_emits_only_hosted_card_operations_and_final_text(
         self, sink: tuple[list[object], object]
     ) -> None:
-        operations, publish = sink
-        bridge = HostedPresentationBridge(publish, run_generation=4)
-        await bridge.attempt_started()
-        segment_properties = {PRESENTATION_TEXT_SEGMENT_ID_KEY: "item:msg_1:content:0"}
-        first = Content.from_text("Checking ", additional_properties=segment_properties)
-        second = Content.from_text("sources.", additional_properties=segment_properties)
-        call = _search_call()
-        result = _search_result()
-
-        await bridge.observe_contents([first])
-        await bridge.observe_contents([second])
-        assert operations == []
-
-        await bridge.observe_contents([call])
-        await bridge.observe_contents([result])
-
-        assert isinstance(operations[0], IntermediateTextOp)
-        assert operations[0].text == "Checking sources."
-        assert operations[0].provisional is True
-        assert operations[0].attempt_id == "presentation:4:0:0"
-        assert any(isinstance(operation, HostedToolStartOp) for operation in operations[1:])
-
-        await bridge.reconcile_accepted(
-            [
-                _assistant(
-                    [
-                        Content.from_text("Checking sources.", additional_properties=segment_properties),
-                        call,
-                        result,
-                        Content.from_text("Final answer."),
-                    ]
-                )
-            ]
-        )
-
-        assert sum(isinstance(operation, IntermediateTextOp) for operation in operations) == 1
-        accepted = next(operation for operation in operations if isinstance(operation, PresentationAttemptAcceptedOp))
-        assert [segment.text for segment in accepted.segments] == ["Checking sources."]
-        assert operations[-1] == FinalTextOp("Final answer.")
-
-    async def test_accepted_stream_text_is_not_republished_by_full_run_reconciliation(
-        self, sink: tuple[list[object], object]
-    ) -> None:
+        # Model text belongs to the run's content projector: narration around
+        # local and hosted calls never becomes a bridge operation.
         operations, publish = sink
         bridge = HostedPresentationBridge(publish)
-        segment_properties = {PRESENTATION_TEXT_SEGMENT_ID_KEY: "item:msg_1:content:0"}
-        first_call = _search_call("first", item_id="first")
-        first_result = _search_result("first", item_id="first")
         local_call = Content.from_function_call("local_1", "read_file", arguments={"path": "README.md"})
         first = _assistant(
             [
-                Content.from_text("Checking sources.", additional_properties=segment_properties),
-                first_call,
-                first_result,
+                Content.from_text_reasoning(id="reasoning_1", text="thinking"),
+                Content.from_text("Let me look. "),
                 local_call,
             ]
         )
 
         await bridge.begin_response()
         await bridge.attempt_started()
-        await bridge.observe_contents(
-            [Content.from_text("Checking sources.", additional_properties=segment_properties)]
-        )
-        await bridge.observe_contents([first_call, first_result, local_call])
+        for content in first.contents:
+            await bridge.observe_contents([content])
+        await bridge.local_call_start_published("local_1")
         await bridge.attempt_accepted([first])
+        assert operations == []
 
-        second_call = _search_call("second", item_id="second")
-        second_result = _search_result("second", item_id="second")
-        second = _assistant([second_call, second_result, Content.from_text("answer")])
-        await bridge.begin_response()
-        await bridge.attempt_started()
-        await bridge.observe_contents(second.contents, is_final=True)
-        await bridge.attempt_accepted([second])
-        await bridge.reconcile_accepted(
+        second = _assistant(
             [
-                first,
-                Message("tool", [Content.from_function_result("local_1", result="ok")]),
-                second,
-            ],
-            final=True,
+                Content.from_text("Searching. "),
+                _search_call(),
+                Content.from_text("Still searching. "),
+                _search_result(),
+                Content.from_usage(usage_details={"input_token_count": 1}),
+                Content.from_text("answer"),
+            ]
         )
-
-        assert sum(isinstance(operation, IntermediateTextOp) for operation in operations) == 1
-        assert sum(isinstance(operation, PresentationAttemptAcceptedOp) for operation in operations) == 1
-        assert operations[-1] == FinalTextOp("answer")
-
-    async def test_local_call_narration_is_left_to_the_intermediate_text_callback(
-        self, sink: tuple[list[object], object]
-    ) -> None:
-        operations, publish = sink
-        bridge = HostedPresentationBridge(publish)
-        local_call = Content.from_function_call("local_1", "read_file", arguments={"path": "README.md"})
-        first = _assistant([Content.from_text("Let me look. "), local_call])
-
-        await bridge.begin_response()
-        await bridge.attempt_started()
-        await bridge.observe_contents(first.contents, is_final=True)
-        await bridge.attempt_accepted([first])
-
-        second = _assistant([_search_call(), _search_result(), Content.from_text("answer")])
         await bridge.begin_response()
         await bridge.attempt_started()
         await bridge.observe_contents(second.contents, is_final=True)
@@ -621,57 +569,30 @@ class TestHostedPresentationBridgeStreaming:
             final=True,
         )
 
-        assert not any(isinstance(operation, IntermediateTextOp) for operation in operations)
+        assert all(isinstance(operation, (*HOSTED_OPERATION_TYPES, FinalTextOp)) for operation in operations)
         assert any(isinstance(operation, HostedToolResultOp) for operation in operations)
+        assert [operation for operation in operations if isinstance(operation, FinalTextOp)] == [FinalTextOp("answer")]
         assert operations[-1] == FinalTextOp("answer")
 
-    async def test_rejected_attempt_retracts_published_provisional_text(
+    async def test_interrupted_attempt_terminalizes_visible_card_as_interrupted(
         self, sink: tuple[list[object], object]
     ) -> None:
         operations, publish = sink
         bridge = HostedPresentationBridge(publish)
         await bridge.attempt_started()
-        text = Content.from_text(
-            "Checking sources.",
-            additional_properties={PRESENTATION_TEXT_SEGMENT_ID_KEY: "item:msg_1:content:0"},
-        )
 
-        await bridge.observe_contents([text])
-        await bridge.observe_contents([_search_call()])
-        await bridge.attempt_rejected("invalid response")
+        await bridge.observe_contents([Content.from_text("Checking sources."), _search_call()])
+        await bridge.attempt_rejected("Execution interrupted", status=HostedToolStatus.INTERRUPTED)
 
-        assert any(isinstance(operation, IntermediateTextOp) and operation.provisional for operation in operations)
-        assert any(isinstance(operation, PresentationAttemptRejectedOp) for operation in operations)
-
-    async def test_interrupted_attempt_preserves_published_provisional_text(
-        self, sink: tuple[list[object], object]
-    ) -> None:
-        operations, publish = sink
-        bridge = HostedPresentationBridge(publish)
-        await bridge.attempt_started()
-        text = Content.from_text(
-            "Checking sources.",
-            additional_properties={PRESENTATION_TEXT_SEGMENT_ID_KEY: "item:msg_1:content:0"},
+        assert all(isinstance(operation, HOSTED_OPERATION_TYPES) for operation in operations)
+        terminal = operations[-1]
+        assert isinstance(terminal, HostedToolStatusOp)
+        assert terminal.presentation_id == operations[0].presentation_id
+        assert (terminal.view.status, terminal.view.provider_status) == (
+            HostedToolStatus.INTERRUPTED,
+            HostedToolStatus.INTERRUPTED,
         )
-
-        await bridge.observe_contents([text])
-        await bridge.observe_contents([_search_call()])
-        provisional = next(
-            operation for operation in operations if isinstance(operation, IntermediateTextOp) and operation.provisional
-        )
-        await bridge.attempt_rejected(
-            "Execution interrupted",
-            status=HostedToolStatus.INTERRUPTED,
-            preserve_provisional=True,
-        )
-
-        accepted = next(operation for operation in operations if isinstance(operation, PresentationAttemptAcceptedOp))
-        assert accepted.segments == (provisional,)
-        assert not any(isinstance(operation, PresentationAttemptRejectedOp) for operation in operations)
-        assert any(
-            isinstance(operation, HostedToolStatusOp) and operation.view.status == HostedToolStatus.INTERRUPTED
-            for operation in operations
-        )
+        assert tool_result_metadata_failure_state(terminal.view.metadata) is not True
 
     @pytest.mark.parametrize(
         "non_ordering_content",
@@ -681,7 +602,7 @@ class TestHostedPresentationBridgeStreaming:
         ],
         ids=["usage", "reasoning"],
     )
-    async def test_non_ordering_content_does_not_seal_trailing_final_text(
+    async def test_text_and_non_ordering_content_publish_nothing_before_final_reconcile(
         self,
         sink: tuple[list[object], object],
         non_ordering_content: Content,
@@ -689,9 +610,8 @@ class TestHostedPresentationBridgeStreaming:
         operations, publish = sink
         bridge = HostedPresentationBridge(publish)
         await bridge.attempt_started()
-        segment_properties = {PRESENTATION_TEXT_SEGMENT_ID_KEY: "item:msg_1:content:0"}
-        streamed = Content.from_text("Final answer.", additional_properties=segment_properties)
-        canonical = Content.from_text("Final answer.", additional_properties=segment_properties)
+        streamed = Content.from_text("Final answer.")
+        canonical = Content.from_text("Final answer.")
         messages = [_assistant([canonical])]
 
         await bridge.observe_contents([streamed])
@@ -714,10 +634,7 @@ class TestHostedPresentationBridgeStreaming:
         result = _search_result()
         await bridge.observe_contents([call, result])
         live_count = len(operations)
-        final = Content.from_text(
-            "Final answer.",
-            additional_properties={PRESENTATION_TEXT_SEGMENT_ID_KEY: "item:msg_2:content:0"},
-        )
+        final = Content.from_text("Final answer.")
 
         await bridge.observe_contents([final])
         assert len(operations) == live_count
@@ -725,7 +642,7 @@ class TestHostedPresentationBridgeStreaming:
         await bridge.reconcile_accepted([_assistant([call, result, final])])
         assert operations[-1] == FinalTextOp("Final answer.")
 
-    async def test_blocking_final_snapshot_preserves_interleaved_text_and_tool_order(
+    async def test_landed_text_between_hosted_outputs_holds_later_cards_until_it_shows(
         self, sink: tuple[list[object], object]
     ) -> None:
         operations, publish = sink
@@ -733,38 +650,34 @@ class TestHostedPresentationBridgeStreaming:
         await bridge.attempt_started()
         first_call = _search_call("first", item_id="first")
         first_result = _search_result("first", item_id="first")
+        between = Content.from_text("Between searches.")
         second_call = _search_call("second", item_id="second")
         second_result = _search_result("second", item_id="second")
         messages = [
             _assistant(
-                [
-                    first_call,
-                    first_result,
-                    Content.from_text("Between searches."),
-                    second_call,
-                    second_result,
-                    Content.from_text("Final answer."),
-                ]
+                [first_call, first_result, between, second_call, second_result, Content.from_text("Final answer.")]
             )
         ]
 
-        await bridge.observe_contents(messages[0].contents, is_final=True)
+        def cards() -> tuple[list[int], list[int]]:
+            types = [type(operation) for operation in operations]
+            starts = [index for index, operation_type in enumerate(types) if operation_type is HostedToolStartOp]
+            results = [index for index, operation_type in enumerate(types) if operation_type is HostedToolResultOp]
+            return starts, results
 
-        # The first hosted occurrence is safe to show immediately, but the
-        # final snapshot's text barrier must hold every later occurrence.
-        assert sum(isinstance(operation, HostedToolStartOp) for operation in operations) == 1
-        assert not any(isinstance(operation, IntermediateTextOp) for operation in operations)
+        await bridge.observe_contents(messages[0].contents, is_final=True)
+        starts, results = cards()
+        assert len(starts) == len(results) == 1
+        await bridge.text_shown(between)
+
+        starts, results = cards()
+        assert len(starts) == len(results) == 2
+        assert starts[0] < results[0] < starts[1] < results[1]
+        live_count = len(operations)
 
         await bridge.reconcile_accepted(messages)
 
-        types = [type(operation) for operation in operations]
-        between = next(
-            index
-            for index, operation in enumerate(operations)
-            if isinstance(operation, IntermediateTextOp) and operation.text == "Between searches."
-        )
-        starts = [index for index, operation_type in enumerate(types) if operation_type is HostedToolStartOp]
-        assert starts[0] < between < starts[1]
+        assert len(operations) == live_count + 1
         assert operations[-1] == FinalTextOp("Final answer.")
 
     async def test_final_reconcile_releases_barriers_for_never_started_calls(
@@ -803,7 +716,7 @@ class TestHostedPresentationBridgeStreaming:
         await bridge.local_call_start_published("local_1")
         assert isinstance(operations[-1], FinalTextOp)
 
-    async def test_reject_discards_text_and_terminalizes_visible_card(self, sink: tuple[list[object], object]) -> None:
+    async def test_reject_terminalizes_visible_card_as_failed(self, sink: tuple[list[object], object]) -> None:
         operations, publish = sink
         bridge = HostedPresentationBridge(publish)
         await bridge.attempt_started()
@@ -811,7 +724,7 @@ class TestHostedPresentationBridgeStreaming:
 
         await bridge.attempt_rejected("invalid response")
 
-        assert not any(isinstance(operation, IntermediateTextOp) for operation in operations)
+        assert all(isinstance(operation, HOSTED_OPERATION_TYPES) for operation in operations)
         terminal = operations[-1]
         assert isinstance(terminal, HostedToolStatusOp)
         assert terminal.view.status == "failed"
@@ -849,7 +762,7 @@ class TestHostedPresentationBridgeStreaming:
         assert len(operations) == live_count + 1
         assert operations[-1] == FinalTextOp("answer")
 
-    async def test_blocking_response_acceptance_publishes_group_boundary_before_next_response(
+    async def test_tool_loop_response_acceptance_leaves_final_text_to_run_completion(
         self, sink: tuple[list[object], object]
     ) -> None:
         operations, publish = sink
@@ -864,9 +777,7 @@ class TestHostedPresentationBridgeStreaming:
         await bridge.observe_contents(first.contents, is_final=True)
         await bridge.attempt_accepted([first])
 
-        boundary_index = next(
-            index for index, operation in enumerate(operations) if isinstance(operation, IntermediateTextOp)
-        )
+        first_count = len(operations)
         assert not any(isinstance(operation, FinalTextOp) for operation in operations)
 
         second_call = _search_call("second", item_id="second")
@@ -879,7 +790,8 @@ class TestHostedPresentationBridgeStreaming:
 
         starts = [index for index, operation in enumerate(operations) if isinstance(operation, HostedToolStartOp)]
         assert len(starts) == 2
-        assert starts[0] < boundary_index < starts[1]
+        assert starts[0] < first_count <= starts[1]
+        assert not any(isinstance(operation, FinalTextOp) for operation in operations)
 
         await bridge.reconcile_accepted(
             [
@@ -889,7 +801,7 @@ class TestHostedPresentationBridgeStreaming:
             ],
             final=True,
         )
-        assert sum(isinstance(operation, IntermediateTextOp) for operation in operations) == 1
+        assert sum(isinstance(operation, FinalTextOp) for operation in operations) == 1
         assert operations[-1] == FinalTextOp("answer")
 
     async def test_local_call_barrier_holds_later_hosted_ops(self, sink: tuple[list[object], object]) -> None:
@@ -1162,25 +1074,6 @@ class TestHostedPresentationBridgeStreaming:
         assert {operation.presentation_id for operation in operations} == {starts[0].presentation_id}
         assert bridge.published_terminal_signatures
 
-    async def test_intermediate_text_signature_is_scoped_to_response(self, sink: tuple[list[object], object]) -> None:
-        operations, publish = sink
-        bridge = HostedPresentationBridge(publish)
-        await bridge.attempt_started()
-
-        await bridge.reconcile_accepted(
-            [_assistant([Content.from_text("Let me check."), _search_call(), _search_result()])]
-        )
-        await bridge.begin_response()
-        await bridge.attempt_started()
-        await bridge.reconcile_accepted(
-            [_assistant([Content.from_text("Let me check."), _search_call(), _search_result()])]
-        )
-
-        assert [operation.text for operation in operations if isinstance(operation, IntermediateTextOp)] == [
-            "Let me check.",
-            "Let me check.",
-        ]
-
     async def test_failed_result_has_structured_failure_metadata(self, sink: tuple[list[object], object]) -> None:
         operations, publish = sink
         bridge = HostedPresentationBridge(publish)
@@ -1206,23 +1099,162 @@ class TestHostedPresentationBridgeStreaming:
 
 
 class TestHostedPresentationBridgeBlocking:
-    async def test_plan_then_publish_and_final_last(self) -> None:
+    async def test_cards_publish_before_final_text_last(self) -> None:
         operations: list[object] = []
         bridge = HostedPresentationBridge(operations.append)
 
-        await bridge.publish_blocking(
-            [_assistant([Content.from_text("before"), _search_call(), _search_result(), Content.from_text("answer")])]
+        await _present_blocking(
+            bridge,
+            [_assistant([Content.from_text("before"), _search_call(), _search_result(), Content.from_text("answer")])],
         )
 
-        assert isinstance(operations[0], IntermediateTextOp)
-        assert isinstance(operations[1], HostedToolStartOp)
+        assert [type(operation) for operation in operations] == [
+            HostedToolStartOp,
+            HostedToolArgsOp,
+            HostedToolStatusOp,
+            HostedToolResultOp,
+            FinalTextOp,
+        ]
         assert operations[-1] == FinalTextOp("answer")
+
+    async def test_cards_after_landed_text_wait_until_that_text_shows(self) -> None:
+        operations: list[object] = []
+        bridge = HostedPresentationBridge(operations.append)
+        before, answer = Content.from_text("before"), Content.from_text("answer")
+        message = _assistant([before, _search_call(), _search_result(), answer])
+
+        await bridge.attempt_started()
+        await bridge.observe_contents(message.contents, is_final=True)
+        await bridge.attempt_accepted([message])
+        # The text the call follows has not shown yet.
+        assert operations == []
+        await bridge.text_shown(before)
+        cards = [HostedToolStartOp, HostedToolArgsOp, HostedToolStatusOp, HostedToolResultOp]
+        assert [type(operation) for operation in operations] == cards
+        await bridge.text_shown(answer)
+        await bridge.text_shown(None)
+        assert [type(operation) for operation in operations] == cards
+        await bridge.reconcile_accepted([message], final=True)
+        assert [type(operation) for operation in operations] == [*cards, FinalTextOp]
+
+    @pytest.mark.parametrize("lead", ["text", "local_call"])
+    async def test_a_rejected_response_shows_its_cards_though_what_they_follow_never_shows(self, lead: str) -> None:
+        operations: list[object] = []
+        bridge = HostedPresentationBridge(operations.append)
+        before = (
+            Content.from_text("before")
+            if lead == "text"
+            else Content.from_function_call("local_1", "read_file", arguments={"path": "x"})
+        )
+
+        await bridge.attempt_started()
+        await bridge.observe_contents([before, _search_call()], is_final=True)
+        assert operations == []
+        await bridge.attempt_rejected("rejected")
+
+        # The card shows running, then ends as failed with the response.
+        assert [type(operation) for operation in operations] == [
+            HostedToolStartOp,
+            HostedToolArgsOp,
+            HostedToolStatusOp,
+            HostedToolStatusOp,
+        ]
+        terminal = operations[-1]
+        assert isinstance(terminal, HostedToolStatusOp) and terminal.view.status == HostedToolStatus.FAILED
+
+    @pytest.mark.parametrize("restart", ["attempt", "response"])
+    async def test_a_new_attempt_shows_the_cards_the_last_one_held(self, restart: str) -> None:
+        operations: list[object] = []
+        bridge = HostedPresentationBridge(operations.append)
+
+        await bridge.attempt_started()
+        await bridge.observe_contents([Content.from_text("before"), _search_call()], is_final=True)
+        assert operations == []
+        # The landed response never reached its caller.
+        if restart == "attempt":
+            await bridge.attempt_started()
+        else:
+            await bridge.begin_response()
+
+        assert [type(operation) for operation in operations] == [
+            HostedToolStartOp,
+            HostedToolArgsOp,
+            HostedToolStatusOp,
+        ]
+
+    async def test_streamed_text_never_holds_the_cards_after_it(self) -> None:
+        operations: list[object] = []
+        bridge = HostedPresentationBridge(operations.append)
+
+        await bridge.attempt_started()
+        await bridge.observe_contents([Content.from_text("before"), _search_call()])
+
+        assert [type(operation) for operation in operations][:1] == [HostedToolStartOp]
+
+    @pytest.mark.parametrize("second", ["text_shown", "local_call_start"])
+    async def test_a_call_from_another_task_waits_while_one_publishes(self, second: str) -> None:
+        """An interrupt and the run, or two parallel tool calls, publish one after the other."""
+        holding, release = asyncio.Event(), asyncio.Event()
+        operations: list[object] = []
+        published_while_held: list[object] = []
+
+        async def publish(operation: object) -> None:
+            if holding.is_set() and not release.is_set():
+                published_while_held.append(operation)
+            operations.append(operation)
+            if isinstance(operation, HostedToolStartOp) and not holding.is_set():
+                # A frontend still mounting the card when the card's next event arrives drops that event.
+                holding.set()
+                await release.wait()
+
+        bridge = HostedPresentationBridge(publish)
+        before = Content.from_text("before")
+        if second == "text_shown":
+            contents = [before, _search_call(), _search_result()]
+        else:
+            contents = [
+                Content.from_function_call("local_a", "read_file", arguments={"path": "a"}),
+                _search_call("search_1", item_id="item_1"),
+                _search_result("search_1", item_id="item_1"),
+                Content.from_function_call("local_b", "read_file", arguments={"path": "b"}),
+                _search_call("search_2", item_id="item_2"),
+                _search_result("search_2", item_id="item_2"),
+            ]
+        await bridge.attempt_started()
+        await bridge.observe_contents(contents, is_final=True)
+        assert operations == []
+        first_call = (
+            bridge.attempt_rejected("Execution interrupted", status=HostedToolStatus.INTERRUPTED)
+            if second == "text_shown"
+            else bridge.local_call_start_published("local_a")
+        )
+        first = asyncio.create_task(first_call)
+        later = None
+        try:
+            await wait_for(lambda: holding.is_set() or first.done(), description="the first card starting")
+            assert holding.is_set()
+            later = asyncio.create_task(
+                bridge.text_shown(before) if second == "text_shown" else bridge.local_call_start_published("local_b")
+            )
+            # One step runs the later call as far as it gets without waiting.
+            await asyncio.sleep(0)
+            assert published_while_held == []
+            assert not later.done()
+        finally:
+            release.set()
+            await asyncio.gather(first, *(task for task in (later,) if task is not None))
+
+        cards = [HostedToolStartOp, HostedToolArgsOp, HostedToolStatusOp, HostedToolResultOp]
+        assert [type(operation) for operation in operations] == (cards if second == "text_shown" else cards * 2)
+        if second == "local_call_start":
+            ids = [operation.presentation_id for operation in operations if isinstance(operation, HostedToolStartOp)]
+            assert [operation.presentation_id for operation in operations] == [ids[0]] * 4 + [ids[1]] * 4
 
     async def test_empty_final_text_still_emits_final_last(self) -> None:
         operations: list[object] = []
         bridge = HostedPresentationBridge(operations.append)
 
-        await bridge.publish_blocking([_assistant([_search_call()])])
+        await _present_blocking(bridge, [_assistant([_search_call()])])
 
         assert operations[-1] == FinalTextOp("")
 
@@ -1243,7 +1275,7 @@ class TestHostedPresentationBridgeBlocking:
             provider_status="completed",
         )
 
-        await bridge.publish_blocking([_assistant([call, result, Content.from_text("")])])
+        await _present_blocking(bridge, [_assistant([call, result, Content.from_text("")])])
 
         assert operations[-1] == FinalTextOp("", structured_output_completed=True)
 
@@ -1359,7 +1391,7 @@ class TestSubAgentHostedPresentation:
             origin=InvocationOrigin("sub_agent", "session-1", "inv-1", None),
         )
         bridge = middleware.begin_hosted_pass()
-        await bridge.publish_blocking([_assistant([_search_call(), _search_result()])])
+        await _present_blocking(bridge, [_assistant([_search_call(), _search_result()])])
 
         assert [type(event) for event in events] == [
             InvocationToolCallStart,
@@ -1473,7 +1505,7 @@ class TestSubAgentHostedPresentation:
         hosted_file = Content.from_hosted_file("file_1", media_type="text/csv", name="report.csv")
         linked = Content.from_uri("https://files.test/plot.csv", media_type="text/csv")
 
-        await bridge.publish_blocking([_assistant([_search_call(), _search_result(result=[hosted_file, linked])])])
+        await _present_blocking(bridge, [_assistant([_search_call(), _search_result(result=[hosted_file, linked])])])
 
         assert results[-1].artifacts == [
             {"id": "file_1", "name": "report.csv", "mime": "text/csv"},

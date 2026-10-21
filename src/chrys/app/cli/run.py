@@ -303,7 +303,12 @@ async def run_command(args: argparse.Namespace, holder: PreparedRuntimeHolder) -
             else:
                 progress.warnings(delta)
                 progress.restored(host.session_id or "")
-        result = await host.run_until_final(prompt, on_event=None if progress is None else guarded(progress.handle))
+        try:
+            result = await host.run_until_final(prompt, on_event=None if progress is None else guarded(progress.handle))
+        except BaseException:
+            if progress is not None:
+                progress.failed()
+            raise
         duration = time.monotonic() - started
         if progress is not None:
             progress.succeeded(duration=duration, session_id=result.session_id)

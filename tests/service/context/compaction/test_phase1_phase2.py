@@ -5,15 +5,18 @@
 import pytest
 
 from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
 from chrys.kernel import (
     EXCLUDED_KEY,
     Content,
     Message,
     annotate_message_groups,
+    annotate_token_counts,
     included_token_count,
     project_included_messages,
     set_excluded,
 )
+from chrys.kernel.compaction import _token_count
 from chrys.service.context.compaction import (
     SUMMARIZED_BY_SUMMARY_ID_KEY,
     CompactionInfo,
@@ -192,6 +195,32 @@ def test_compact_group_does_not_build_summary_from_excluded_call(monkeypatch: py
 
     assert strategy._compact_group(messages, group_id, grouped[group_id]) is None
     assert strategy._summary_cache == {}
+
+
+def test_compact_group_counts_only_its_summary() -> None:
+    """The messages after an inserted summary keep their contents; counting them again per group was quadratic."""
+    messages = _build_single_turn(4, result_size=500)
+    _estimate_tokens(messages)
+    counted: list[str] = []
+
+    class RecordingTokenizer(MixedLanguageTokenizer):
+        def count_tokens(self, text: str) -> int:
+            counted.append(text)
+            return super().count_tokens(text)
+
+    strategy = _make_strategy(tokenizer=RecordingTokenizer())
+    grouped = _group_messages_by_id(messages)
+    group_id = _tool_group_id_of(messages, "call_0")
+
+    assert strategy._compact_group(messages, group_id, grouped[group_id])
+
+    [summary] = [message for message in messages if message.message_id.startswith("tool_summary_")]
+    assert len(counted) == 1
+    assert summary.text in counted[0]
+    stored = [_token_count(message) for message in messages]
+    assert None not in stored
+    annotate_token_counts(messages, tokenizer=MixedLanguageTokenizer(), force_retokenize=True)
+    assert [_token_count(message) for message in messages] == stored
 
 
 def test_remove_group_never_inserts():

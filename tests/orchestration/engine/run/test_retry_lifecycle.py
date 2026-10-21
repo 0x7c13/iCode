@@ -12,7 +12,7 @@ engine coverage lives in ``test_retry_integration.py``.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -27,7 +27,7 @@ from chrys.foundation.events.types import AgentRuntimeDetails, RuntimeModelDetai
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.turns import UserMessageKind
 from chrys.foundation.models.workspace import Workspace
-from chrys.kernel import Message
+from chrys.kernel import Content, Message
 from chrys.orchestration.engine.state.machine import EngineState, EngineStateMachine, Trigger
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
 from chrys.service.agent_middleware.system_reminder import SystemReminderMiddleware
@@ -122,6 +122,7 @@ class _Executor:
         self.run_failed = False
         self.was_interrupted = False
         self.last_error = None
+        self.partial_answer = ()
         self.service_session_id = ""
         self.running = False
         self.on_resume = None
@@ -215,7 +216,7 @@ class _History:
     def trim_to_last_complete_tool_results(self) -> None:
         return None
 
-    def remove_trailing_agent_text(self) -> None:
+    def keep_partial_answer(self, _contents: Sequence[Content]) -> None:
         return None
 
     def persist_batch_ids(self, _batch_records: list[object]) -> dict[int, object]:

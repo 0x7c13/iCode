@@ -2,29 +2,28 @@
 
 """Response validators for :class:`ResponseValidationMiddleware`.
 
-Defines a small protocol + a regex-driven default validator that detects
-common LLM / inference-service misbehaviours that would otherwise cause
-the agent loop to terminate with a nonsense final response:
+Defines a small protocol + a default validator that detects the responses
+that end an agent turn without an answer:
 
 1. **Empty contents** — the final assistant message has ``contents == []``.
 2. **Whitespace-only text** — the final assistant message has text content
    but every text item is empty or whitespace (``""``, ``"\\n\\n\\n"``, etc.),
    AND there are no tool calls in the same message.  (A tool-calling turn
    with no text is perfectly valid and NOT flagged.)
-3. **Leaked tool-call markers in text** — provider/model leaked the raw
-   tool-call tokens into the text channel instead of emitting them as
-   ``function_call`` content.  Covers ``minimax:tool_call`` (MiniMax via
-   vLLM), ``<tool_use>``, ``<function_call>``, ``<|tool_call|>`` and
-   variations.  Text before or after the marker still triggers.
-4. **Evidence gathering without a final answer** — provider-hosted search,
+3. **Evidence gathering without a final answer** — provider-hosted search,
    fetch, or tool discovery completed after the last visible text item and
    the response stopped without a later answer or answer-bearing output.
-5. **Filtered without an answer** — the provider's content filter ended the
-   response before its answer. The same request meets the same filter, so
-   this is terminal, never retried.
-6. **Tool call without a function name** — the provider sent a call that
-   names no function, which no tool can run. A fresh sample usually names
-   one; when every attempt sends such a call, the response fails.
+4. **Filtered without an answer** — the provider's content filter ended the
+   response before its answer.
+5. **Tool call without a function name** — the provider sent a call that
+   names no function, which no tool can run.
+
+The response was shown as it arrived, so a rejection fails the turn with
+the reason and the user continues; only a response that showed nothing (no
+message, empty, blank or reasoning-only, but not a length stop with nothing
+generated) is first sampled once more by the kernel's wire caller.
+Text is never judged by its content: markers such as ``<tool_use>`` in the
+answer are answer text.
 
 Validation runs on the **final message** of a :class:`ChatResponse` —
 the message that would become the agent's final reply for the turn.
@@ -34,7 +33,6 @@ intermediate text that FunctionInvocationLayer handles separately.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
@@ -48,8 +46,6 @@ from chrys.foundation.trajectory.event_types import ValidationReason
 from chrys.kernel.exchanges import TOOL_CALL_CONTENT_TYPES, TOOL_RESULT_CONTENT_TYPES
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from chrys.kernel import ChatResponse, Message
 
 
@@ -62,24 +58,12 @@ if TYPE_CHECKING:
 class ValidationResult:
     """Outcome of validating a single :class:`ChatResponse`.
 
-    ``ok`` is the terminal signal for the middleware.  ``reason`` is a
-    short human-readable string surfaced in ``RetryAttempt`` events and
-    the debug log so the user can see *why* we retried.  ``retryable``
-    is ``False`` when re-issuing the same request cannot help (e.g. the
-    response hit the output token limit with no content generated); the
-    middleware then gives up immediately instead of burning retries.
-    ``terminal_on_giveup`` marks retryable failures whose exhausted
-    response has nothing salvageable to return (e.g. reasoning-only
-    output with no user-visible answer): when retries run out, the
-    middleware raises the reason through the executor error path instead
-    of returning a blank final response the caller would mistake for a
-    successful (empty) answer.
+    A rejected response fails the turn: ``reason`` is the short
+    human-readable error the user sees, and the debug log records it.
     """
 
     ok: bool
     reason: str = ""
-    retryable: bool = True
-    terminal_on_giveup: bool = False
     code: str = field(default=ValidationReason.UNKNOWN, compare=False)
     """Closed reason code for analytics (the free-text ``reason`` never leaves the UI/log).
 
@@ -91,22 +75,13 @@ class ValidationResult:
         return cls(ok=True)
 
     @classmethod
-    def invalid(
-        cls,
-        reason: str,
-        *,
-        code: str = ValidationReason.UNKNOWN,
-        retryable: bool = True,
-        terminal_on_giveup: bool = False,
-    ) -> ValidationResult:
-        return cls(ok=False, reason=reason, retryable=retryable, terminal_on_giveup=terminal_on_giveup, code=code)
+    def invalid(cls, reason: str, *, code: str = ValidationReason.UNKNOWN) -> ValidationResult:
+        return cls(ok=False, reason=reason, code=code)
 
 
 # Surfaced (verbatim) when the model produced no usable output because it hit
 # the output token limit — almost always the input filling the context window
-# (or the model profile's Max Output Tokens set too small). Retrying re-sends
-# the same oversized input and gets the same empty result, so this reason is
-# marked non-retryable.
+# (or the model profile's Max Output Tokens set too small).
 OUTPUT_TRUNCATED_REASON = (
     "Response hit the output token limit with no content generated — the input likely "
     "fills the model's context window (or the model profile's Max Output Tokens is too small), "
@@ -125,8 +100,6 @@ HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON = (
 
 CONTENT_FILTERED_REASON = "The model service's content filter stopped the response before it generated an answer."
 
-# Fixed text: retries compare reasons, and a call's id or index differs on
-# every attempt.
 UNNAMED_TOOL_CALL_REASON = "Response contained a tool call without a function name."
 
 _EVIDENCE_ONLY_HOSTED_FAMILIES = {
@@ -139,8 +112,7 @@ _EVIDENCE_ONLY_HOSTED_FAMILIES = {
 # ever producing visible text or a tool call (``finish_reason="length"`` with
 # reasoning content present).  Unlike :data:`OUTPUT_TRUNCATED_REASON`, the
 # generated reasoning tokens prove the input did NOT fill the context window —
-# the model over-thought — so a fresh sample plausibly yields a visible answer
-# and the failure is retryable.
+# the model over-thought.
 REASONING_EXHAUSTED_OUTPUT_REASON = (
     "Response hit the output token limit while reasoning, with no visible answer generated — the model spent "
     "its output budget thinking and stopped before producing user-visible text or a tool call. If this "
@@ -157,82 +129,35 @@ class ResponseValidator(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Built-in regex rules
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class RegexRule:
-    """A single text-content regex check.
-
-    ``pattern`` is searched (``re.search``) against each ``TextContent.text``
-    in the final message.  A match flags the response as invalid with
-    *reason*.
-    """
-
-    name: str
-    pattern: re.Pattern[str]
-    reason: str
-
-
-# Patterns for known leaked tool-call markers.  Case-insensitive because
-# providers vary (``minimax:tool_call`` is lowercase, some emit upper).
-_LEAKED_TOOL_CALL_PATTERNS = [
-    r"minimax:tool_call",
-    r"</\s*minimax:tool_call\s*>",
-    r"<\s*tool_use\b",
-    r"</\s*tool_use\s*>",
-    r"<\s*function_call\b",
-    r"</\s*function_call\s*>",
-    r"<\|\s*tool_call\s*\|>",
-    r"<\|\s*tool_use\s*\|>",
-]
-
-DEFAULT_LEAKED_TOOL_CALL_RULE = RegexRule(
-    name="leaked_tool_call",
-    pattern=re.compile("|".join(_LEAKED_TOOL_CALL_PATTERNS), re.IGNORECASE),
-    reason="leaked tool-call marker in text content",
-)
-
-
-# ---------------------------------------------------------------------------
 # Default validator
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class DefaultResponseValidator:
-    """Validator that combines the three built-in rules plus optional extras.
+    """Validator that applies the built-in rules.
 
     Behaviour:
 
     - **Filtered without an answer** is reported in place of the rule that
-      would read the response as blank or answerless and retry it; a
-      filtered answer is reported in place of a text rule it breaks.
+      would read the response as blank or answerless.
     - **Empty contents** is always checked first (cheapest).
     - **Whitespace-only text** runs only when the message has NO tool calls
       (a pure tool-calling turn can legitimately have no text).
-    - **Leaked tool-call markers** always runs on text contents — a message
-      with tool calls whose text ALSO has a leaked marker is still invalid.
     - **Tool call without a function name** fails the response before the
       rules that read its other contents.
-    - ``extra_rules`` are applied in order after the built-ins.  Configuring
-      an empty list + setting ``disable_*`` flags to ``True`` yields a no-op
-      validator that always returns ``valid`` — useful for tests.
+    - Setting every ``disable_*`` flag yields a no-op validator that always
+      returns ``valid`` — useful for tests.
     """
 
-    extra_rules: Sequence[RegexRule] = field(default_factory=list)
     disable_empty_contents: bool = False
     disable_whitespace_text: bool = False
-    disable_leaked_tool_call: bool = False
     disable_unnamed_tool_call: bool = False
 
     def validate(self, response: ChatResponse) -> ValidationResult:
         msg = _final_assistant_message(response)
-        # A content filter that stopped the response is terminal: the same
-        # request meets the same filter. Each rule below that would retry the
-        # response, as blank, answerless or with text it rejects, reports the
-        # filter instead where it fires.
+        # A content filter that stopped the response is reported where a rule
+        # below would read the response as blank or answerless.
         content_filtered = response.finish_reason == "content_filter"
         if msg is None:
             if content_filtered:
@@ -245,12 +170,10 @@ class DefaultResponseValidator:
         # A "length" finish_reason on an otherwise-empty final message means the
         # model ran out of output budget before emitting any visible content.
         # With NO generated content at all that almost always means the input
-        # filled the context window — retrying the same request is futile, so
-        # the empty-output rules below surface it as a terminal, non-retryable
-        # failure with an actionable reason instead of the opaque generic
-        # emptiness message.  When reasoning content IS present the budget was
-        # spent thinking (the context cannot be full), so the same signal is
-        # retryable — see Rule 2.
+        # filled the context window, so the empty-output rules below report it
+        # with an actionable reason instead of the opaque generic emptiness
+        # message.  When reasoning content IS present the budget was spent
+        # thinking (the context cannot be full) — see Rule 2.
         output_truncated = response.finish_reason == "length"
 
         # Rule 1: empty contents=[]
@@ -258,9 +181,7 @@ class DefaultResponseValidator:
             if content_filtered:
                 return _content_filtered()
             if output_truncated:
-                return ValidationResult.invalid(
-                    OUTPUT_TRUNCATED_REASON, code=ValidationReason.OUTPUT_TRUNCATED, retryable=False
-                )
+                return ValidationResult.invalid(OUTPUT_TRUNCATED_REASON, code=ValidationReason.OUTPUT_TRUNCATED)
             return ValidationResult.invalid("empty contents", code=ValidationReason.EMPTY_CONTENTS)
 
         # Collect text + tool-call presence for the remaining rules.
@@ -285,7 +206,7 @@ class DefaultResponseValidator:
             elif content.type == "function_call" and content.informational_only and not content.provider_hosted:
                 # Responses custom_tool_call items are preserved as
                 # non-executable transcript calls. They are still real model
-                # output, so a call-only response must not be retried as blank.
+                # output, so a call-only response is not blank.
                 has_usable_output = True
                 last_answer_bearing_output_index = index
             elif content.provider_hosted or content.type in (TOOL_CALL_CONTENT_TYPES | TOOL_RESULT_CONTENT_TYPES) - {
@@ -308,15 +229,11 @@ class DefaultResponseValidator:
                     (content.text or "").strip() or content.protected_data
                 )
 
-        # The tool loop could answer such a call only as an unknown tool, and
-        # nothing else in the response may stand without it. A fresh sample
-        # usually names its function; when none does there is nothing to keep.
+        # The tool loop could answer such a call only as an unknown tool.
         if not self.disable_unnamed_tool_call and has_unnamed_function_call:
             if content_filtered:
                 return _content_filtered()
-            return ValidationResult.invalid(
-                UNNAMED_TOOL_CALL_REASON, code=ValidationReason.UNNAMED_TOOL_CALL, terminal_on_giveup=True
-            )
+            return ValidationResult.invalid(UNNAMED_TOOL_CALL_REASON, code=ValidationReason.UNNAMED_TOOL_CALL)
 
         # An answer is visible text, a call, or a hosted output that is an
         # answer itself, after the last hosted evidence gathering.
@@ -340,9 +257,7 @@ class DefaultResponseValidator:
             and last_terminal_evidence_index > max(last_visible_text_index, last_answer_bearing_output_index)
         ):
             return ValidationResult.invalid(
-                HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON,
-                code=ValidationReason.HOSTED_EVIDENCE_ONLY,
-                terminal_on_giveup=True,
+                HOSTED_EVIDENCE_MISSING_FINAL_TEXT_REASON, code=ValidationReason.HOSTED_EVIDENCE_ONLY
             )
 
         # Rule 2: whitespace-only text (only when no tool calls).
@@ -351,44 +266,16 @@ class DefaultResponseValidator:
             if not joined.strip():
                 if has_reasoning_content:
                     # The model DID generate output — its reasoning — so the
-                    # input cannot have filled the context window.  This is the
-                    # "over-thinking" failure mode: the reply budget went to
-                    # hidden reasoning (or the model simply stopped) before any
-                    # visible text or tool call, and a re-roll plausibly
-                    # recovers.  Retry like the other transient shapes; if
-                    # every attempt ends the same way there is still nothing
-                    # visible to return, so the give-up must fail through the
-                    # executor error path instead of yielding a blank final
-                    # message (``terminal_on_giveup``).
+                    # input cannot have filled the context window: the reply
+                    # budget went to reasoning (or the model simply stopped)
+                    # before any visible text or tool call.
                     reason = REASONING_EXHAUSTED_OUTPUT_REASON if output_truncated else NO_VISIBLE_OUTPUT_REASON
-                    return ValidationResult.invalid(
-                        reason, code=ValidationReason.REASONING_ONLY, terminal_on_giveup=True
-                    )
+                    return ValidationResult.invalid(reason, code=ValidationReason.REASONING_ONLY)
                 if output_truncated:
-                    return ValidationResult.invalid(
-                        OUTPUT_TRUNCATED_REASON, code=ValidationReason.OUTPUT_TRUNCATED, retryable=False
-                    )
+                    return ValidationResult.invalid(OUTPUT_TRUNCATED_REASON, code=ValidationReason.OUTPUT_TRUNCATED)
                 return ValidationResult.invalid(
                     "empty or whitespace-only text response", code=ValidationReason.WHITESPACE_ONLY
                 )
-
-        # Rule 3: leaked tool-call markers — check each text item.
-        if not self.disable_leaked_tool_call:
-            rule = DEFAULT_LEAKED_TOOL_CALL_RULE
-            for text in text_items:
-                if text and rule.pattern.search(text):
-                    if content_filtered:
-                        return _content_filtered()
-                    return ValidationResult.invalid(rule.reason, code=ValidationReason.LEAKED_TOOL_CALL)
-
-        # Extra rules — run on concatenated text, one rule at a time.
-        if self.extra_rules:
-            joined = "".join(text_items)
-            for rule in self.extra_rules:
-                if joined and rule.pattern.search(joined):
-                    if content_filtered:
-                        return _content_filtered()
-                    return ValidationResult.invalid(rule.reason, code=ValidationReason.RULE_VIOLATION)
 
         return ValidationResult.valid()
 
@@ -399,7 +286,7 @@ class DefaultResponseValidator:
 
 
 def _content_filtered() -> ValidationResult:
-    return ValidationResult.invalid(CONTENT_FILTERED_REASON, code=ValidationReason.CONTENT_FILTERED, retryable=False)
+    return ValidationResult.invalid(CONTENT_FILTERED_REASON, code=ValidationReason.CONTENT_FILTERED)
 
 
 def _final_assistant_message(response: ChatResponse) -> Message | None:

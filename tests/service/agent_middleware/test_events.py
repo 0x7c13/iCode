@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for the events middleware package: tool events, hook dispatch, intermediate text, sub-agent events."""
+"""Tests for the events middleware package: tool events, hook dispatch, batch numbering, sub-agent events."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ import pytest
 
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
+    InvocationContentDelta,
+    InvocationContentFinished,
     InvocationMessage,
     InvocationToolCallResult,
     InvocationToolCallStart,
@@ -30,6 +32,8 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_FAILED_METADATA_KEY,
     TOOL_RESULT_METADATA_KEY,
 )
+from chrys.foundation.trajectory.context import trajectory_scope
+from chrys.foundation.trajectory.event_types import EventType
 from chrys.foundation.trajectory_timing import TRAJECTORY_TIMING_KEY
 from chrys.foundation.util.sub_agent_context import (
     SUB_AGENT_TRANSCRIPT_FINAL_TEXT_METADATA_KEY,
@@ -40,7 +44,7 @@ from chrys.kernel import Content, FunctionInvocationContext, FunctionTool
 from chrys.kernel.exceptions import ModelVisibleToolError
 from chrys.service.agent_middleware import (
     _APPROVAL_MODIFIED_ARGS_KEY,
-    IntermediateTextBuffer,
+    ResponseBatchCounter,
     SubAgentEventMiddleware,
     SubAgentStatsMiddleware,
     ToolEventMiddleware,
@@ -69,148 +73,19 @@ from tests.service.agent_middleware._event_fakes import (
     DualDecisionHookManager,
     _ctx,
 )
-from tests.support.event_capture import capture_events
-from tests.support.waiting import wait_for, wait_until
+from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.event_capture import capture_event_sequence, capture_events
 
-# ──────────────── IntermediateTextBuffer ────────────────────────────────
-
-
-def test_buffer_starts_empty() -> None:
-    buf = IntermediateTextBuffer()
-    assert buf.drain() == []
-    assert buf.batch_id == 0
+# ──────────────── ResponseBatchCounter ──────────────────────────────────
 
 
-def test_buffer_store_and_drain() -> None:
-    buf = IntermediateTextBuffer()
-    buf.store("hello")
-    buf.store("world")
-    assert buf.drain() == ["hello", "world"]
-    # Second drain is empty
-    assert buf.drain() == []
-
-
-def test_buffer_batch_id_increments_on_store() -> None:
-    buf = IntermediateTextBuffer()
-    assert buf.batch_id == 0
-    buf.store("text")
-    assert buf.batch_id == 1
-    buf.store("more")
-    assert buf.batch_id == 2
-
-
-def test_buffer_new_batch_increments_without_text() -> None:
-    buf = IntermediateTextBuffer()
-    buf.new_batch()
-    assert buf.batch_id == 1
-    buf.new_batch()
-    assert buf.batch_id == 2
-    # No text was stored
-    assert buf.drain() == []
-
-
-async def test_buffer_release_cancelled_mid_publication_keeps_the_rest() -> None:
-    """A cancelled release completes the publication it started, once, and leaves the rest for the next release."""
-    buf = IntermediateTextBuffer()
-    buf.store("first")
-    buf.store("second")
-    gate = asyncio.Event()
-    started: list[str] = []
-    delivered: list[str] = []
-
-    async def publish(text: str) -> None:
-        started.append(text)
-        if text == "first":
-            await gate.wait()
-        delivered.append(text)
-
-    release = asyncio.create_task(buf.release(publish))
-    await wait_for(lambda: started or release.done(), description="the first publication starting")
-    release.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await release
-    assert started == ["first"]
-
-    gate.set()
-    await buf.release(publish)
-
-    assert started == ["first", "second"]
-    assert delivered == ["first", "second"]
-    assert buf.drain() == []
-
-
-class _StuckPublisher:
-    """Publishes ``first`` into a subscriber that never returns until cancelled."""
-
-    def __init__(self) -> None:
-        self.started: list[str] = []
-        self.delivered: list[str] = []
-        self.abandoned = False
-
-    async def __call__(self, text: str) -> None:
-        self.started.append(text)
-        if text == "first":
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                self.abandoned = True
-                raise
-        self.delivered.append(text)
-
-
-async def _leave_first_in_flight(buf: IntermediateTextBuffer, publish: _StuckPublisher) -> None:
-    buf.store("first")
-    buf.store("second")
-    release = asyncio.create_task(buf.release(publish))
-    await wait_for(lambda: publish.started or release.done(), description="the first publication starting")
-    release.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await release
-
-
-async def test_buffer_finish_cancelled_while_waiting_settles_the_publication() -> None:
-    """Cancelling the pass end cancels the publication it waits for and drops the rest before it returns."""
-    buf = IntermediateTextBuffer()
-    publish = _StuckPublisher()
-    await _leave_first_in_flight(buf, publish)
-
-    finish = asyncio.create_task(buf.finish(publish))
-    assert not await wait_until(finish.done, timeout=0.2)
-    finish.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await finish
-
-    assert publish.abandoned
-    assert publish.started == ["first"]
-    assert publish.delivered == []
-    assert buf.drain() == []
-
-
-async def test_buffer_finish_in_a_cancelled_pass_abandons_without_waiting() -> None:
-    """A pass its owner cancelled does not wait on subscribers at its end."""
-    buf = IntermediateTextBuffer()
-    publish = _StuckPublisher()
-    await _leave_first_in_flight(buf, publish)
-    entered = asyncio.Event()
-
-    async def closed_pass() -> None:
-        try:
-            entered.set()
-            await asyncio.Event().wait()
-        finally:
-            await buf.finish(publish)
-
-    task = asyncio.create_task(closed_pass())
-    await wait_for(lambda: entered.is_set() or task.done(), description="the pass running")
-    task.cancel()
-    await wait_for(task.done, description="the cancelled pass ending without its subscriber")
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert publish.abandoned
-    assert publish.started == ["first"]
-    assert publish.delivered == []
-    assert buf.drain() == []
+def test_batch_counter_starts_at_zero_and_numbers_each_response() -> None:
+    counter = ResponseBatchCounter()
+    assert counter.batch_id == 0
+    counter.new_batch()
+    assert counter.batch_id == 1
+    counter.new_batch()
+    assert counter.batch_id == 2
 
 
 # ──────────────── ToolEventMiddleware — CancelledError handling ────────
@@ -310,59 +185,6 @@ def test_tool_invocation_order_needs_a_dict_with_the_key() -> None:
     ctx = _ctx("tool")
     ctx.metadata = UserDict({_TOOL_INVOCATION_ORDER_KEY: 7})
     assert get_tool_invocation_order(ctx) is None
-
-
-async def test_intermediate_text_delivered_before_any_parallel_tool_start() -> None:
-    """The batch's intermediate text must beat every sibling's ToolCallStart.
-
-    Parallel tool calls run ``process`` concurrently; whichever sibling
-    drains the buffer suspends inside the AgentMessage publish while bus
-    handlers run. Without cross-sibling serialization the other siblings'
-    starts overtake the text, land mid-batch on the TUI, and split the
-    tool group — orphaning already-rendered sub-agent cards.
-    """
-
-    bus = EventBus()
-    buf = IntermediateTextBuffer()
-    buf.store("I'll launch two explore agents.")
-    mw = ToolEventMiddleware(
-        bus, session_id="test", intermediate_buffer=buf, origin=InvocationOrigin("turn", "test", "turn-test", None)
-    )
-
-    delivered: list[str] = []
-    text_publish_blocked = asyncio.Event()
-    release_text_publish = asyncio.Event()
-
-    async def _on_text(event: InvocationMessage) -> None:
-        text_publish_blocked.set()
-        await asyncio.wait_for(release_text_publish.wait(), timeout=5)
-        delivered.append("text")
-
-    async def _on_start(event: InvocationToolCallStart) -> None:
-        delivered.append(f"start:{event.tool_name}")
-
-    await bus.subscribe(InvocationMessage, _on_text)
-    await bus.subscribe(InvocationToolCallStart, _on_start)
-
-    async def _next() -> None:
-        return None
-
-    first_ctx = _ctx("first")
-    second_ctx = _ctx("second")
-
-    first_task = asyncio.create_task(mw.process(first_ctx, _next))
-    await asyncio.wait_for(text_publish_blocked.wait(), timeout=5)
-    second_task = asyncio.create_task(mw.process(second_ctx, _next))
-    # Bounded negative assertion: while the batch text is still in flight
-    # nothing may be delivered. Pre-fix, the sibling's start overtakes the
-    # suspended publish as soon as it is scheduled; polling with real sleeps
-    # guarantees it gets those chances before the window closes.
-    assert not await wait_until(lambda: delivered, timeout=0.3)
-    release_text_publish.set()
-    await asyncio.gather(first_task, second_task)
-
-    assert delivered[0] == "text"
-    assert sorted(delivered[1:]) == ["start:first", "start:second"]
 
 
 async def test_tool_event_middleware_uses_approval_modified_args_for_start_event() -> None:
@@ -1107,37 +929,41 @@ async def test_sub_agent_event_middleware_resolves_context_from_modified_args() 
     assert ctx.metadata[TOOL_CALL_CONTEXT_METADATA_KEY] == {"skill_name": "modified"}
 
 
-async def test_sub_agent_event_middleware_flushes_intermediate_text_before_tool_start() -> None:
-    """Nested transcript ordering matches the main-agent text → tool contract."""
+@pytest.mark.parametrize("sub_agent", [False, True], ids=["main", "sub_agent"])
+async def test_tool_call_publishes_its_card_and_no_model_text(sub_agent: bool) -> None:
+    """Model text reaches frontends from the run's content projector, never from a tool start."""
 
     bus = EventBus()
-    order: list[tuple[str, str]] = []
-
-    async def _message(event: InvocationMessage) -> None:
-        order.append(("message", event.text))
-
-    async def _start(event: InvocationToolCallStart) -> None:
-        order.append(("tool", event.tool_name))
-
-    await bus.subscribe(InvocationMessage, _message)
-    await bus.subscribe(InvocationToolCallStart, _start)
-    buffer = IntermediateTextBuffer()
-    buffer.store("I will inspect the file.")
-    middleware = SubAgentEventMiddleware(
-        bus,
-        agent_name="Explore",
-        invocation_id="inv123",
-        intermediate_buffer=buffer,
-        origin=InvocationOrigin("sub_agent", "", "inv123", None),
+    middleware = (
+        SubAgentEventMiddleware(
+            bus, agent_name="Explore", invocation_id="inv123", origin=InvocationOrigin("sub_agent", "", "inv123", None)
+        )
+        if sub_agent
+        else ToolEventMiddleware(
+            bus,
+            session_id="test",
+            batch_counter=ResponseBatchCounter(),
+            origin=InvocationOrigin("turn", "test", "turn-test", None),
+        )
     )
     context = _ctx("read_file", "filesystem.read", args={"path": "README.md"})
 
     async def _next() -> None:
         context.result = "done"
 
-    await middleware.process(context, _next)
+    async with capture_event_sequence(
+        bus,
+        InvocationMessage,
+        InvocationContentDelta,
+        InvocationContentFinished,
+        InvocationToolCallStart,
+        InvocationToolCallResult,
+    ) as events:
+        await middleware.process(context, _next)
+        if isinstance(middleware, SubAgentEventMiddleware):
+            await middleware.flush_progress()
 
-    assert order[:2] == [("message", "I will inspect the file."), ("tool", "read_file")]
+    assert [type(event) for event in events] == [InvocationToolCallStart, InvocationToolCallResult]
 
 
 # ──────────────── ToolEventMiddleware — batch records (§2.1.1) ─────────
@@ -1147,18 +973,63 @@ def _batch_record_ctx(provider_call_id: str, tool_name: str = "echo") -> SimpleN
     return _ctx(tool_name, args={"message": "hi"}, metadata={"call_id": provider_call_id})
 
 
+async def test_tool_event_middleware_stamps_each_call_with_the_counters_current_batch() -> None:
+    """Batch records and the trajectory's ``batch_index`` both read the counter as each call dispatches."""
+
+    sink = FakeSink()
+    counter = ResponseBatchCounter()
+    mw = ToolEventMiddleware(
+        EventBus(),
+        session_id="test",
+        batch_counter=counter,
+        origin=InvocationOrigin("turn", "test", "turn-test", None),
+    )
+
+    async def _next() -> None:
+        return None
+
+    with trajectory_scope(make_context(sink)):
+        counter.new_batch()
+        await mw.process(_batch_record_ctx("first"), _next)
+        await mw.process(_batch_record_ctx("second"), _next)
+        counter.new_batch()
+        await mw.process(_batch_record_ctx("third"), _next)
+
+    assert [(record.provider_call_id, record.batch_id) for record in mw.drain_batch_records()] == [
+        ("first", 1),
+        ("second", 1),
+        ("third", 2),
+    ]
+    assert [draft.payload["batch_index"] for draft in sink.of_type(EventType.TOOL_OPERATION_STARTED)] == [1, 1, 2]
+
+
+async def test_tool_event_middleware_without_a_counter_records_no_batch() -> None:
+    sink = FakeSink()
+    mw = ToolEventMiddleware(EventBus(), session_id="test", origin=InvocationOrigin("turn", "test", "turn-test", None))
+
+    async def _next() -> None:
+        return None
+
+    with trajectory_scope(make_context(sink)):
+        await mw.process(_batch_record_ctx("unbatched"), _next)
+
+    assert mw.drain_batch_records() == []
+    started = sink.only(EventType.TOOL_OPERATION_STARTED)
+    assert "batch_index" not in started.payload
+
+
 async def test_tool_event_middleware_mainline_batch_record_has_non_empty_provider_id() -> None:
     """POSITIVE producer pin: a normal middleware-dispatched call always records
     a non-empty provider_call_id — the persist-side drop-without-provider-id
     guard must never fire on the mainline path.
     """
 
-    buffer = IntermediateTextBuffer()
-    buffer.new_batch()
+    counter = ResponseBatchCounter()
+    counter.new_batch()
     mw = ToolEventMiddleware(
         EventBus(),
         session_id="test",
-        intermediate_buffer=buffer,
+        batch_counter=counter,
         origin=InvocationOrigin("turn", "test", "turn-test", None),
     )
     ctx = _batch_record_ctx("provider-batch-call")
@@ -1183,12 +1054,12 @@ async def test_tool_event_middleware_records_batch_record_pre_execution() -> Non
     before the tool runs, so no result/metadata is required.
     """
 
-    buffer = IntermediateTextBuffer()
-    buffer.new_batch()
+    counter = ResponseBatchCounter()
+    counter.new_batch()
     mw = ToolEventMiddleware(
         EventBus(),
         session_id="test",
-        intermediate_buffer=buffer,
+        batch_counter=counter,
         origin=InvocationOrigin("turn", "test", "turn-test", None),
     )
     ctx = _batch_record_ctx("provider-cancelled-call")
@@ -1210,12 +1081,12 @@ async def test_tool_event_middleware_metadata_less_call_still_records_batch_reco
     records must never be derived from the tool-result metadata stream.
     """
 
-    buffer = IntermediateTextBuffer()
-    buffer.new_batch()
+    counter = ResponseBatchCounter()
+    counter.new_batch()
     mw = ToolEventMiddleware(
         EventBus(),
         session_id="test",
-        intermediate_buffer=buffer,
+        batch_counter=counter,
         origin=InvocationOrigin("turn", "test", "turn-test", None),
     )
     ctx = _batch_record_ctx("provider-plain-call")
@@ -1236,12 +1107,12 @@ async def test_clear_batch_records_drops_rolled_back_attempt_records() -> None:
     provider id can never stamp post-retry history.
     """
 
-    buffer = IntermediateTextBuffer()
-    buffer.new_batch()
+    counter = ResponseBatchCounter()
+    counter.new_batch()
     mw = ToolEventMiddleware(
         EventBus(),
         session_id="test",
-        intermediate_buffer=buffer,
+        batch_counter=counter,
         origin=InvocationOrigin("turn", "test", "turn-test", None),
     )
     ctx = _batch_record_ctx("provider-rolled-back-call")

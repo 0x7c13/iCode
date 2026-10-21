@@ -36,6 +36,7 @@ from chrys.orchestration.sub_agents.shell import SubAgentToolShell
 from chrys.service.llm.mock import MockChatClient
 from tests.orchestration.sub_agents._controller_fixtures import _make_controller, kernel_shell
 from tests.service.trajectory._fakes import FakeSink, make_context
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 
 def _agent(monkeypatch: pytest.MonkeyPatch, run) -> Agent:
@@ -109,7 +110,8 @@ async def test_child_stall_preserves_final_attempt_and_timeout_payload(monkeypat
         async def updates():
             session.state["chrys_history"]["messages"].append(mutated[len(calls) - 1])
             compaction.value = f"attempt {len(calls)}"
-            yield AgentResponseUpdate(role="assistant", contents=[Content.from_text("partial")])
+            # Progress with nothing readable: a stall that showed no text may be retried.
+            yield AgentResponseUpdate(role="assistant", contents=[])
             await asyncio.Event().wait()
 
         return ResponseStream(updates(), finalizer=AgentResponse.from_updates)
@@ -151,6 +153,63 @@ async def test_child_stall_preserves_final_attempt_and_timeout_payload(monkeypat
     assert compaction.value == "attempt 2"
     assert paused[0].last_error == "Stream stalled after 1 retries: no streaming updates received for 0.01s"
     assert controller.policy._attempt_handle.task is None
+
+
+@pytest.mark.parametrize(
+    ("completed", "shows_answer_text"),
+    [(True, True), (False, True), (True, False)],
+    ids=["shown_segment", "unfinished_segment", "segment_no_frontend_shows"],
+)
+async def test_a_child_stall_is_retried_as_a_whole_run_only_while_no_answer_segment_showed(
+    monkeypatch: pytest.MonkeyPatch, completed: bool, shows_answer_text: bool
+) -> None:
+    """Sub-agent views show an answer segment once it completes; one still streaming, or nowhere shown, never showed."""
+    bus = EventBus()
+    calls: list[list[Message]] = []
+    paused: list[InvocationPaused] = []
+
+    def run(input: list[Message], *, stream: bool, **_kwargs: Unpack[AgentRunKwargs]):
+        assert stream
+        calls.append(input)
+
+        async def updates():
+            yield AgentResponseUpdate(role="assistant", contents=[Content.from_text("partial")])
+            if completed:
+                # Reasoning after it completes the answer segment.
+                yield AgentResponseUpdate(role="assistant", contents=[Content.from_text_reasoning(text="hmm")])
+            await asyncio.Event().wait()
+
+        return ResponseStream(updates(), finalizer=AgentResponse.from_updates)
+
+    controller = _make_controller(
+        _agent(monkeypatch, run),
+        bus,
+        stream=True,
+        max_retries=3,
+        run_kwargs={"options": {"store": True}},
+        shows_answer_text=shows_answer_text,
+    )
+    controller.policy._stream_attempt_timeout = 0.01
+
+    async def abort(event: InvocationPaused) -> None:
+        paused.append(event)
+        controller.request_abort()
+
+    await bus.subscribe(InvocationPaused, abort)
+    try:
+        assert (await controller.run()).startswith("Error:")
+    finally:
+        await bus.unsubscribe(InvocationPaused, abort)
+    if completed and shows_answer_text:
+        # The shown text would be shown again: the stalled pass is not run a second time.
+        assert len(calls) == 1
+        assert paused[0].retry_attempts == 0
+        assert paused[0].last_error == "no streaming updates received for 0.01s"
+    else:
+        # The whole run is retried until its budget runs out.
+        assert len(calls) == 4
+        assert paused[0].retry_attempts == 3
+        assert paused[0].last_error == "Stream stalled after 3 retries: no streaming updates received for 0.01s"
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -521,3 +580,43 @@ def test_child_retry_seed_replays_the_reminders_its_anchor_was_sent_with(recorde
         assert seed.additional_properties[HistoryMarkerKind.SYSTEM_REMINDERS_KEY] is not record
     else:
         assert HistoryMarkerKind.SYSTEM_REMINDERS_KEY not in seed.additional_properties
+
+
+async def test_a_paused_child_cancelled_later_keeps_its_partial_answer_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pause and the cancel both repair the failed pass; the answer it showed is kept by the first."""
+    bus = EventBus()
+    session = AgentSession()
+    session.state["chrys_history"] = {"messages": [Message("user", ["do the thing"])]}
+    paused = asyncio.Event()
+
+    async def note_pause(_event: InvocationPaused) -> None:
+        paused.set()
+
+    await bus.subscribe(InvocationPaused, note_pause)
+
+    async def updates():
+        yield AgentResponseUpdate(role="assistant", contents=[Content.from_text("Partial answer")])
+        # Reasoning after it completes the segment, so it shows; the one cut off after never does.
+        yield AgentResponseUpdate(role="assistant", contents=[Content.from_text_reasoning(text="hmm")])
+        yield AgentResponseUpdate(role="assistant", contents=[Content.from_text("Cut o")])
+        raise RuntimeError("response failed")
+
+    def stream_then_fail(_input: Any, *, stream: bool, **_kwargs: Any) -> ResponseStream:
+        return ResponseStream(updates(), finalizer=AgentResponse.from_updates)
+
+    controller = _make_controller(_agent(monkeypatch, stream_then_fail), bus, session=session, stream=True)
+
+    def answers() -> list[str]:
+        return [message.text for message in session.state["chrys_history"]["messages"] if message.role == "assistant"]
+
+    task = asyncio.create_task(controller.run())
+    try:
+        await wait_for(lambda: paused.is_set() or task.done(), timeout=ENGINE_TURN_TIMEOUT, description="the pause")
+        assert not task.done()
+        assert answers() == ["Partial answer"]
+        await controller.cascade_abort()
+        await asyncio.gather(task, return_exceptions=True)
+        assert answers() == ["Partial answer"]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

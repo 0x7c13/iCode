@@ -262,7 +262,7 @@ class TestKeyDriftPins:
         assert getattr(chrys_compaction, name) == expected[name]
 
     def test_token_estimator_version_is_current(self) -> None:
-        assert chrys_compaction.TOKEN_ESTIMATOR_VERSION == 4
+        assert chrys_compaction.TOKEN_ESTIMATOR_VERSION == 5
 
     def test_group_kind_literal_stays_stable(self) -> None:
         # chrys uses a py3.14 ``type`` alias; the Literal lives on __value__.
@@ -419,6 +419,24 @@ class TestAnnotationDeterminismAndIncrementalStability:
         )
 
         assert chrys_compaction._serialize_content(content)["protected_data"] == content.protected_data
+
+    def test_reasoning_details_count_their_payload_and_not_its_readable_copy(self) -> None:
+        payload = '[{"type":"reasoning.text","text":"replayed chat reasoning"}]'
+        properties = {"openai_reasoning_format": "reasoning_details"}
+        baseline = Content.from_text_reasoning(protected_data=payload, additional_properties=dict(properties))
+        shown = Content.from_text_reasoning(
+            text="replayed chat reasoning", protected_data=payload, additional_properties=dict(properties)
+        )
+
+        assert chrys_compaction._serialize_content(shown) == chrys_compaction._serialize_content(baseline)
+        assert shown.text == "replayed chat reasoning"
+
+    def test_plaintext_chat_reasoning_keeps_its_text_in_token_serialization(self) -> None:
+        content = Content.from_text_reasoning(
+            text="plain chat reasoning", additional_properties={"openai_reasoning_format": "reasoning_content"}
+        )
+
+        assert chrys_compaction._serialize_content(content)["text"] == "plain chat reasoning"
 
     def test_incremental_annotation_is_repeatable(self) -> None:
         first, second = _basic_conversation(), _basic_conversation()

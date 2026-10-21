@@ -21,9 +21,10 @@ from chrys.foundation.models.turns import (
 )
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.trajectory.metadata import ensure_analytics_item_id, read_analytics_item_id
-from chrys.kernel import Message
+from chrys.kernel import Content, Message
 from chrys.orchestration.invoker.contracts import Failed, InvocationOutcome, RunIntent, RunRequest
 from chrys.orchestration.invoker.evidence import InvocationEvidence
+from chrys.service.session.history import SessionHistoryManager
 from chrys.service.session.message_metadata import (
     MESSAGE_CREATED_AT_KEY,
     stamp_message_created_at,
@@ -52,6 +53,8 @@ class TurnPassState:
     was_interrupted: bool = False
     run_failed: bool = False
     last_error: str = ""
+    partial_answer: tuple[Content, ...] = ()
+    """The answer contents of the response the ended pass left unrecorded."""
 
 
 def _make_user_message(
@@ -161,7 +164,8 @@ class TurnResumePolicy:
         continuation prompt. The text is sent as a real user message inside
         the current turn, so it appears as a proper user turn in history.
 
-        When *additional_text* is empty:
+        When *additional_text* is empty, a trailing answer the failed pass
+        showed is dropped first, so it is asked for again, and then:
 
         * If there are completed tool calls after the last user message,
           continues from the transcript with empty input.
@@ -208,6 +212,10 @@ class TurnResumePolicy:
                     copy_reminder_record(note.additional_properties, fallback_note.additional_properties)
                     messages.append(fallback_note)
             return
+
+        history = SessionHistoryManager()
+        history.bind(state)
+        history.remove_trailing_answer()
 
         # Find the last real user input. Legacy synthetic nudges stay in
         # persisted history for read compatibility but cannot become anchors.

@@ -337,7 +337,7 @@ class StreamState:
         # A delta's fields carry no order among themselves: one that mixes
         # them reads as reasoning ending and the answer starting, so chunking
         # alone never moves reasoning into the answer text.
-        contents.extend(delta_reasoning(fields, include_plain=include_plain, origin=self._origin))
+        contents.extend(delta_reasoning(fields, include_plain=include_plain, origin=self._origin, source=choice.delta))
         contents.extend(text_contents(choice))
         return contents
 

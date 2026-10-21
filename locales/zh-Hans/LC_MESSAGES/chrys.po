@@ -647,18 +647,18 @@ msgstr "该会话的工作目录已不存在：{path}"
 msgid "restore.sub_agents_discarded"
 msgstr "已丢弃上一会话遗留的 {discarded} 个暂停子智能体：{names}"
 
+#. English: The model returned no answer. Asking again once.
+#. chrys-meta={"fingerprint":"30a11dd3813c3ef0ba11e8b1536fd934e6b41bf8f72b6b99c05a5e96f67564a0","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "retry.blank_response"
+msgstr "模型未返回回答，正在重新请求一次。"
+
 #. English: The context window is full. Compacting the context before one
 #. retry.
 #. chrys-meta={"fingerprint":"4590c026541e884340855fb290e2e5e0e43ee38b846f8c90257d1e986fe28054","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/errors/display.py
 msgid "retry.context_overflow"
 msgstr "上下文窗口已满，正在压缩上下文后重试一次。"
-
-#. English: Invalid response: {reason}
-#. chrys-meta={"fingerprint":"1015c4dc6fb6325fb498abc40fc15262f621140c328d1290f38881be09991edb","multiline":true,"placeholders":["reason"]}
-#: src/chrys/orchestration/engine/build/builder.py
-msgid "retry.invalid_response"
-msgstr "响应无效：{reason}"
 
 #. English: LAST_WORDS compaction: {reason}
 #. chrys-meta={"fingerprint":"edd8f91abe1d8bdd98870cf90e30612cfbf104102a4347ea1317617c72248b74","multiline":true,"placeholders":["reason"]}
@@ -4870,12 +4870,6 @@ msgstr "会话 JSON"
 #: src/chrys/app/tui/widgets/chat/chrome.py
 msgid "tui.chat.session_title"
 msgstr "会话：{session_id}"
-
-#. English: Think: {body}
-#. chrys-meta={"fingerprint":"d88314825eae958e626da4118def6dcca22c908e6aa352343aafcf501ac71d05","multiline":true,"placeholders":["body"]}
-#: src/chrys/app/tui/widgets/chat/messages.py
-msgid "tui.chat.think_prefix"
-msgstr "思考：{body}"
 
 #. English: New version found: {version} Run: {command} to upgrade
 #. chrys-meta={"fingerprint":"90536f5c417bc9fa28c317d37799b2f2f652d50ea96f7d2aa2dccc898e3aee61","multiline":true,"placeholders":["command","version"]}
@@ -14831,6 +14825,9 @@ msgstr "提示已被钩子阻止。"
 #~ msgid "cli.profiles.models.empty"
 #~ msgstr "未找到模型配置。"
 
+#~ msgid "retry.invalid_response"
+#~ msgstr "响应无效：{reason}"
+
 #~ msgid "run.headless_run_failed"
 #~ msgstr "无界面智能体运行失败。"
 
@@ -14888,6 +14885,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.chat.copy_agent_response_button"
 #~ msgstr "复制"
+
+#~ msgid "tui.chat.think_prefix"
+#~ msgstr "思考：{body}"
 
 #~ msgid "tui.chrome.approval_mode.auto_formal"
 #~ msgstr "自动（Formal）"

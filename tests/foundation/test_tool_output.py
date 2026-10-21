@@ -132,13 +132,14 @@ def test_multi_item_truncation_forces_omission_footer_when_current_item_fits() -
 
 
 def test_keep_whole_r9_literal_counterexample_uses_complete_join_count() -> None:
-    first = "中" * 25
-    suffix = "x" * 255
+    # Each part rounds down by most of a token, so the joined text counts one more than its parts.
+    first = "中" * 23
+    suffix = "x" * 255 + "中" * 2
     marker = f"[...truncated ~{len(first)} chars (estimated {_tokenizer.count_tokens(first)} tokens total)...]"
     fixed_footer = "\n".join((marker, "[1 further text items omitted.]", suffix))
 
-    assert _tokenizer.count_tokens(first) == 14
-    assert _tokenizer.count_tokens(fixed_footer) == 85
+    assert _tokenizer.count_tokens(first) == 13
+    assert _tokenizer.count_tokens(fixed_footer) == 86
     assert _tokenizer.count_tokens(first) + _tokenizer.count_tokens("\n") + _tokenizer.count_tokens(fixed_footer) == 100
     assert _tokenizer.count_tokens(f"{first}\n{fixed_footer}") == 101
 

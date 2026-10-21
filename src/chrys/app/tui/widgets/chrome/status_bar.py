@@ -137,6 +137,13 @@ _SELECTOR_GROUP_HORIZONTAL_PADDING_CELLS = 2
 _SELECTOR_LABEL_HORIZONTAL_PADDING_CELLS = 2
 _SELECTOR_TAG_HORIZONTAL_PADDING_CELLS = 2
 _MODEL_SELECTOR_LEFT_MARGIN_CELLS = 1
+_STATUS_MIN_INTERVAL_SECONDS = 0.15
+"""Shortest time between two changes of the run status.
+
+A change that comes sooner waits for the interval and gives way to a newer
+one, so a burst of changes repaints the row once; repeating the status shown
+(once per streamed delta) repaints nothing.
+"""
 
 
 @dataclass
@@ -359,6 +366,9 @@ class StatusBar(Widget):
         self._tool_count: int = 0
         self._flash: _FlashState | None = None
         self._timer: Timer | None = None
+        self._status_shown_at = 0.0
+        self._pending_status: StatusMessage | None = None
+        self._pending_status_timer: Timer | None = None
         self._tool_trail: StatusTrail = ""
         self._last_formatted_elapsed_seconds: int | None = None
         self._current_profile: str = ""
@@ -401,6 +411,7 @@ class StatusBar(Widget):
             self._locale_controller.unregister_surface(self)
         if self._timer is not None:
             self._timer.stop()
+        self._cancel_pending_status()
 
     def _tick(self) -> None:
         if self._content_shown and self._flash is None:
@@ -612,9 +623,41 @@ class StatusBar(Widget):
         """Start timing a new agent.run cycle."""
         self._start_time = time.monotonic()
         self._tool_count = 0
+        self._refresh_running_trail()
 
     def show(self, status: StatusMessage) -> None:
-        """Show the status bar with given status text."""
+        """Show the status bar with given status text.
+
+        While a run status is up, the status changes at most every
+        ``_STATUS_MIN_INTERVAL_SECONDS``, and showing it again repaints nothing.
+        """
+        if self._content_shown and self._flash is None:
+            if status == self.status:
+                self._cancel_pending_status()
+                return
+            wait = self._status_shown_at + _STATUS_MIN_INTERVAL_SECONDS - time.monotonic()
+            if wait > 0:
+                self._pending_status = status
+                if self._pending_status_timer is None:
+                    self._pending_status_timer = self.set_timer(wait, self._show_pending_status)
+                return
+        self._show_now(status)
+
+    def _show_pending_status(self) -> None:
+        status = self._pending_status
+        self._pending_status_timer = None
+        if status is not None:
+            self._show_now(status)
+
+    def _cancel_pending_status(self) -> None:
+        self._pending_status = None
+        if self._pending_status_timer is not None:
+            self._pending_status_timer.stop()
+            self._pending_status_timer = None
+
+    def _show_now(self, status: StatusMessage) -> None:
+        self._cancel_pending_status()
+        self._status_shown_at = time.monotonic()
         self._flash = None
         self.status = status
         self.update_classes({"-warn": False, "-error": False, "-caution": False})
@@ -624,6 +667,12 @@ class StatusBar(Widget):
     def add_tool_call(self) -> None:
         """Increment tool call counter."""
         self._tool_count += 1
+        self._refresh_running_trail()
+
+    def _refresh_running_trail(self) -> None:
+        """Show a new count or start time now: the status shown again with it repaints nothing."""
+        if self.is_mounted and self._content_shown and self._flash is None:
+            self._refresh_trail()
 
     def flash(
         self,
@@ -643,6 +692,7 @@ class StatusBar(Widget):
             caution: Apply caution styling (yellow, no background).
             trail: Right-aligned trailing text. If empty, uses persistent tool info.
         """
+        self._cancel_pending_status()
         elapsed_seconds = None
         if isinstance(text, MessageRef) and text.definition is STATUS_COMPLETED:
             elapsed_seconds = self._last_formatted_elapsed_seconds
@@ -668,6 +718,7 @@ class StatusBar(Widget):
 
     def hide(self) -> None:
         """Hide the status bar."""
+        self._cancel_pending_status()
         self._flash = None
         self.status = ""
         self.update_classes({"-warn": False, "-error": False, "-caution": False})
@@ -675,6 +726,7 @@ class StatusBar(Widget):
 
     def clear_status(self) -> None:
         """Clear status content while keeping selectors and runtime info visible."""
+        self._cancel_pending_status()
         self._flash = None
         self.status = ""
         self.update_classes({"-warn": False, "-error": False, "-caution": False})
@@ -749,7 +801,7 @@ class StatusBar(Widget):
             "content_shown": self._content_shown,
             "idle_shown": self._idle_shown,
             "flash": self._flash,
-            "status": self.status,
+            "status": self.status if self._pending_status is None else self._pending_status,
             "start_time": self._start_time,
             "tool_count": self._tool_count,
             "tool_trail": self._tool_trail,
@@ -761,6 +813,7 @@ class StatusBar(Widget):
         *tool_trail* replaces the snapshot's trail, which moved on meanwhile; a
         flash that showed the old one shows it too.
         """
+        self._cancel_pending_status()
         self._start_time = state.get("start_time", 0.0)
         self._tool_count = state.get("tool_count", 0)
         snapshot_trail = state.get("tool_trail", self._tool_trail)
@@ -805,7 +858,7 @@ class StatusBar(Widget):
                 self._flash.elapsed_seconds = flash.elapsed_seconds
                 self._refresh_flash_text()
         else:
-            self.show(state["status"])
+            self._show_now(state["status"])
 
     def _format_elapsed(self) -> str:
         elapsed = int(time.monotonic() - self._start_time)

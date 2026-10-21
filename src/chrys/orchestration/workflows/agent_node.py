@@ -52,6 +52,7 @@ from chrys.orchestration.invoker.acp import AcpConversation, AcpInvocationCounte
 from chrys.orchestration.invoker.acp_protocol import AcpUpdateTranslator
 from chrys.orchestration.invoker.attempts import drop_continuation_token, has_live_continuation_token
 from chrys.orchestration.invoker.child_history import active_input_message
+from chrys.orchestration.invoker.content_projection import ContentProjector
 from chrys.orchestration.invoker.contracts import (
     AbortCause,
     Aborted,
@@ -82,8 +83,6 @@ from chrys.orchestration.workflows.agent_node_build import (
     build_kernel_node,
 )
 from chrys.service.agent_middleware.events.hosted_tools import FinalSegment
-from chrys.service.agent_middleware.events.intermediate_text import IntermediateTextBuffer
-from chrys.service.agent_middleware.response_validation import hosted_commits_from_error
 from chrys.service.session.history import SessionHistoryManager, stamp_history_item_ids
 from chrys.service.session.sub_agent_logs import SubAgentLogStats
 from chrys.service.tools.background import TaskScope
@@ -91,7 +90,8 @@ from chrys.service.workflows.scheduler import ErrorClass, FailureReport
 from chrys.service.workflows.store import WorkflowStorageFailed
 
 if TYPE_CHECKING:
-    from chrys.foundation.retry import RetryAttemptInfo
+    from chrys.foundation.models.invocations import ContentStatus
+    from chrys.kernel import ChatResponse, Content
     from chrys.orchestration.workflows.agent_archive import AgentNodeArchive
     from chrys.service.approval.policy import ApprovalMode
     from chrys.service.workflows.admission import AgentBinding
@@ -144,7 +144,9 @@ class WorkflowAgentShell:
         self._archive_attempt = 1
         self._checkpoint: CoalescedCheckpoint | None = None
         self._stats = SubAgentLogStats()
-        self._intermediate_buffer = IntermediateTextBuffer()
+        # The kernel pass's only publisher of model text, and how its open segment ends.
+        self._projector: ContentProjector | None = None
+        self._pass_status: ContentStatus = "completed"
         self._acp_translators: list[AcpUpdateTranslator] = []
         self._acp_counters = AcpInvocationCounters()
         self._display_name = binding.agent.display_name or binding.agent.name
@@ -471,7 +473,9 @@ class WorkflowAgentShell:
         # Bound before the start hooks, which open the pass's hosted presentation under this origin.
         parts.approval.bind_publisher(self._emitter)
         parts.events.bind_origin(request.origin)
-        self._intermediate_buffer.drain()
+        self._projector = ContentProjector(self._emitter, agent_name=self._display_name)
+        parts.events.bind_text_segments(self._projector.end_segment)
+        self._pass_status = "completed"
         self._pass_start_index = len(parts.history.messages())
         resources.begin()
         self._active_run_input = list(request.messages)
@@ -482,37 +486,54 @@ class WorkflowAgentShell:
             await self._parts.events.reconcile_hosted_response(response.messages)
 
     async def failed(self, error: Exception, /) -> None:
+        self._pass_status = "failed"
         parts = self._require_kernel_parts()
-        parts.history.repair_after_failure(self._active_run_input, self._pass_start_index)
+        parts.history.repair_after_failure(self._active_run_input, self._pass_start_index, self._take_unlanded_answer())
         if self._abort_cause is None:
             # An aborted pass can still end in an error; finished() settles its cards as interrupted.
             await parts.events.reject_hosted_attempt(clean_error_message(error), status=HostedToolStatus.FAILED)
 
     async def finished(self) -> None:
-        # A failed or interrupted pass publishes no outcome; its buffered text
-        # belongs to this pass's transcript, not the next one.
-        if isinstance(self._parts, KernelNodeParts):
-            await self._parts.events.finish_intermediate_text()
-            if self._abort_cause is not None:
-                # An aborted pass settles no hosted card; a resumed attempt would carry it on still running.
-                await self._parts.events.reject_hosted_attempt("Execution interrupted")
+        if isinstance(self._parts, KernelNodeParts) and (
+            self._abort_cause is not None or self._pass_status == "interrupted"
+        ):
+            # A cut-off pass saved no history: keep its completed tool work and the answer it showed, so the
+            # archive shows them and a resumed attempt continues after the work instead of running it again.
+            self._parts.history.repair_after_failure(
+                self._active_run_input, self._pass_start_index, self._take_unlanded_answer()
+            )
+        # The pass's open segment ends with it, keeping the text it showed.
+        if self._projector is not None:
+            await self._projector.finish("interrupted" if self._abort_cause is not None else self._pass_status)
+        if isinstance(self._parts, KernelNodeParts) and self._abort_cause is not None:
+            # An aborted pass settles no hosted card; a resumed attempt would carry it on still running.
+            await self._parts.events.reject_hosted_attempt("Execution interrupted")
 
     async def interrupt(self) -> None:
         pass
 
     def cancelled(self) -> None:
-        pass
+        self._pass_status = "interrupted"
+
+    async def response_ready(self, response: ChatResponse) -> None:
+        """The kernel landed a response: the pass projector shows what it did not stream."""
+        if self._projector is not None:
+            shown = self._parts.events.hosted_text_shown if isinstance(self._parts, KernelNodeParts) else None
+            await self._projector.response_ready(response, shown=shown)
+
+    def _take_unlanded_answer(self) -> tuple[Content, ...]:
+        return self._projector.take_unlanded_answer() if self._projector is not None else ()
 
     # ------------------------------------------------------------------ construction
 
     async def _open_conversation(self, conversation: Conversation) -> Conversation:
         callbacks = AgentNodeCallbacks(
             observer=self,
-            publish_intermediate=self._publish_intermediate,
+            content=lambda: self._projector,
+            response_ready=self.response_ready,
             checkpoint=self._mark_dirty,
             usage=self._on_usage,
             side_call_usage=self._on_side_call_usage,
-            validation_retry=self._publish_validation_retry,
             wire_retry=self._publish_wire_retry,
             service_retry=self._publish_service_retry,
             interruptible_sleep=self._interruptible_sleep,
@@ -540,7 +561,6 @@ class WorkflowAgentShell:
                 res=self._resources,
                 archive=self._archive,
                 callbacks=callbacks,
-                intermediate_buffer=self._intermediate_buffer,
                 stats=self._stats,
             )
         # Construction awaits sub-agent registration, MCP connection and skill discovery; a mode
@@ -629,7 +649,7 @@ class WorkflowAgentShell:
             self._ticket = outcome.continuation
             self._resume = isinstance(self._parts, KernelNodeParts)
             transient = self._retryable(outcome)
-            approved = transient and not self._repeats_hosted_work(outcome, outcome.exception)
+            approved = transient and not self._repeats_hosted_work(outcome)
             error_class = ErrorClass.AGENT_TRANSIENT if transient else ErrorClass.AGENT_NON_TRANSIENT
             return AgentAttemptResult(
                 "failed", failure=FailureReport(error_class, outcome.error, backend_approved=approved)
@@ -642,18 +662,15 @@ class WorkflowAgentShell:
         abandoned_response = self._has_live_continuation_token()
         self._drop_continuation_token()
         if outcome.cause is AbortCause.CALLER_TIMEOUT:
-            if isinstance(self._parts, KernelNodeParts):
-                # The deadline cut the pass off before its history was saved: keep the completed tool
-                # work, so the next attempt continues after it instead of running it again.
-                self._parts.history.repair_after_failure(self._active_run_input, self._pass_start_index)
-                self._resume = True
+            # The pass's end repaired what the deadline cut off: the next attempt continues from it.
+            self._resume = isinstance(self._parts, KernelNodeParts)
             limit = f"{timeout:g}s" if timeout is not None else "its deadline"
             return AgentAttemptResult(
                 "failed",
                 failure=FailureReport(
                     ErrorClass.AGENT_TIMEOUT,
                     f"no response within {limit}",
-                    backend_approved=not abandoned_response and not self._repeats_hosted_work(outcome, None),
+                    backend_approved=not abandoned_response and not self._repeats_hosted_work(outcome),
                 ),
             )
         return AgentAttemptResult("cancelled")
@@ -668,20 +685,17 @@ class WorkflowAgentShell:
         # A stall already outlasted the in-pass retries; a later attempt may find the stream moving again.
         return is_retryable(exception) or classify_error(exception).kind is ErrorKind.STREAM_STALLED
 
-    def _repeats_hosted_work(self, outcome: Failed | Aborted, exception: Exception | None) -> bool:
+    def _repeats_hosted_work(self, outcome: Failed | Aborted) -> bool:
         """Whether resuming would run provider-hosted tool calls a second time.
 
         Resumed history keeps every completed exchange, so only the last request's hosted work is at risk
-        — named by its validation error, or by the middleware's probe unless the repaired history kept the
-        response that ran it. Under service-side storage the history may hold none of the pass, so any hosted
-        work of the pass counts. A live continuation token makes the retry a poll of the response already
-        created.
+        — named by the middleware's probe unless the repaired history kept the response that ran it. Under
+        service-side storage the history may hold none of the pass, so any hosted work of the pass counts. A
+        live continuation token makes the retry a poll of the response already created.
         """
         parts = self._parts
         if not isinstance(parts, KernelNodeParts) or self._has_live_continuation_token():
             return False
-        if exception is not None and hosted_commits_from_error(exception):
-            return True
         if parts.backend.service_session_storage_enabled:
             return outcome.effects.hosted_observed.observed > 0
         return bool(parts.hosted_unkept(parts.history.messages()[self._pass_start_index :]))
@@ -780,33 +794,6 @@ class WorkflowAgentShell:
     @property
     def _session_id(self) -> str | None:
         return self._resources.session_id or None
-
-    async def _publish_intermediate(self, text: str) -> None:
-        self._intermediate_buffer.new_batch()
-        await self._emitter.publish(
-            InvocationMessage(
-                origin=self.origin,
-                agent_name=self._display_name,
-                text=text,
-                is_final=False,
-                is_intermediate=True,
-                session_id=self._session_id,
-            )
-        )
-
-    async def _publish_validation_retry(self, info: RetryAttemptInfo) -> None:
-        await self._emitter.publish(
-            InvocationRetryAttempt(
-                scope="wire",
-                origin=self.origin,
-                agent_name=self._display_name,
-                message=f"Invalid response: {info.reason}",
-                attempt=info.attempt,
-                max_attempts=info.max_attempts,
-                delay_seconds=int(info.delay_seconds),
-                session_id=self._session_id,
-            )
-        )
 
     async def _publish_wire_retry(
         self, message: str, attempt: int, max_attempts: int, delay_seconds: int, exc: BaseException

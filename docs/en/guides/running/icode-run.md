@@ -67,7 +67,7 @@ Each line shows one step:
 | Line | Meaning |
 | --- | --- |
 | `• Q&A Agent ready · …` | The agent has started, with its model, session and working directory. |
-| Plain text | What the agent says between steps. |
+| Plain text | What the agent says between steps, and what it had written when the task fails or is stopped. |
 | `→ read   README.md` | The agent calls a tool: here, it reads a file. |
 | `✓ 0.1s` or `✗ exit 1 · 2.5s` | The tool finished, or failed with the reason, and how long it took. |
 | `↳ Explore → grep   TODO` | A sub-agent's step, named after the sub-agent. |

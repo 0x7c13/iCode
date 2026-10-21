@@ -503,7 +503,7 @@ async def test_sub_agent_running_header_view_opens_live_collapsed_transcript() -
 
     async with ToolApp().run_test() as pilot:
         tool = pilot.app.query_one(SubAgentToolCall)
-        tool.add_assistant_message("I will inspect the file.")
+        tool.add_answer("plan", "I will inspect the file.")
         await tool.add_inner_tool_start(
             "inner-1",
             "read_file",
@@ -541,7 +541,7 @@ async def test_sub_agent_terminal_header_view_opens_full_transcript() -> None:
 
     async with ToolApp().run_test() as pilot:
         tool = pilot.app.query_one(SubAgentToolCall)
-        tool.add_assistant_message("I will inspect the file.")
+        tool.add_answer("plan", "I will inspect the file.")
         await tool.add_inner_tool_start(
             "inner-1",
             "read_file",
@@ -549,6 +549,7 @@ async def test_sub_agent_terminal_header_view_opens_full_transcript() -> None:
             tool_kind=KIND_FILESYSTEM_READ,
         )
         tool.complete_inner_tool("inner-1", "file contents", 10)
+        tool.add_answer("answer", "Inspection complete.")
         tool.set_complete("Inspection complete.", 20)
         await pilot.pause()
 

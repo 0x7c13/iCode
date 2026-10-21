@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from copy import copy
 from typing import Any
 
@@ -54,14 +54,10 @@ def test_assembled_stack_keeps_the_wire_client_class_callbacks_and_headers() -> 
     from chrys.service.llm.clients import _assemble_stack
     from chrys.service.llm.openai_responses import DeepSeekResponsesApiClient
 
-    async_calls: list[str] = []
-    sync_calls: list[str] = []
+    calls: list[str] = []
 
-    async def _async_callback(text: str) -> None:
-        async_calls.append(text)
-
-    def _sync_callback(text: str) -> None:
-        sync_calls.append(text)
+    def _callback(text: str) -> None:
+        calls.append(text)
 
     sdk_client = AsyncOpenAI(api_key="sk-fake")
     client = _assemble_stack(
@@ -71,8 +67,7 @@ def test_assembled_stack_keeps_the_wire_client_class_callbacks_and_headers() -> 
         session_id="session-1",
         parent_session_id="parent-1",
         use_route_session_context=False,
-        on_intermediate_text_async=_async_callback,
-        on_intermediate_text_sync=_sync_callback,
+        on_intermediate_text=_callback,
         max_iterations=7777,
         max_consecutive_errors=10,
         tool_result_ceiling_tokens=None,
@@ -86,12 +81,10 @@ def test_assembled_stack_keeps_the_wire_client_class_callbacks_and_headers() -> 
     assert type(raw) is DeepSeekResponsesApiClient
     assert raw.sdk_client is sdk_client
     assert raw.model == "deepseek-test"
-    assert raw._observer._on_intermediate_text_async is _async_callback
-    assert raw._observer._on_intermediate_text_sync is _sync_callback
+    assert raw._observer._on_intermediate_text is _callback
     assert prepared["extra_headers"][SESSION_ID_HEADER] == "session-1"
     assert prepared["extra_headers"][PARENT_SESSION_ID_HEADER] == "parent-1"
-    assert async_calls == []
-    assert sync_calls == []
+    assert calls == []
 
 
 def test_raw_clients_require_preconfigured_sdk_clients() -> None:
@@ -444,18 +437,8 @@ async def test_native_stream_final_response_preserves_response_format() -> None:
 class _ToolCallWireClient(WireClient):
     """A wire client whose responses carry text + function_call."""
 
-    def __init__(
-        self,
-        *,
-        on_intermediate_text_async: Callable[[str], Awaitable[None]] | None = None,
-        on_intermediate_text_sync: Callable[[str], None] | None = None,
-    ) -> None:
-        super().__init__(
-            observer=WireCallObserver(
-                on_intermediate_text_async=on_intermediate_text_async,
-                on_intermediate_text_sync=on_intermediate_text_sync,
-            )
-        )
+    def __init__(self, *, on_intermediate_text: Callable[[str], None] | None = None) -> None:
+        super().__init__(observer=WireCallObserver(on_intermediate_text=on_intermediate_text))
 
     @staticmethod
     def _contents() -> list[Content]:
@@ -480,11 +463,7 @@ class _ToolCallWireClient(WireClient):
 
 async def test_intermediate_text_suppressed_in_internal_side_call_non_streaming() -> None:
     fired: list[str] = []
-
-    async def _cb(text: str) -> None:
-        fired.append(text)
-
-    client = _ToolCallWireClient(on_intermediate_text_async=_cb)
+    client = _ToolCallWireClient(on_intermediate_text=fired.append)
 
     with internal_side_call_scope():
         response = await client._inner_get_response(messages=[Message("user", ["hi"])], options={})
@@ -499,7 +478,7 @@ async def test_intermediate_text_suppressed_in_internal_side_call_non_streaming(
 
 async def test_intermediate_text_suppressed_in_internal_side_call_streaming() -> None:
     fired: list[str] = []
-    client = _ToolCallWireClient(on_intermediate_text_sync=fired.append)
+    client = _ToolCallWireClient(on_intermediate_text=fired.append)
 
     with internal_side_call_scope():
         stream = client._inner_get_response(messages=[Message("user", ["hi"])], options={}, stream=True)
