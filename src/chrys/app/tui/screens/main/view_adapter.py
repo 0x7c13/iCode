@@ -12,7 +12,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from textual.css.query import NoMatches
-from textual.widgets import Footer
 
 from chrys.app.tui.buddy_messages import BUDDY_TITLE
 from chrys.app.tui.clipboard import copy_text_to_clipboards
@@ -45,6 +44,7 @@ from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
+from chrys.app.tui.widgets.chrome.hook_indicator import HookIndicator
 from chrys.app.tui.widgets.chrome.image_paste import clipboard_image_dir_for_session
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.status_bar import (
@@ -87,6 +87,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.util.diff_entries import DiffFileEntry, DiffLoadResult
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
     from chrys.foundation.models.background_tasks import BackgroundTaskView
+    from chrys.foundation.models.hook_executions import HookExecutionView
     from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.todos import TodoItem
     from chrys.service.approval.judge import JudgeVerdict
@@ -227,10 +228,10 @@ class MainScreenViewAdapter:
             )
         )
 
-    def open_runtime_details(self, details: AgentRuntimeDetails) -> None:
+    def open_runtime_details(self, details: AgentRuntimeDetails, *, initial_tab: str | None = None) -> None:
         from chrys.app.tui.screens.dialogs.runtime_details import RuntimeDetailsDialog
 
-        self._screen.app.push_screen(RuntimeDetailsDialog(details))
+        self._screen.app.push_screen(RuntimeDetailsDialog(details, initial_tab=initial_tab))
 
     def run_worker(self, awaitable: Awaitable[Any], *, group: str) -> None:
         self._screen.run_worker(awaitable, exclusive=False, group=group)
@@ -241,8 +242,8 @@ class MainScreenViewAdapter:
     def call_after_refresh(self, callback: Callable[[], None]) -> None:
         self._screen.call_after_refresh(callback)
 
-    def call_later(self, callback: Callable[[], None]) -> None:
-        self._screen.call_later(callback)
+    def call_later(self, callback: Callable[[], None]) -> bool:
+        return self._screen.call_later(callback)
 
     def stop_shell(self) -> None:
         self._screen.query_one(ShellPanel).stop()
@@ -432,6 +433,9 @@ class MainScreenViewAdapter:
 
     def clear_todos(self) -> None:
         self._screen.todo_state = TodoListState()
+
+    def set_hook_executions(self, executions: tuple[HookExecutionView, ...]) -> None:
+        self._screen.query_one(HookIndicator).set_executions(executions)
 
     def set_background_tasks(self, tasks: tuple[BackgroundTaskView, ...]) -> None:
         self._screen.background_tasks_state = tasks
@@ -630,7 +634,8 @@ class MainScreenViewAdapter:
         self._screen.query_one(ChatPanel).display = chat
         self._screen.query_one(StatusBar).display = shell or chat
         self._screen.query_one(InputBar).display = chat
-        self._screen.query_one(Footer).display = not shell
+        # The footer row: the Footer and the hook indicator hide together.
+        self._screen.query_one("#footer-row").display = not shell
         self._screen._sync_workflow_timer()
 
     def open_confirm_dialog(
@@ -1513,7 +1518,7 @@ class MainScreenViewAdapter:
 
     def set_alternate_screen_active(self, active: bool) -> None:
         status = self._screen.query_one(StatusBar)
-        footer = self._screen.query_one(Footer)
+        footer = self._screen.query_one("#footer-row")
         sidebar = self._screen.query_one(SidebarPanel)
         sidebar.suppress_visibility("alternate-screen", active)
         if active:

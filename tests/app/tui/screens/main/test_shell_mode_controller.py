@@ -232,7 +232,10 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
     footer = _FakeFooter()
     sidebar = _FakeSidebar()
 
-    def query_one(cls: type) -> object:
+    def query_one(cls: type | str) -> object:
+        # The footer row holds the Footer and the hook indicator; shell mode hides the row.
+        if cls == "#footer-row":
+            return footer
         if cls is ChatPanel:
             return chat
         if cls is SessionJsonPanel:
@@ -249,7 +252,7 @@ def test_shell_mode_state_watcher_owns_layout() -> None:
             return footer
         if cls is SidebarPanel:
             return sidebar
-        raise AssertionError(f"unexpected query_one({cls.__name__})")
+        raise AssertionError(f"unexpected query_one({cls!r})")
 
     screen = SimpleNamespace(
         _workflow=SimpleNamespace(workflow_mode=False),

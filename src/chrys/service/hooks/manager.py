@@ -20,11 +20,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import itertools
 import logging
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from chrys.foundation.models.hook_executions import HookExecutionView, HookWaitPoint
 from chrys.foundation.trajectory.context import TrajectoryContext
 from chrys.service.hooks.events import GATED_EVENTS, HookEvent
 from chrys.service.hooks.matcher import matches
@@ -49,9 +54,12 @@ class _Tracked:
 
     ``scope`` lets :meth:`HookManager.drain_turn` filter to just turn-
     scoped tasks without touching background or session-scoped ones.
+    ``execution_key`` is the run's snapshot entry, registered before the task
+    exists: a drain drops it for a task cancelled before its first step, whose
+    own ``finally`` never ran.
     """
 
-    __slots__ = ("hook", "job", "operation_id", "scope", "task")
+    __slots__ = ("execution_key", "hook", "job", "operation_id", "scope", "task")
 
     def __init__(
         self,
@@ -61,12 +69,14 @@ class _Tracked:
         scope: str,
         job: OutboxJob | None,
         operation_id: str | None,
+        execution_key: int | None,
     ) -> None:
         self.hook = hook
         self.task = task
         self.scope = scope  # "turn" | "session" | "background"
         self.job = job
         self.operation_id = operation_id
+        self.execution_key = execution_key
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +125,18 @@ class HookManager:
         # trajectory scope (session / turn lifecycle hooks); the engine
         # installs its recorder's resolver.
         self.trajectory_context_provider: TrajectoryContextProvider | None = None
+        # Runs in flight, for the TUI. Each change is reported through
+        # ``on_change`` right after it is made, on the run's own task, so the
+        # last snapshot a subscriber stores is the current one.
+        self._executions: dict[int, HookExecutionView] = {}
+        self._execution_keys = itertools.count()
+        # Whether the last snapshot handed to ``on_change`` listed runs:
+        # closing clears the set behind its runs' backs, and reports the empty
+        # set only when a subscriber may still show some.
+        self._reported_runs = False
+        # The single observer, installed by the session that owns this manager
+        # (``wire_hook_reporting``); a second assignment replaces the first.
+        self.on_change: Callable[[HookManager], Awaitable[None]] | None = None
 
     @property
     def hooks_dir(self) -> Path:
@@ -143,6 +165,10 @@ class HookManager:
         common case.
         """
         return any(h.enabled and h.event == event for h in self._file.hooks)
+
+    def executions(self) -> tuple[HookExecutionView, ...]:
+        """The runs in flight now (queued or running, waited on or not), oldest first."""
+        return tuple(self._executions.values())
 
     # ── dispatch ─────────────────────────────────────────────────────
 
@@ -224,7 +250,12 @@ class HookManager:
                     if trace is not None:
                         trace.finished_soon(outcome=HookOutcome.ABANDONED)
                     return decision
-                result = await self._run_blocking(hook, envelope)
+                result = await self._run_blocking(
+                    hook,
+                    envelope,
+                    # Interrupt observers run on a task nobody waits on.
+                    waited_at="none" if scope == "detached" else "call",
+                )
             except asyncio.CancelledError:
                 if trace is not None:
                     trace.finished_soon(outcome=HookOutcome.CANCELLED)
@@ -266,6 +297,52 @@ class HookManager:
                 _log_nonblocking_spawn_failure(hook, exc)
 
         return decision
+
+    # ── runs in flight ───────────────────────────────────────────────
+
+    def _add_execution(self, hook: HookConfig, *, waited_at: HookWaitPoint) -> int:
+        key = next(self._execution_keys)
+        self._executions[key] = HookExecutionView(
+            hook_id=hook.id, waited_at=waited_at, queued=True, started_at=time.monotonic()
+        )
+        return key
+
+    async def _register_spawned(
+        self,
+        hook: HookConfig,
+        waited_at: HookWaitPoint,
+        trace: HookOperationTrace | None,
+    ) -> int:
+        """Register a run about to be spawned as a task, and report it."""
+        key = self._add_execution(hook, waited_at=waited_at)
+        try:
+            await self._notify_change()
+        except asyncio.CancelledError:
+            if trace is not None:
+                trace.finished_soon(outcome=HookOutcome.CANCELLED)
+            # The cancelled report may have been stored already.
+            if self._executions.pop(key, None) is not None:
+                await self._notify_change()
+            raise
+        return key
+
+    def _mark_running(self, key: int) -> bool:
+        """Mark run *key* as holding a slot; False when the manager closed and cleared it."""
+        view = self._executions.get(key)
+        if view is None:
+            return False
+        self._executions[key] = replace(view, queued=False)
+        return True
+
+    async def _notify_change(self) -> None:
+        """Report the current runs; a failing subscriber never touches the hook."""
+        if self.on_change is None:
+            return
+        self._reported_runs = bool(self._executions)
+        try:
+            await self.on_change(self)
+        except Exception:
+            logger.exception("Hook execution change notification failed")
 
     def _open_trace(
         self,
@@ -325,6 +402,12 @@ class HookManager:
         )
         if close:
             self._closed = True
+            # The last word on this manager's runs: a manager replaced in the
+            # same session (working directory change) gets no idle or
+            # session-switch event that would clear what it reported.
+            self._executions.clear()
+            if self._reported_runs:
+                await self._notify_change()
 
     async def _drain(self, *, scopes: set[str], timeout: float | None) -> None:
         tracked = [t for t in self._inflight if t.scope in scopes]
@@ -352,15 +435,24 @@ class HookManager:
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.gather(*tasks, return_exceptions=True)
 
+        dropped = False
         for tracked_task in tracked:
             if not tracked_task.task.done():
                 continue
+            # A task cancelled before its first step (by this drain under
+            # ``shutdown_grace_seconds: 0``, or before it) never ran the body
+            # whose ``finally`` drops its snapshot entry: dropped here. A no-op
+            # for a task whose body ran.
+            if tracked_task.task.cancelled() and tracked_task.execution_key is not None:
+                dropped |= self._executions.pop(tracked_task.execution_key, None) is not None
             try:
                 tracked_task.task.result()
             except asyncio.CancelledError:
                 pass
             except Exception:
                 logger.exception("Hook task %r failed outside normal result handling", tracked_task.hook.id)
+        if dropped:
+            await self._notify_change()
 
         # Reap done tasks of these scopes, including hooks that completed
         # before this drain call started.
@@ -463,9 +555,35 @@ class HookManager:
 
     # ── internals ────────────────────────────────────────────────────
 
-    async def _run_blocking(self, hook: HookConfig, payload: dict[str, Any]) -> HookResult:
-        async with self._sem:
-            return await self._runner.run_and_wait(hook, payload)
+    async def _run_blocking(
+        self,
+        hook: HookConfig,
+        payload: dict[str, Any],
+        *,
+        waited_at: HookWaitPoint,
+    ) -> HookResult:
+        # Registered as queued before the slot is taken: probing the semaphore
+        # first would race other runs taking or releasing it.
+        key = self._add_execution(hook, waited_at=waited_at)
+        try:
+            await self._notify_change()
+            async with self._sem:
+                # Published while holding the slot: ``on_change`` must stay a
+                # quick store (the TUI defers its render), or it delays every
+                # run queued behind this one. A run that queued past the
+                # manager's close publishes nothing, as at its end.
+                if self._mark_running(key):
+                    await self._notify_change()
+                return await self._runner.run_and_wait(hook, payload)
+        finally:
+            # Every removal is reported, a cancelled run's too: the report
+            # runs on the run's own task and reads the set when it is stored,
+            # so the last stored snapshot stays the current one. A run ending
+            # after the manager closed (an undrained ``user_interrupt``
+            # observer) was already cleared and reported: publishing again
+            # would overwrite the snapshot of the manager that replaced this one.
+            if self._executions.pop(key, None) is not None:
+                await self._notify_change()
 
     async def _spawn_nonblocking(
         self,
@@ -525,10 +643,13 @@ class HookManager:
         # async / fire_and_forget — wrap in our internal task so we can
         # observe completion and move outbox entries.
         if hook.execution.mode == "async":
-            coro = self._run_async_tracked(hook, payload, job, trace)
+            # The drain of the run's scope waits on it; nobody waits on an interrupt observer.
+            waited_at: HookWaitPoint = "turn" if scope == "turn" else "session" if scope == "session" else "none"
+            key = await self._register_spawned(hook, waited_at, trace)
+            coro = self._run_async_tracked(hook, payload, job, trace, execution_key=key)
             task = asyncio.create_task(coro)
             operation_id = trace.operation_id if trace is not None and trace.start_committed else None
-            tracked = _Tracked(hook=hook, task=task, scope=scope, job=job, operation_id=operation_id)
+            tracked = _Tracked(hook=hook, task=task, scope=scope, job=job, operation_id=operation_id, execution_key=key)
             self._inflight.append(tracked)
             if scope == "detached":
                 task.add_done_callback(lambda _task, tracked=tracked: self._reap_background(tracked))
@@ -558,10 +679,14 @@ class HookManager:
                 await trace.finished(outcome=HookOutcome.DETACHED)
             return
 
-        coro = self._run_async_tracked(hook, payload, job, trace)
+        # Observed to its end like any other run, though nobody waits on it.
+        key = await self._register_spawned(hook, "none", trace)
+        coro = self._run_async_tracked(hook, payload, job, trace, execution_key=key)
         task = asyncio.create_task(coro)
         operation_id = trace.operation_id if trace is not None and trace.start_committed else None
-        tracked = _Tracked(hook=hook, task=task, scope="background", job=job, operation_id=operation_id)
+        tracked = _Tracked(
+            hook=hook, task=task, scope="background", job=job, operation_id=operation_id, execution_key=key
+        )
         self._inflight.append(tracked)
         task.add_done_callback(lambda _task, tracked=tracked: self._reap_background(tracked))
 
@@ -581,14 +706,35 @@ class HookManager:
         payload: dict[str, Any],
         job: OutboxJob | None,
         trace: HookOperationTrace | None = None,
+        *,
+        execution_key: int | None = None,
     ) -> HookResult:
         """Wrap ``runner.run_and_wait`` with outbox + semaphore + error logging."""
+        try:
+            return await self._run_async_tracked_inner(hook, payload, job, trace, execution_key)
+        finally:
+            # Reported however it ends, as for a blocking run; not after the
+            # manager closed first: ``background`` runs are not drained and may
+            # end long after the close.
+            if execution_key is not None and self._executions.pop(execution_key, None) is not None:
+                await self._notify_change()
+
+    async def _run_async_tracked_inner(
+        self,
+        hook: HookConfig,
+        payload: dict[str, Any],
+        job: OutboxJob | None,
+        trace: HookOperationTrace | None,
+        execution_key: int | None,
+    ) -> HookResult:
         try:
             # The slot is taken inside the ``try``: a hook cancelled while it
             # queues behind ``max_parallel_hooks`` others never ran, but its
             # span was opened before the task was created and only this
             # handler ever closes it.
             async with self._sem:
+                if execution_key is not None and self._mark_running(execution_key):
+                    await self._notify_change()
                 if job is not None:
                     self._outbox.mark_started(job)
                 result = await self._runner.run_and_wait(hook, payload)

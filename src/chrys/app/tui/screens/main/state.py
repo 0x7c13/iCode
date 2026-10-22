@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from chrys.foundation.events.types import (
         BackgroundTasksChanged,
         Error,
+        HookExecutionsChanged,
         InvocationContentDelta,
         InvocationContentFinished,
         InvocationMessage,
@@ -95,11 +96,26 @@ class RuntimeState:
     approval_mode: ApprovalMode = ApprovalMode.MANUAL
     background_tasks: BackgroundTasksChanged | None = None
     """The last list of the main agent's background commands; shown while its session is the current one."""
+    hook_snapshots: dict[str, HookExecutionsChanged] = field(default_factory=dict)
+    """The last snapshot of hook runs the user waits on, per session; the current session's shows.
+
+    Keyed by session so neither a closing session's late snapshot nor a new
+    session's early one (before it becomes current) displaces the other.
+    """
+    hook_render_pending: bool = False
+    """A render of the last snapshot is queued: later snapshots in the same pump only replace what it reads."""
     # Set when a Save inside the agent config modal renames the active profile.
     # The engine switch waits for the modal to close (``on_agent_config_result``):
     # switching sooner would tear down the live agent while the modal's panels
     # still reference the old profile object.
     pending_active_switch: str | None = None
+
+    def keep_hook_snapshot_of(self, session_id: str) -> bool:
+        """Forget every session's hook snapshot but *session_id*'s; return whether one was dropped."""
+        stale = [key for key in self.hook_snapshots if key != session_id]
+        for key in stale:
+            del self.hook_snapshots[key]
+        return bool(stale)
 
 
 @dataclass

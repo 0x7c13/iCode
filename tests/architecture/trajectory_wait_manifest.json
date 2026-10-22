@@ -773,6 +773,11 @@
         ["sync_primitive", "await self.prompt_admission_open.wait()", "unresolved"]
       ]
     },
+    "chrys.orchestration.engine.hook_reporting": {
+      "wire_hook_reporting._publish_executions": [
+        ["awaitable", "await bus.publish(HookExecutionsChanged(session_id=session_id, executions=source.executions()))", "unresolved"]
+      ]
+    },
     "chrys.orchestration.engine.loader": {
       "AgentLoader._cleanup_replaced_build_resources": [
         ["awaitable", "await old_prepared.aclose()", "unresolved"]
@@ -781,7 +786,7 @@
         ["wrapper", "await construction.build_agent(self._profile_with_mcp_overlay(profile), staged=staged, preserved_history=preserved_history, build_agent_fn=self._build_agent_fn, session=self._session, settings_handle=self._settings_handle, persistence=self._persistence, bus=self._bus, agent_registry=self._agent_registry, model_registry=self._model_registry, workspace_change_tracker=self._workspace_change_tracker, turn_state=self._turn_state, turn_context=self._turn_context, mcp_cache=self._mcp_cache, allow_user_interaction=self._allow_user_interaction, checkpoints=self._checkpoints, usage_publisher=self._usage_publisher, fire_pre_compact=self._hooks.fire_pre_compact, publish_load_progress=self.publish_load_progress, hold_injection_notification=self.hold_injection_notification)", "unresolved", "chrys.orchestration.engine.build.construction.build_agent"]
       ],
       "AgentLoader.build_hook_manager": [
-        ["awaitable", "await SessionHookFactory(self._bus)(project_root=project_root, project_hooks_enabled=project_hooks_enabled, session_id=session_id or self._session.session_id)", "unresolved"]
+        ["awaitable", "await SessionHookFactory(self._bus)(project_root=project_root, project_hooks_enabled=project_hooks_enabled, session_id=resolved_session_id)", "unresolved"]
       ],
       "AgentLoader.cancel_outbox_recovery": [
         ["future", "await task", "unresolved"]
@@ -3975,33 +3980,52 @@
         ["gather", "await asyncio.gather(*tasks, return_exceptions=True)", "unresolved"],
         ["timeout", "await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)", "unresolved"],
         ["gather", "asyncio.gather(*tasks, return_exceptions=True)", "unresolved"],
-        ["gather", "await asyncio.gather(*tasks, return_exceptions=True)", "unresolved"]
+        ["gather", "await asyncio.gather(*tasks, return_exceptions=True)", "unresolved"],
+        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"]
+      ],
+      "HookManager._notify_change": [
+        ["awaitable", "await self.on_change(self)", "unresolved"]
+      ],
+      "HookManager._register_spawned": [
+        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"],
+        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"]
       ],
       "HookManager._run_async_tracked": [
+        ["wrapper", "await self._run_async_tracked_inner(hook, payload, job, trace, execution_key)", "unresolved", "chrys.service.hooks.manager.HookManager._run_async_tracked_inner"],
+        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"]
+      ],
+      "HookManager._run_async_tracked_inner": [
         ["async_context", "async with self._sem", "unresolved"],
+        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"],
         ["awaitable", "await self._runner.run_and_wait(hook, payload)", "unresolved"],
         ["awaitable", "await trace.finished(outcome=HookOutcome.LAUNCH_ERROR)", "unresolved"],
         ["awaitable", "await trace.finished(outcome=_hook_outcome(result, blocked=False), exit_code=result.exit_code, timed_out=result.timed_out)", "unresolved"]
       ],
       "HookManager._run_blocking": [
+        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"],
         ["async_context", "async with self._sem", "unresolved"],
-        ["awaitable", "await self._runner.run_and_wait(hook, payload)", "unresolved"]
+        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"],
+        ["awaitable", "await self._runner.run_and_wait(hook, payload)", "unresolved"],
+        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"]
       ],
       "HookManager._spawn_nonblocking": [
         ["awaitable", "await trace.started(hook_id=hook.id, hook_event=str(hook.event), execution_mode=hook.execution.mode, detach=hook.execution.detach, delivery=hook.execution.delivery, scope=scope, drain_scope=drain_scope)", "unresolved"],
+        ["wrapper", "await self._register_spawned(hook, waited_at, trace)", "unresolved", "chrys.service.hooks.manager.HookManager._register_spawned"],
         ["awaitable", "await self._runner.spawn_detached(hook, payload, job=job)", "unresolved"],
         ["awaitable", "await trace.finished(outcome=HookOutcome.SPAWN_FAILED)", "unresolved"],
-        ["awaitable", "await trace.finished(outcome=HookOutcome.DETACHED)", "unresolved"]
+        ["awaitable", "await trace.finished(outcome=HookOutcome.DETACHED)", "unresolved"],
+        ["wrapper", "await self._register_spawned(hook, 'none', trace)", "unresolved", "chrys.service.hooks.manager.HookManager._register_spawned"]
       ],
       "HookManager.drain_session": [
-        ["wrapper", "await self._drain(scopes={'turn', 'session'}, timeout=self._file.settings.shutdown_grace_seconds)", "unresolved", "chrys.service.hooks.manager.HookManager._drain"]
+        ["wrapper", "await self._drain(scopes={'turn', 'session'}, timeout=self._file.settings.shutdown_grace_seconds)", "unresolved", "chrys.service.hooks.manager.HookManager._drain"],
+        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"]
       ],
       "HookManager.drain_turn": [
         ["wrapper", "await self._drain(scopes={'turn'}, timeout=None)", "unresolved", "chrys.service.hooks.manager.HookManager._drain"]
       ],
       "HookManager.fire": [
         ["awaitable", "await trace.started(hook_id=hook.id, hook_event=str(event), execution_mode=hook.execution.mode, detach=hook.execution.detach, delivery=hook.execution.delivery, scope=scope, drain_scope=scope)", "unresolved"],
-        ["wrapper", "await self._run_blocking(hook, envelope)", "unresolved", "chrys.service.hooks.manager.HookManager._run_blocking"],
+        ["wrapper", "await self._run_blocking(hook, envelope, waited_at='none' if scope == 'detached' else 'call')", "unresolved", "chrys.service.hooks.manager.HookManager._run_blocking"],
         ["awaitable", "await trace.finished(outcome=_hook_outcome(result, blocked=decision.blocked and (not blocked_before)), arguments_modified=decision.args_override != override_before, exit_code=result.exit_code, timed_out=result.timed_out)", "unresolved"],
         ["wrapper", "await self._spawn_nonblocking(hook, envelope, scope=scope, session_drain_generation=session_drain_generation, target_operation_id=target_operation_id)", "unresolved", "chrys.service.hooks.manager.HookManager._spawn_nonblocking"]
       ],

@@ -15,11 +15,11 @@ from chrys.app.tui.screens.sessions.presenter import (
     DEFAULT_SORT_REVERSE,
     build_session_rows,
     column_by_key,
-    elide_middle,
     format_tokens,
     row_cells,
     time_ago,
 )
+from chrys.app.tui.util.formatting import elide_middle
 from chrys.service.state.store import ChatSessionMeta, SessionMeta
 
 _BASE = datetime(2026, 6, 1, tzinfo=UTC)

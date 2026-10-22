@@ -169,6 +169,8 @@ For most hooks, choose an execution mode based on whether the current operation 
 
 An asynchronous hook (`async`) does not delay the event that triggered it or the current operation. When the current turn or session ends, if an applicable asynchronous hook is still running, iCode waits for it to finish before ending the turn or session. iCode does not wait for asynchronous hooks triggered by `user_interrupt`. The wait limit at session end is configurable in [Global settings](../../reference/hooks.md#global-settings). To retry unfinished tasks after iCode exits, also configure `delivery: durable`.
 
+In a chat, the bottom-right corner shows the hook that is running; select it to see the hooks iCode loaded.
+
 ## Use global hooks
 
 The examples above all live in `.chrys/hooks` in the current working directory and apply only to that working directory. To use the same hook across all working directories, use global configuration:
