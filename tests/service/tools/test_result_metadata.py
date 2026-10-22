@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from chrys.foundation.platform import script_commands
 from chrys.foundation.tool_result_metadata import (
     PROCESS_EXIT_CODE_METADATA_KEY,
     PROCESS_TIMEOUT_SECONDS_METADATA_KEY,
@@ -25,7 +26,6 @@ from chrys.kernel import AgentSession
 from chrys.service.context.compaction import UnifiedContextStrategy
 from chrys.service.context.providers.context_management import ContextManagementProvider
 from chrys.service.profiles.models.resolver import default_profile
-from chrys.service.skills import runner as runner_mod
 from chrys.service.skills.model import Skill, SkillScript
 from chrys.service.skills.provider import ChrysSkillsProvider
 from chrys.service.skills.runner import SubprocessScriptRunner
@@ -252,7 +252,7 @@ async def test_skill_script_runner_records_production_process_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     script_path = tmp_path / "fail.py"
     script_path.write_text("import sys\nprint('before exit')\nsys.exit(7)\n", encoding="utf-8")
     skill = Skill(

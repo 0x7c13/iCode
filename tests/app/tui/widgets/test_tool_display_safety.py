@@ -19,7 +19,7 @@ from chrys.app.tui.widgets.chat.renderers.skill import SkillToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard
 from chrys.app.tui.widgets.chat.tool_view_builders import ToolViewContent, build_code_view, build_params_view
 from chrys.foundation.models.session_env import SessionEnvironment
-from chrys.service.skills import runner as runner_module
+from chrys.foundation.platform import script_commands
 from chrys.service.skills.loader import load_file_skill
 from chrys.service.skills.model import Skill
 from chrys.service.skills.provider import ChrysSkillsProvider
@@ -128,7 +128,7 @@ async def test_real_file_outputs_are_literal_in_cards_and_details(
 
         # Execute the real script runner without resolving/downloading a new
         # interpreter; the test owns this process and its temporary input file.
-        monkeypatch.setattr(runner_module, "_find_python_runner", lambda: [sys.executable])
+        monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
         provider = ChrysSkillsProvider(load_skills, script_runner=SubprocessScriptRunner(timeout=10))
         await provider.initialize()
         if tool_name == "load_skill":

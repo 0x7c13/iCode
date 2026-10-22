@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Final, Literal
 
 import yaml
 
+from chrys.foundation.platform.runtime_paths import is_windows_store_python_stub
+from chrys.foundation.platform.script_commands import build_script_command
 from chrys.foundation.tool_kinds import TOOL_KINDS
 from chrys.service.hooks.events import GATED_EVENTS, TOOL_EVENTS
 from chrys.service.hooks.loader import (
@@ -43,7 +45,7 @@ from chrys.service.hooks.loader import (
     read_hooks_text,
     same_hooks_file,
 )
-from chrys.service.hooks.runner import TEMPLATE_VARIABLES, build_script_command
+from chrys.service.hooks.runner import TEMPLATE_VARIABLES
 from chrys.service.profiles.agents.loader import scan_profile_dir
 from chrys.service.profiles.agents.registry import BUILTIN_PROFILE_NAMES
 
@@ -366,7 +368,11 @@ def _check_program(check: _FileCheck, hook: HookConfig, entry: int | None) -> No
                 message += "; if run.path also holds arguments, put them in run.args"
             check.report("error", "script_missing", message, entry=entry, hook_id=hook.id)
             return
-        program = build_script_command(script)[0]
+        try:
+            program = build_script_command(script)[0]
+        except FileNotFoundError as error:
+            check.report("warning", "program_not_found", error.strerror or str(error), entry=entry, hook_id=hook.id)
+            return
         what = f"which runs {script.suffix} scripts" if script.suffix else "which runs this script"
         missing = f"{program!r}, {what}, was not found on PATH"
     elif run.type == "command":
@@ -388,8 +394,16 @@ def _check_program(check: _FileCheck, hook: HookConfig, entry: int | None) -> No
         return
     if _sets_path(run.env.keys()):
         return
-    if shutil.which(program) is None:
+    found = shutil.which(program)
+    if found is None:
         check.report("warning", "program_not_found", missing, entry=entry, hook_id=hook.id)
+    elif is_windows_store_python_stub(found):
+        # Script runs pass over it; a command is looked up by Windows, which takes it.
+        message = (
+            "on PATH, the program in run.argv[0] is only Windows' placeholder that offers Python from the Microsoft "
+            "Store; write the full path of an installed Python"
+        )
+        check.report("warning", "program_not_found", message, entry=entry, hook_id=hook.id)
 
 
 def _may_hold_arguments(target: str) -> bool:

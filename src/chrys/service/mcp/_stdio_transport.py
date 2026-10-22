@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import errno
 import inspect
 import io
 import json
 import logging
+import ntpath
 import os
 import shutil
 import subprocess
@@ -25,7 +27,13 @@ from typing import Any, TextIO, cast
 
 from chrys.foundation.i18n.formatting import sanitize_legacy_block, sanitize_legacy_scalar
 from chrys.foundation.platform.files import surrogate_safe_text
-from chrys.foundation.platform.runtime_paths import reorder_path_demoting_runtime, strip_python_runtime_overrides
+from chrys.foundation.platform.runtime_paths import (
+    is_windows_store_python_stub,
+    path_env_key,
+    reorder_path_demoting_runtime,
+    strip_python_runtime_overrides,
+    which_excluding_runtime,
+)
 from chrys.foundation.text.tool_output import process_carriage_returns, strip_ansi
 from chrys.service.mcp._tool_mixins import _NoPrePagePingMixin, _StructuredContentFallbackMixin
 from chrys.service.mcp.owned import MCPStdioTool
@@ -167,6 +175,36 @@ def _resolve_spawn_executable(command: str, env: Mapping[str, str]) -> str:
     except OSError, TypeError, ValueError:
         return command
     return found or command
+
+
+def _past_store_python_stub(
+    command: str, resolved: str, env: dict[str, str], cwd: str | os.PathLike[str] | None
+) -> str:
+    """*resolved*, the SDK's lookup of *command*, unless that is Windows' placeholder for a Python not installed.
+
+    The placeholder only offers Python from the Microsoft Store and exits 9009, so a match of the same name on the
+    PATH of the server's environment *env* is taken instead; with none, the server fails to start and says why.
+    """
+    if not is_windows_store_python_stub(resolved):
+        return resolved
+    alternative = "" if os.path.dirname(command) else which_excluding_runtime(command, env=_path_from(env, cwd))
+    if not alternative:
+        advice = "Write the full path of an installed Python, or put its folder on PATH"
+        if ntpath.splitext(ntpath.basename(command))[0].casefold() == "python3":
+            advice += "; python.org's traditional installer adds no python3, so write 'python' for its Python"
+        raise FileNotFoundError(
+            errno.ENOENT,
+            f"{command!r} starts only Windows' placeholder that offers Python from the Microsoft Store. {advice}.",
+        )
+    return alternative
+
+
+def _path_from(env: dict[str, str], cwd: str | os.PathLike[str] | None) -> dict[str, str]:
+    """*env* with each relative PATH entry read from *cwd*, the folder the server starts in, as the server reads it."""
+    key = path_env_key(env)
+    if cwd is None or key is None:
+        return env
+    return {**env, key: os.pathsep.join(os.path.join(cwd, entry) for entry in env[key].split(os.pathsep) if entry)}
 
 
 def _stderr_preview(stderr_tail: str, *, dropped_bytes: int) -> str:
@@ -357,8 +395,8 @@ async def tolerant_stdio_client(
     write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
 
     try:
-        command = _get_executable_command(server.command)
         env = _inherited_stdio_environment(server.env) if inherit_env else dict(server.env or {})
+        command = _past_store_python_stub(server.command, _get_executable_command(server.command), env, server.cwd)
         diagnostics.record_spawn(resolved_executable=_resolve_spawn_executable(command, env), cwd=server.cwd)
         # The SDK types ``errlog`` as ``TextIO`` but hands it straight to
         # ``anyio.open_process`` / ``subprocess.Popen(stderr=...)`` on every

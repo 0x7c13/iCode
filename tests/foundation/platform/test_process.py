@@ -275,6 +275,24 @@ def test_windows_application_resolution_uses_only_the_child_environment(
     assert relative == r"C:\ws\rel\tool.exe"
 
 
+def test_windows_application_resolution_passes_over_the_store_python_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    placeholder = r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\python3.EXE"
+    installed = r"C:\Python313\python3.EXE"
+    present = {placeholder, installed}
+    monkeypatch.setattr(os.path, "isfile", lambda candidate: candidate in present)
+    monkeypatch.setattr(process_mod, "is_windows_store_python_stub", lambda candidate: candidate == placeholder)
+    path = r"C:\Users\u\AppData\Local\Microsoft\WindowsApps;C:\Python313"
+
+    assert process_mod._windows_resolve_application("python3", {"PATH": path}, r"C:\ws") == installed
+
+    present.remove(installed)
+    assert process_mod._windows_resolve_application("python3", {"PATH": path}, r"C:\ws") == "python3"
+    # A path the profile names is used as given.
+    assert process_mod._windows_resolve_application(placeholder, {"PATH": path}, r"C:\ws") == placeholder
+
+
 def test_windows_application_resolution_never_consults_parent_drive_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -482,8 +500,13 @@ async def test_windows_managed_job_terminates_surviving_descendant(tmp_path) -> 
     await _assert_job_ends_the_sleeper(process, _test_kernel32())
 
 
-def _refuse_the_job_attribute(attempts: list[tuple[int, ...]], *, error: int) -> Any:
-    """A ``_windows_create_process`` that fails its first call with *error*, then creates for real."""
+def _refuse_the_job_attribute(
+    attempts: list[tuple[int, ...]], *, error: int, refused_jobs: list[int] | None = None
+) -> Any:
+    """A ``_windows_create_process`` that fails its first call with *error*, then creates for real.
+
+    *refused_jobs* collects the job the refused call named.
+    """
     real_create = process_mod._windows_create_process
 
     def create(
@@ -500,6 +523,12 @@ def _refuse_the_job_attribute(attempts: list[tuple[int, ...]], *, error: int) ->
     ) -> int | None:
         attempts.append(tuple(attribute for attribute, _value, _failure in attributes))
         if len(attempts) == 1:
+            if refused_jobs is not None:
+                refused_jobs.extend(
+                    int(value[0])
+                    for attribute, value, _failure in attributes
+                    if attribute == process_mod._PROC_THREAD_ATTRIBUTE_JOB_LIST
+                )
             return error
         return real_create(
             api,
@@ -529,14 +558,25 @@ async def test_windows_child_refused_the_job_attribute_runs_only_once_its_job_ho
     spawn_api = process_mod._windows_process_api()
     real_assign = spawn_api.kernel32.AssignProcessToJobObject
     real_resume = spawn_api.kernel32.ResumeThread
+    real_close = process_mod._close_windows_handle
     attempts: list[tuple[int, ...]] = []
+    refused_jobs: list[int] = []
+    closed: list[int | None] = []
     assigned: list[tuple[int, int]] = []
     held_at_resume: list[bool] = []
     suspend_counts: list[int] = []
 
     def assign(job: int, process: int) -> int:
         assigned.append((job, process))
+        if job in refused_jobs:
+            # As Windows does: the job the refused attempt named takes no process either.
+            ctypes.set_last_error(process_mod._ERROR_ACCESS_DENIED)
+            return 0
         return real_assign(job, process)
+
+    def close(handle: int | None) -> None:
+        closed.append(handle)
+        real_close(handle)
 
     def resume(thread: int) -> int:
         job, process = assigned[-1]
@@ -550,8 +590,9 @@ async def test_windows_child_refused_the_job_attribute_runs_only_once_its_job_ho
     monkeypatch.setattr(
         process_mod,
         "_windows_create_process",
-        _refuse_the_job_attribute(attempts, error=process_mod._ERROR_ACCESS_DENIED),
+        _refuse_the_job_attribute(attempts, error=process_mod._ERROR_ACCESS_DENIED, refused_jobs=refused_jobs),
     )
+    monkeypatch.setattr(process_mod, "_close_windows_handle", close)
     monkeypatch.setattr(spawn_api.kernel32, "AssignProcessToJobObject", assign)
     monkeypatch.setattr(spawn_api.kernel32, "ResumeThread", resume)
     process = await spawn_managed_stdio_process(
@@ -562,11 +603,51 @@ async def test_windows_child_refused_the_job_attribute_runs_only_once_its_job_ho
         env=dict(os.environ),
         limit=64 * 1024,
     )
+    closed_by_spawn = list(closed)
     await _assert_job_ends_the_sleeper(process, kernel32)
 
     assert attempts == [_JOB_AND_HANDLES, (process_mod._PROC_THREAD_ATTRIBUTE_HANDLE_LIST,)]
+    # The child went to a job of its own (the refused one would not take it), and the refused one was closed.
+    assert closed_by_spawn == refused_jobs
     assert held_at_resume == [True]
     assert suspend_counts == [1]  # it had not run: created suspended, resumed once its job held it
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Objects only")
+async def test_windows_fallback_that_cannot_make_its_job_closes_the_refused_one_once(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_create_job = process_mod._windows_create_job
+    real_close = process_mod._close_windows_handle
+    made: list[int] = []
+    closed: list[int | None] = []
+
+    def create_job(api: Any) -> int:
+        if made:
+            raise OSError(process_mod._ERROR_ACCESS_DENIED, "Unable to create a Windows Job Object.")
+        made.append(real_create_job(api))
+        return made[-1]
+
+    def close(handle: int | None) -> None:
+        closed.append(handle)
+        real_close(handle)
+
+    monkeypatch.setattr(
+        process_mod,
+        "_windows_create_process",
+        _refuse_the_job_attribute([], error=process_mod._ERROR_ACCESS_DENIED),
+    )
+    monkeypatch.setattr(process_mod, "_windows_create_job", create_job)
+    monkeypatch.setattr(process_mod, "_close_windows_handle", close)
+
+    with pytest.raises(OSError, match="Unable to create a Windows Job Object"):
+        await spawn_managed_stdio_process(
+            sys.executable, "-c", "pass", cwd=str(tmp_path), env=dict(os.environ), limit=64 * 1024
+        )
+
+    # Closed by the failure, not before it as well: its value may name another handle by then.
+    [refused_job] = made
+    assert closed.count(refused_job) == 1
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows process creation only")

@@ -8,7 +8,7 @@ import contextlib
 import sys
 from typing import TYPE_CHECKING
 
-from chrys.service.skills import runner as runner_mod
+from chrys.foundation.platform import script_commands
 from chrys.service.skills.model import Skill, SkillScript
 from chrys.service.skills.runner import SubprocessScriptRunner
 from chrys.service.tools.builtins.shell_filter import ShellCommandFilter, is_safe_readonly_command, parse_commands
@@ -79,7 +79,7 @@ async def test_skill_runner_prepends_positional_arguments_before_keyword_flags(
         yield ExitedProcess(b"ok\n")
 
     monkeypatch.setattr("chrys.service.skills.runner.managed_subprocess", fake_managed_subprocess)
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
 
     result = await SubprocessScriptRunner()(skill, script, args={"mode": "fast"}, arguments=["input.txt"])
 

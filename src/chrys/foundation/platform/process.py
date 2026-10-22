@@ -28,6 +28,7 @@ from typing import Any, Never, cast
 
 from chrys.foundation.platform.c_api import declare_functions, struct_fields
 from chrys.foundation.platform.child_reap import install_stopped_child_reap_fix
+from chrys.foundation.platform.runtime_paths import is_windows_store_python_stub
 from chrys.foundation.text.encoding import decode_bytes, is_mostly_text
 
 # Every subprocess in the app is spawned through this module, and the shim has to
@@ -622,7 +623,7 @@ def _windows_resolve_application(command: str, env: dict[str, str], cwd: str) ->
         base = ntpath.join(directory, command)
         candidates = (base,) if has_extension else tuple(base + extension for extension in extensions)
         for candidate in candidates:
-            if os.path.isfile(candidate):
+            if os.path.isfile(candidate) and not is_windows_store_python_stub(candidate):
                 return ntpath.normpath(candidate)
     # Unresolved bare names are returned as-is so the spawn path fails closed
     # with a deterministic not-found error instead of searching implicit
@@ -841,7 +842,11 @@ async def _spawn_windows_managed_stdio_process(
         suspended = error == _ERROR_ACCESS_DENIED
         if suspended:
             # Windows refuses the job attribute for a packaged (MSIX) executable, such as PowerShell
-            # installed from the Store: that child is created suspended and runs once the job holds it.
+            # installed from the Store: that child is created suspended and runs once a job holds it.
+            # The job the refused attempt named refuses the child too, so the child gets a new one;
+            # it is made before the old one closes, so a failure leaves one live handle to close.
+            refused_job, job_handle = job_handle, _windows_create_job(api)
+            _close_windows_handle(refused_job)
             error = create(flags=creation_flags | _CREATE_SUSPENDED, attributes=(handle_attribute,))
         if error is not None:
             raise OSError(error, "Unable to create the Windows subprocess.", None, error)

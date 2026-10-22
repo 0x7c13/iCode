@@ -651,6 +651,98 @@ async def test_tolerant_stdio_client_resolves_bare_command_against_child_path(tm
     assert spawn.await_args.kwargs["command"] == "uv"
 
 
+_STORE_PYTHON_PLACEHOLDER = r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\python3.exe"
+
+
+@pytest.mark.parametrize(
+    ("command", "later_match", "spawned"),
+    [
+        ("python3", r"C:\Python313\python3.exe", r"C:\Python313\python3.exe"),
+        ("python3", "", None),
+        ("python", "", None),
+    ],
+    ids=["later_match", "none", "none_for_python"],
+)
+async def test_tolerant_stdio_client_passes_over_the_store_python_placeholder(
+    monkeypatch: pytest.MonkeyPatch, command: str, later_match: str, spawned: str | None
+) -> None:
+    import mcp.client.stdio as stdio
+    from mcp.client.stdio import StdioServerParameters
+
+    import chrys.service.mcp._stdio_transport as transport
+
+    monkeypatch.setattr(transport, "is_windows_store_python_stub", lambda path: path == _STORE_PYTHON_PLACEHOLDER)
+    looked_up: list[tuple[str, str]] = []
+
+    def which(name: str, *, env: dict[str, str]) -> str:
+        looked_up.append((name, env["PATH"]))
+        return later_match
+
+    monkeypatch.setattr(transport, "which_excluding_runtime", which)
+    # The server's own PATH, a virtualenv say, is where its Python is looked for, not Chrys' PATH.
+    monkeypatch.setenv("PATH", r"C:\parent")
+    spawn = AsyncMock(return_value=_FakeProcess([]))
+    params = StdioServerParameters(command=command, args=["server.py"], env={"PATH": r"C:\venv\Scripts"})
+
+    with (
+        patch.object(stdio, "_get_executable_command", side_effect=lambda cmd: _STORE_PYTHON_PLACEHOLDER),
+        patch.object(stdio, "_create_platform_compatible_process", new=spawn),
+    ):
+        if spawned is None:
+            with pytest.raises(FileNotFoundError) as raised:
+                async with tolerant_stdio_client(params, inherit_env=False):
+                    pass
+            spawn.assert_not_awaited()
+            message = raised.value.strerror or ""
+            assert message.startswith(f"{command!r} starts only Windows' placeholder that offers Python")
+            # Only a python3 is told to write python instead.
+            assert ("write 'python'" in message) is (command == "python3")
+        else:
+            async with tolerant_stdio_client(params, inherit_env=False):
+                pass
+            assert spawn.await_args is not None
+            assert spawn.await_args.kwargs["command"] == spawned
+    assert looked_up == [(command, r"C:\venv\Scripts")]
+
+
+def test_a_named_store_python_placeholder_is_not_swapped_for_another_python(monkeypatch: pytest.MonkeyPatch) -> None:
+    import chrys.service.mcp._stdio_transport as transport
+
+    # Forward slashes make it a path on every host, as both separators are on Windows.
+    named = _STORE_PYTHON_PLACEHOLDER.replace("\\", "/")
+    monkeypatch.setattr(transport, "is_windows_store_python_stub", lambda path: path == named)
+    monkeypatch.setattr(transport, "which_excluding_runtime", lambda name, *, env: r"C:\Python313\python3.exe")
+    env = {"PATH": r"C:\Python313"}
+
+    with pytest.raises(FileNotFoundError, match="placeholder"):
+        transport._past_store_python_stub(named, named, env, None)
+    assert transport._past_store_python_stub("uv", r"C:\tools\uv.exe", env, None) == r"C:\tools\uv.exe"
+
+
+def test_the_store_python_placeholder_gives_way_to_a_python_on_paths_relative_to_the_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import chrys.service.mcp._stdio_transport as transport
+
+    project = tmp_path / "project"
+    searched: list[str] = []
+
+    def which(name: str, *, env: dict[str, str]) -> str:
+        searched.append(env["PATH"])
+        return str(project / "venv" / "bin" / name)
+
+    monkeypatch.setattr(transport, "is_windows_store_python_stub", lambda path: path == _STORE_PYTHON_PLACEHOLDER)
+    monkeypatch.setattr(transport, "which_excluding_runtime", which)
+    env = {"PATH": os.pathsep.join(["venv/bin", str(tmp_path / "global"), ""]), "OTHER": "1"}
+
+    transport._past_store_python_stub("python3", _STORE_PYTHON_PLACEHOLDER, env, project)
+    transport._past_store_python_stub("python3", _STORE_PYTHON_PLACEHOLDER, env, None)
+
+    # Read from the server's folder, not the one Chrys was started in; without a folder, as given.
+    assert searched == [os.pathsep.join([os.path.join(project, "venv/bin"), str(tmp_path / "global")]), env["PATH"]]
+    assert env["PATH"] == os.pathsep.join(["venv/bin", str(tmp_path / "global"), ""])
+
+
 async def test_tolerant_stdio_client_records_configured_cwd(tmp_path: Path) -> None:
     from mcp.client.stdio import StdioServerParameters
 

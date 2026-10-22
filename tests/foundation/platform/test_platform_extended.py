@@ -163,6 +163,43 @@ def test_detect_git_bash_version_probes_never_inherit_the_process_stdin(monkeypa
     assert all(call["stdin"] is subprocess.DEVNULL for call in calls)
 
 
+def test_detect_git_bash_passes_over_wsl_under_a_user_name_holding_git(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Store WSL's ``bash`` alias in the WindowsApps of a user named like "digit" is neither probed nor taken."""
+    import chrys.foundation.platform as platform_mod
+
+    alias = r"C:\Users\digit\AppData\Local\Microsoft\WindowsApps\bash.exe"
+    monkeypatch.setattr(platform_mod, "windows_program_files_dirs", lambda: ())
+    monkeypatch.setattr(platform_mod.shutil, "which", lambda name: alias if name == "bash" else None)
+    monkeypatch.setattr(platform_mod, "is_app_execution_alias", lambda path: path == alias)
+    calls = _capture_subprocess_runs(monkeypatch, stdout="GNU bash, version 5.2\n")
+
+    assert platform_mod._detect_git_bash() is None
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("path", "is_wsl"),
+    [
+        (r"D:\Win\System32\bash.exe", True),
+        (r"d:\WIN\system32\..\System32\BASH.EXE", True),
+        (r"C:\Windows\System32\bash.exe", False),
+        (r"D:\Win\System32\wsl.exe", False),
+        (r"C:\Program Files\Git\bin\bash.exe", False),
+        (r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\bash.exe", True),
+    ],
+    ids=["launcher", "launcher_spelled_otherwise", "other_windows_dir", "other_program", "git_bash", "store_alias"],
+)
+def test_wsl_bash_is_the_system_launcher_or_a_packaged_alias(
+    monkeypatch: pytest.MonkeyPatch, path: str, is_wsl: bool
+) -> None:
+    import chrys.foundation.platform as platform_mod
+
+    monkeypatch.setenv("SYSTEMROOT", r"D:\Win")
+    monkeypatch.setattr(platform_mod, "is_app_execution_alias", lambda candidate: "WindowsApps" in candidate)
+
+    assert platform_mod.is_wsl_bash(path) is is_wsl
+
+
 def test_detect_unix_shell_uses_absolute_fallback_for_stale_shell_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """A stale ``$SHELL`` should not be reused when bash exists at ``/bin/bash``."""
     import chrys.foundation.platform as platform_mod

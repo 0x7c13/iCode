@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import functools
+import ntpath
 import os
 import platform
 import shutil
@@ -21,6 +22,7 @@ from typing import Any, cast
 
 from chrys.foundation.platform.c_api import declare_functions
 from chrys.foundation.platform.paths import real_path
+from chrys.foundation.platform.runtime_paths import is_app_execution_alias
 
 
 @dataclass(frozen=True)
@@ -476,11 +478,22 @@ def windows_program_files_dirs() -> tuple[str, ...]:
     return tuple(dirs)
 
 
+def is_wsl_bash(path: str) -> bool:
+    """Whether *path* is a Windows ``bash`` that starts WSL, which runs a script inside Linux.
+
+    System32's ``bash.exe`` is WSL's launcher, and a ``bash`` behind an App Execution Alias is a packaged (Store)
+    WSL's: Git, MSYS2 and Cygwin are never packaged.
+    """
+    system32_bash = ntpath.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "bash.exe")
+    return ntpath.normcase(ntpath.normpath(path)) == ntpath.normcase(system32_bash) or is_app_execution_alias(path)
+
+
 def _detect_git_bash() -> ShellInfo | None:
     """Detect Git Bash on Windows.
 
     Searches common Git for Windows install paths and PATH.  WSL bash is
-    excluded by checking that the resolved path contains "Git".
+    excluded by checking that the resolved path contains "Git" and is not
+    WSL's (a user name can contain "git").
     """
     import contextlib
     import subprocess
@@ -496,7 +509,7 @@ def _detect_git_bash() -> ShellInfo | None:
 
     # Check PATH — only accept if path looks like Git Bash (not WSL)
     which_bash = shutil.which("bash")
-    if which_bash and "git" in which_bash.lower():
+    if which_bash and "git" in which_bash.lower() and not is_wsl_bash(which_bash):
         candidates.append(which_bash)
 
     if not candidates:

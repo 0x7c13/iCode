@@ -8,21 +8,42 @@ causing child shells and subprocess tools to resolve ``python`` / ``uv`` to
 Chrys's private runtime instead of the user's system install.  These helpers
 demote those runtime directories only for packaged runs while preserving them
 as a fallback.
+
+On Windows the lookups also pass over the ``python`` / ``python3`` that Windows
+itself puts on PATH while no Python is installed (see
+:func:`is_windows_store_python_stub`).
 """
 
 from __future__ import annotations
 
+import ctypes
+import ntpath
 import os
 import shutil
+import struct
 import sys
 import sysconfig
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Iterator, Mapping, MutableMapping
+from ctypes import wintypes
+from functools import cache
 from pathlib import Path
+from typing import Any, cast
+
+from chrys.foundation.platform.c_api import declare_functions
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _WINDOWS_DEFAULT_PATHEXT = (".COM", ".EXE", ".BAT", ".CMD")
 _PYTHON_HOME_OVERRIDE_KEYS = frozenset({"PYTHONHOME"})
 _PYTHON_RUNTIME_OVERRIDE_KEYS = frozenset({"PYTHONHOME", "PYTHONPATH"})
+_STORE_PYTHON_REDIRECTOR = "appinstallerpythonredirector.exe"
+_IO_REPARSE_TAG_APPEXECLINK = 0x8000001B
+_FSCTL_GET_REPARSE_POINT = 0x000900A8
+_MAXIMUM_REPARSE_DATA_BUFFER_SIZE = 16 * 1024
+_FILE_SHARE_READ_WRITE_DELETE = 0x00000007
+_OPEN_EXISTING = 3
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
 
 
 def is_frozen_runtime(env: Mapping[str, str] | None = None) -> bool:
@@ -165,7 +186,8 @@ def which_excluding_runtime(
     source = os.environ if env is None else env
     key = path_env_key(source)
     if key is None:
-        return normalize_path(shutil.which(name) or "") if env is None else ""
+        found = normalize_path(shutil.which(name) or "") if env is None else ""
+        return "" if not found or is_windows_store_python_stub(found) else found
 
     entries = _path_entries(source[key])
     if not entries:
@@ -181,6 +203,126 @@ def which_excluding_runtime(
     if found or not fallback_to_runtime:
         return found
     return _which_on_path_entries(name, entries, env=source, exclude_paths=exclude_paths)
+
+
+def path_matches(name: str) -> Iterator[str]:
+    """Every program *name* resolves to on this process's PATH, in search order, each looked up only once reached."""
+    key = path_env_key(os.environ)
+    if key is None:
+        found = which_excluding_runtime(name)
+        return iter([found] if found else [])
+    return _path_matches_on_entries(name, _path_entries(os.environ[key]), env=os.environ)
+
+
+def is_windows_store_python_stub(path: str) -> bool:
+    """Whether *path* is what Windows puts on PATH as ``python`` / ``python3`` while no Python is installed.
+
+    That App Execution Alias runs App Installer's redirector, which only says where to get Python from the Microsoft
+    Store and exits 9009. The alias of a Python actually installed from the Store starts that Python, and is kept.
+    """
+    return sys.platform == "win32" and _names_store_python_redirector(_app_execution_alias_data(path))
+
+
+def is_app_execution_alias(path: str) -> bool:
+    """Whether *path* is a Windows App Execution Alias: the empty file through which a packaged app is started."""
+    if sys.platform != "win32":
+        return False
+    try:
+        return os.lstat(path).st_reparse_tag == _IO_REPARSE_TAG_APPEXECLINK
+    except OSError:
+        return False
+
+
+def _app_execution_alias_data(path: str) -> bytes:
+    """The reparse data of the App Execution Alias at *path*; ``b""`` for anything else."""
+    # Only an alias is opened: an ordinary program costs one lstat.
+    return _read_reparse_point(path) if is_app_execution_alias(path) else b""
+
+
+def _read_reparse_point(path: str) -> bytes:
+    """The REPARSE_DATA_BUFFER of *path* itself, not of what it names; ``b""`` when it cannot be read."""
+    if sys.platform != "win32":
+        return b""
+    kernel32 = _windows_kernel32()
+    handle = kernel32.CreateFileW(
+        path,
+        0,
+        _FILE_SHARE_READ_WRITE_DELETE,
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS,
+        None,
+    )
+    if handle == _INVALID_HANDLE_VALUE:
+        return b""
+    try:
+        buffer = ctypes.create_string_buffer(_MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
+        returned = wintypes.DWORD()
+        if not kernel32.DeviceIoControl(
+            handle, _FSCTL_GET_REPARSE_POINT, None, 0, buffer, len(buffer), ctypes.byref(returned), None
+        ):
+            return b""
+        return buffer.raw[: returned.value]
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@cache
+def _windows_kernel32() -> Any:
+    """The kernel32 calls that read a reparse point."""
+    kernel32 = cast(Any, ctypes).WinDLL("kernel32", use_last_error=True)
+    declare_functions(
+        kernel32,
+        {
+            "CreateFileW": (
+                wintypes.HANDLE,
+                [
+                    wintypes.LPCWSTR,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.LPVOID,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.HANDLE,
+                ],
+            ),
+            "DeviceIoControl": (
+                wintypes.BOOL,
+                [
+                    wintypes.HANDLE,
+                    wintypes.DWORD,
+                    wintypes.LPVOID,
+                    wintypes.DWORD,
+                    wintypes.LPVOID,
+                    wintypes.DWORD,
+                    ctypes.POINTER(wintypes.DWORD),
+                    wintypes.LPVOID,
+                ],
+            ),
+            "CloseHandle": (wintypes.BOOL, [wintypes.HANDLE]),
+        },
+    )
+    return kernel32
+
+
+def _names_store_python_redirector(reparse: bytes) -> bool:
+    """Whether *reparse*, a REPARSE_DATA_BUFFER, is an alias that runs App Installer's Python redirector.
+
+    An alias's data is undocumented: a four-byte prefix, then NUL-terminated UTF-16 strings (its package, its app, the
+    program it starts, ...). Data of any other shape is not taken for the redirector.
+    """
+    if len(reparse) < 8:
+        return False
+    tag, length = struct.unpack_from("<IH", reparse)
+    payload = reparse[8 : 8 + length]
+    if tag != _IO_REPARSE_TAG_APPEXECLINK or len(payload) != length or length < 4 or length % 2:
+        return False
+    try:
+        text = payload[4:].decode("utf-16-le")
+    except UnicodeDecodeError:
+        return False
+    # What follows the last NUL, if anything, is no complete string.
+    return any(ntpath.basename(value).casefold() == _STORE_PYTHON_REDIRECTOR for value in text.split("\0")[:-1])
 
 
 def _append_unique_path(paths: list[str], new_path: str | os.PathLike[str]) -> None:
@@ -219,6 +361,16 @@ def _which_on_path_entries(
     env: Mapping[str, str],
     exclude_paths: tuple[str, ...],
 ) -> str:
+    return next(_path_matches_on_entries(name, entries, env=env, exclude_paths=exclude_paths), "")
+
+
+def _path_matches_on_entries(
+    name: str,
+    entries: list[str],
+    *,
+    env: Mapping[str, str],
+    exclude_paths: tuple[str, ...] = (),
+) -> Iterator[str]:
     for raw_dir in entries:
         directory = normalize_path(raw_dir)
         if not directory:
@@ -228,8 +380,7 @@ def _which_on_path_entries(
             continue
         if any(same_path(path, excluded_path) for excluded_path in exclude_paths if excluded_path):
             continue
-        return path
-    return ""
+        yield path
 
 
 def _which_in_directory(name: str, directory: str, *, env: Mapping[str, str]) -> str:
@@ -239,7 +390,7 @@ def _which_in_directory(name: str, directory: str, *, env: Mapping[str, str]) ->
     directory_entries = _windows_directory_entries(Path(directory))
     for candidate_name in _windows_candidate_names(name, env):
         path = directory_entries.get(candidate_name.casefold()) or normalize_path(Path(directory) / candidate_name)
-        if _access_check(path):
+        if _access_check(path) and not is_windows_store_python_stub(path):
             return path
     return ""
 

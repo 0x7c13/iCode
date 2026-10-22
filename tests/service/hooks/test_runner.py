@@ -13,6 +13,7 @@ smoke test that just confirms detached launch doesn't raise.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import os
@@ -24,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from chrys.foundation.platform import process as process_mod
-from chrys.foundation.platform import runtime_paths
+from chrys.foundation.platform import runtime_paths, script_commands
 from chrys.service.hooks import runner as runner_mod
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.loader import load_hooks_project
@@ -43,13 +44,6 @@ def runner(tmp_path: Path) -> HookRunner:
 def _exe(path: Path) -> Path:
     if sys.platform == "win32" and not path.suffix:
         return path.with_name(path.name + ".exe")
-    return path
-
-
-def _make_executable(path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("", encoding="utf-8")
-    path.chmod(0o755)
     return path
 
 
@@ -89,50 +83,6 @@ def _process_state(pid: int) -> str | None:
     )
     state = result.stdout.strip()
     return state[:1] if state else None
-
-
-def test_find_python_runner_prefers_system_uv_when_frozen(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_bin = tmp_path / "runtime" / "bin"
-    system_bin = tmp_path / "system" / "bin"
-    _make_executable(_exe(runtime_bin / "uv"))
-    system_uv = _make_executable(_exe(system_bin / "uv"))
-    _patch_runtime(
-        monkeypatch,
-        python=_exe(runtime_bin / "python"),
-        prefix=tmp_path / "runtime",
-        scripts=runtime_bin,
-    )
-    if sys.platform == "win32":
-        monkeypatch.setenv("PATHEXT", ".exe")
-    monkeypatch.setenv("PYAPP", "1")
-    monkeypatch.setenv("PATH", os.pathsep.join([str(runtime_bin), str(system_bin)]))
-
-    assert runner_mod._find_python_runner() == [str(system_uv), "run"]
-
-
-def test_find_python_runner_prefers_system_python_over_runtime_uv_when_frozen(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_bin = tmp_path / "runtime" / "bin"
-    system_bin = tmp_path / "system" / "bin"
-    _make_executable(_exe(runtime_bin / "uv"))
-    system_python = _make_executable(_exe(system_bin / "python"))
-    _patch_runtime(
-        monkeypatch,
-        python=_exe(runtime_bin / "python"),
-        prefix=tmp_path / "runtime",
-        scripts=runtime_bin,
-    )
-    if sys.platform == "win32":
-        monkeypatch.setenv("PATHEXT", ".exe")
-    monkeypatch.setenv("PYAPP", "1")
-    monkeypatch.setenv("PATH", os.pathsep.join([str(runtime_bin), str(system_bin)]))
-
-    assert runner_mod._find_python_runner() == [str(system_python)]
 
 
 def test_command_invocation_demotes_runtime_path_when_frozen(
@@ -476,7 +426,6 @@ async def test_extra_env_passed_through(runner: HookRunner) -> None:
 
 @pytest.mark.asyncio
 async def test_script_path_resolves_relative_to_hooks_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import chrys.service.hooks.runner as runner_mod
 
     hooks_dir = tmp_path / "hooks"
     scripts_dir = hooks_dir / "scripts"
@@ -492,7 +441,7 @@ async def test_script_path_resolves_relative_to_hooks_dir(tmp_path: Path, monkey
         execution=HookExecution(mode="blocking", timeout_seconds=5),
         match=HookMatch(),
     )
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     result = await runner.run_and_wait(hook, {})
     assert result.exit_code == 0
     assert "from-script" in result.stdout
@@ -530,7 +479,7 @@ hooks:
     hook = file.hooks[0]
     runner = HookRunner(hooks_dir=config_hooks_dir)
 
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     result = await runner.run_and_wait(hook, {})
 
     assert result.exit_code == 0
@@ -726,3 +675,29 @@ def test_detached_invocation_json_strips_inherited_python_runtime_overrides(
         invocation_path.unlink(missing_ok=True)
         invocation.result_path.unlink(missing_ok=True)
         invocation.payload_path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_a_shell_script_hook_with_no_bash_fails_without_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_bash() -> str:
+        raise FileNotFoundError(errno.ENOENT, script_commands._NO_WINDOWS_BASH)
+
+    hooks_dir = tmp_path / "hooks"
+    (hooks_dir / "scripts").mkdir(parents=True)
+    (hooks_dir / "scripts" / "notify.sh").write_text("echo 1\n", encoding="utf-8")
+    monkeypatch.setattr(script_commands, "_find_bash", no_bash)
+    hook = HookConfig(
+        id="s",
+        event=HookEvent.SESSION_START,
+        run=HookRun(type="script", path="scripts/notify.sh"),
+        execution=HookExecution(mode="blocking", timeout_seconds=5),
+        match=HookMatch(),
+    )
+
+    result = await HookRunner(hooks_dir=hooks_dir).run_and_wait(hook, {})
+
+    assert result.exit_code is None
+    assert script_commands._NO_WINDOWS_BASH in result.stderr

@@ -38,7 +38,7 @@ HTTP 重定向必须保持请求方法不变，并且目标与原地址同源（
 ### 使用 STDIO 连接
 
 1. 将“传输方式”设为 `STDIO`。
-2. 在“命令”中填写用于启动服务器的程序名称或路径以及所需参数。TUI 会将这行内容拆分并分别保存到智能体 YAML 的 `command` 和 `args` 字段；手工编辑 YAML 时，应将可执行文件写入 `command`，将参数逐项写入 `args`。
+2. 在“命令”中填写用于启动服务器的程序名称或路径以及所需参数。TUI 会将这行内容拆分并分别保存到智能体 YAML 的 `command` 和 `args` 字段；手工编辑 YAML 时，应将可执行文件写入 `command`，将参数逐项写入 `args`。在 Windows 上，如果 `command` 是 `python` 或 `python3`，iCode 会跳过只提示从 Microsoft Store 获取 Python 的占位程序，改用 `PATH` 中下一个同名程序。python.org 的传统安装程序不提供 `python3`，并且只有在安装时选择了加入 `PATH`，`python` 才会在 `PATH` 中；否则请填写其 `python.exe` 的完整路径。
 3. 按需添加该进程需要的环境变量。变量值可以直接填写，也可以用 `{{ENV_VAR}}` 引用启动 iCode 前已经设置的环境变量。
 
 STDIO 连接会在本机启动指定程序。如果启动命令会下载或运行第三方软件包或脚本，应先确认其来源可信并检查相关内容。
