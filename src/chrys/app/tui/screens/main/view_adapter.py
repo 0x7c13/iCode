@@ -437,6 +437,9 @@ class MainScreenViewAdapter:
     def set_hook_executions(self, executions: tuple[HookExecutionView, ...]) -> None:
         self._screen.query_one(HookIndicator).set_executions(executions)
 
+    def hook_runs_changed(self) -> None:
+        self._screen.query_one(SidebarPanel).hooks_panel.runs_changed()
+
     def set_background_tasks(self, tasks: tuple[BackgroundTaskView, ...]) -> None:
         self._screen.background_tasks_state = tasks
         running = sum(task.running for task in tasks)

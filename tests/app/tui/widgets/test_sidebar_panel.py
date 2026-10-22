@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import pytest
 from rich.cells import cell_len
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
+from textual.widget import Widget
 from textual.widgets import Static, Tab, TabbedContent, Tabs
 
 from chrys.app.tui import i18n as tui_i18n
@@ -19,7 +21,7 @@ from chrys.app.tui.widgets.sidebar.tasks import TodoListState
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.models.todos import TodoItem
 from tests.support.buddies import a_buddy
-from tests.support.waiting import wait_for
+from tests.support.waiting import wait_for, wait_until
 
 
 class SidebarSizingApp(App):
@@ -119,7 +121,7 @@ async def test_sidebar_relabels_tabs_and_current_child_chrome_in_place(monkeypat
         tabs_widget = sidebar.query_one(TabbedContent).query_one(Tabs)
         tabs_before = tuple(tabs_widget.query(Tab).results(Tab))
         assert sidebar in controller._surfaces
-        assert _tab_labels(sidebar) == ["Messages", "Tasks", "Context", "Debug", "Buddy"]
+        assert _tab_labels(sidebar) == ["Messages", "Tasks", "Context", "Hooks", "Debug", "Buddy"]
         assert str(sidebar.debug_panel.query_one(".debug-title", Static).render()) == "Event Stream"
 
         sidebar.todo_state = TodoListState(items=(TodoItem(content="done", status="completed"),))
@@ -142,7 +144,7 @@ async def test_sidebar_relabels_tabs_and_current_child_chrome_in_place(monkeypat
         assert controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
         tabs_after = tuple(tabs_widget.query(Tab).results(Tab))
         assert tabs_after == tabs_before
-        assert _tab_labels(sidebar) == ["消息", "任务", "上下文", "调试", "伙伴"]
+        assert _tab_labels(sidebar) == ["消息", "任务", "上下文", "钩子", "调试", "伙伴"]
         assert str(sidebar.tasks_panel.query_one(".tasks-label", Static).render()) == "待办 (1/1)"
         assert str(sidebar.tasks_panel.query_one("#tasks-empty", Static).render()) == "暂无待办"
         assert str(sidebar.toc_panel.query_one(".toc-empty", Static).render()) == "你的对话将显示在这里"
@@ -167,3 +169,61 @@ async def test_sidebar_relabels_tabs_and_current_child_chrome_in_place(monkeypat
 
     assert sidebar is not None
     assert sidebar not in controller._surfaces
+
+
+def _wheel(event_type: type[events.MouseEvent], widget: Widget) -> events.MouseEvent:
+    """A wheel step over *widget* as the terminal sends it: screen coordinates, no widget named."""
+    x, y = widget.region.x + 1, widget.region.y
+    return event_type(
+        None, x=x, y=y, delta_x=0, delta_y=1, button=0, shift=False, meta=False, ctrl=False, screen_x=x, screen_y=y
+    )
+
+
+async def _scroll(pilot, widget: Widget, event_type: type[events.MouseEvent], strip: Widget, *, steps: int = 1) -> None:
+    """Send up to *steps* wheel steps one at a time (queued together, the same event merges into one); stop at an end.
+
+    Through the App, as the driver delivers them: the screen finds the widget under the mouse.
+    """
+    for _ in range(steps):
+        before = strip.scroll_x
+        pilot.app.post_message(_wheel(event_type, widget))
+        if not await wait_until(lambda before=before: strip.scroll_x != before, timeout=0.5, pilot=pilot):
+            return
+
+
+async def test_the_wheel_over_a_narrow_tab_strip_slides_it_to_the_cut_off_tabs() -> None:
+    async with SidebarSizingApp().run_test(size=(120, 30)) as pilot:
+        sidebar = pilot.app.query_one(SidebarPanel)
+        content = sidebar.query_one(TabbedContent)
+        tabs = content.query_one(Tabs)
+        strip = tabs.query_one("#tabs-scroll")
+        await wait_for(lambda: strip.max_scroll_x > 0, pilot=pilot, description="the tabs overflow the sidebar")
+        *_, buddy = tabs.query(Tab).results(Tab)
+        assert buddy.region.right > strip.region.right, "the last tab starts cut off"
+        await _scroll(pilot, tabs, events.MouseScrollDown, strip, steps=10)
+        await wait_for(lambda: strip.scroll_x == strip.max_scroll_x, pilot=pilot, description="slid to the end")
+        await wait_for(lambda: buddy.region.right <= strip.region.right, pilot=pilot, description="the last tab whole")
+
+        await _scroll(pilot, tabs, events.MouseScrollLeft, strip, steps=10)
+        await wait_for(lambda: strip.scroll_x == 0, pilot=pilot, description="slid back to the start")
+
+        await _scroll(pilot, tabs, events.MouseScrollRight, strip)
+        await wait_for(lambda: strip.scroll_x > 0, pilot=pilot, description="a sideways wheel slides it too")
+        await _scroll(pilot, tabs, events.MouseScrollUp, strip)
+        await wait_for(lambda: strip.scroll_x == 0, pilot=pilot, description="up slides it back")
+        assert content.active == "tab-toc", "sliding the strip picks no tab"
+
+
+async def test_the_wheel_over_a_tab_pane_leaves_the_tab_strip_alone() -> None:
+    async with SidebarSizingApp().run_test(size=(120, 30)) as pilot:
+        sidebar = pilot.app.query_one(SidebarPanel)
+        tabs = sidebar.query_one(TabbedContent).query_one(Tabs)
+        strip = tabs.query_one("#tabs-scroll")
+        await wait_for(lambda: strip.max_scroll_x > 0, pilot=pilot, description="the tabs overflow the sidebar")
+        pane_child = sidebar.toc_panel
+        # A positive control first: the same event over the strip does move it.
+        await _scroll(pilot, tabs, events.MouseScrollRight, strip)
+        await wait_for(lambda: strip.scroll_x > 0, pilot=pilot, description="the strip moved")
+        moved = strip.scroll_x
+        pilot.app.post_message(_wheel(events.MouseScrollRight, pane_child))
+        assert not await wait_until(lambda: strip.scroll_x != moved, timeout=0.3, pilot=pilot)

@@ -155,7 +155,7 @@ def confirm_stopping_left_behind(commands: Sequence[LeftCommand], owner: Widget)
     )
 
 
-class _LogTail:
+class LogTail:
     """Reads what a log gained since the last read, at most its last ``_TAIL_BYTES``."""
 
     def __init__(self, path: str) -> None:
@@ -214,7 +214,7 @@ class BackgroundTaskModal(BaseDialog[None]):
         self._latest = latest
         """The task as the main screen knows it now; None once it left the list."""
         self._stop = stop
-        self._tail = _LogTail(task.log_path)
+        self._tail = LogTail(task.log_path)
         self._reading = False
 
     def compose(self) -> ComposeResult:

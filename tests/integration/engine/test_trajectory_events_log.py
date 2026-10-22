@@ -1058,8 +1058,10 @@ async def test_a_rollback_that_opens_the_inherited_log_still_records_the_branch(
     release_background_result = asyncio.Event()
     original_run = HookRunner.run_and_wait
 
-    async def held_result(self: HookRunner, hook: HookConfig, payload: dict[str, Any]) -> HookResult:
-        result = await original_run(self, hook, payload)
+    async def held_result(
+        self: HookRunner, hook: HookConfig, payload: dict[str, Any], *, payload_text: str | None = None
+    ) -> HookResult:
+        result = await original_run(self, hook, payload, payload_text=payload_text)
         background_result_ready.set()
         await release_background_result.wait()
         return result

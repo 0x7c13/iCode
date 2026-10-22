@@ -30,7 +30,7 @@ from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.widgets.chat.agent_transcript_surface import AgentTranscriptSurface
 from chrys.app.tui.widgets.chat.tool_call import ToolViewRequested
 from chrys.app.tui.widgets.chat.tool_view_builders import ToolViewContent
-from chrys.foundation.i18n import MessageDef, msg
+from chrys.foundation.i18n import MessageDef, MessageRef, msg
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -39,9 +39,9 @@ if TYPE_CHECKING:
 
 _TITLE_MAX = 72
 
-_COPIED_INPUT = msg("tui.tool_view.copy.input", fallback="Copied input")
+COPIED_INPUT = msg("tui.tool_view.copy.input", fallback="Copied input")
 COPIED_OUTPUT = msg("tui.tool_view.copy.output", fallback="Copied output")
-_COPIED_INPUT_TOO_LARGE = msg(
+COPIED_INPUT_TOO_LARGE = msg(
     "tui.tool_view.copy.input_too_large",
     fallback="Copied input (terminal clipboard skipped: payload too large)",
 )
@@ -49,7 +49,7 @@ COPIED_OUTPUT_TOO_LARGE = msg(
     "tui.tool_view.copy.output_too_large",
     fallback="Copied output (terminal clipboard skipped: payload too large)",
 )
-_COPIED_INPUT_UNAVAILABLE = msg(
+COPIED_INPUT_UNAVAILABLE = msg(
     "tui.tool_view.copy.input_unavailable",
     fallback="Copied input (terminal clipboard unavailable)",
 )
@@ -65,9 +65,14 @@ _NO_OUTPUT = msg("tui.tool_view.empty.output", fallback="(no output)")
 
 
 def copy_and_notify(
-    screen: Screen[object], payload: str, *, copied: MessageDef, too_large: MessageDef, unavailable: MessageDef
+    screen: Screen[object],
+    payload: str,
+    *,
+    copied: MessageDef | MessageRef,
+    too_large: MessageDef | MessageRef,
+    unavailable: MessageDef | MessageRef,
 ) -> None:
-    """Copy *payload* to the clipboards and tell how that went."""
+    """Copy *payload* to the clipboards and tell how that went; a message with placeholders comes bound."""
     terminal_payload_too_large = terminal_clipboard_size(payload) > OSC52_COPY_MAX_BYTES
     if copy_text_to_clipboards(screen.app, payload, max_terminal_bytes=OSC52_COPY_MAX_BYTES):
         message, timeout = copied, 2
@@ -77,7 +82,7 @@ def copy_and_notify(
         message, timeout = unavailable, 3
     localizer = widget_localizer(screen)
     screen.notify(
-        render_str(localizer, message.bind()),
+        render_str(localizer, message.bind() if isinstance(message, MessageDef) else message),
         title=render_str(localizer, COPIED_TITLE.bind()),
         timeout=timeout,
         markup=False,
@@ -203,9 +208,9 @@ class ToolDetailModal(BaseDialog[None]):
             copy_and_notify(
                 self,
                 self._raw_input,
-                copied=_COPIED_INPUT,
-                too_large=_COPIED_INPUT_TOO_LARGE,
-                unavailable=_COPIED_INPUT_UNAVAILABLE,
+                copied=COPIED_INPUT,
+                too_large=COPIED_INPUT_TOO_LARGE,
+                unavailable=COPIED_INPUT_UNAVAILABLE,
             )
 
     def action_close(self) -> None:

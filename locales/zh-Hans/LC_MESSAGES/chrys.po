@@ -6286,6 +6286,277 @@ msgstr "{app} 用户指南"
 msgid "tui.hook_indicator.idle"
 msgstr "钩子"
 
+#. English: Changed the tool arguments to:
+#. chrys-meta={"fingerprint":"5e457bb14b4b7bc5180cc1b6a1788e62af22df9ac2fc673bb54129d93844fe22","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.args"
+msgstr "将工具参数改为："
+
+#. English: Blocked the action: {reason}
+#. chrys-meta={"fingerprint":"869c0c47dfbff769b0747bd613dde9f3c6343c4c2b134ff33701c4dbe8768091","multiline":false,"placeholders":["reason"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.blocked"
+msgstr "阻止了此操作：{reason}"
+
+#. English: Added to the tool result:
+#. chrys-meta={"fingerprint":"21c92d105ef15620ffa4504e8f0b7423c5ee3ebe60d066ea8ed900626db30859","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.context"
+msgstr "追加到工具结果："
+
+#. English: Nothing
+#. chrys-meta={"fingerprint":"90c459b0ad5ab03069594987cf32d173a3d32a413bf4a4c3cdd5fd66ac37a3fd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.nothing"
+msgstr "无"
+
+#. English: Added a reminder for the model:
+#. chrys-meta={"fingerprint":"33cdfccec07ac69efef0321c4c4bc8bfbe64943e6c977c117a311e37287162f1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.reminder"
+msgstr "为模型添加了提醒："
+
+#. English: Copied log path
+#. chrys-meta={"fingerprint":"87ede8461a4168c6439cb0814da6124fe28d8193222a81286dfe86a8836bccfb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.copy.log_path"
+msgstr "已复制日志路径"
+
+#. English: Copied log path (terminal clipboard unavailable)
+#. chrys-meta={"fingerprint":"bc849068d0b31f404bdfa13b9d4337afa1f8ec555b9d2396b95c9986f152f7af","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.copy.log_path_unavailable"
+msgstr "已复制日志路径（终端剪贴板不可用）"
+
+#. English: Copied {section}
+#. chrys-meta={"fingerprint":"09bdbc46796fdaa9f4f9aa6fd67484a64a8bcd2a52e683e460adb1a679db193b","multiline":false,"placeholders":["section"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.copy.section"
+msgstr "已复制 {section}"
+
+#. English: Copied {section} (terminal clipboard skipped: payload too large)
+#. chrys-meta={"fingerprint":"e0333a1cc47287e6802aeac1ebe2f84d328c8994bd67df6cbe63bb822c00d5e4","multiline":false,"placeholders":["section"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.copy.section_too_large"
+msgstr "已复制 {section}（内容过大，已跳过终端剪贴板）"
+
+#. English: Copied {section} (terminal clipboard unavailable)
+#. chrys-meta={"fingerprint":"38d1e8f0dfd21950fc35a3a9c4effd55ea7999deb2a372660d4cbe98fb5703fd","multiline":false,"placeholders":["section"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.copy.section_unavailable"
+msgstr "已复制 {section}（终端剪贴板不可用）"
+
+#. English: Details are no longer kept for this run
+#. chrys-meta={"fingerprint":"7775c2cf0ef5fdf2cb346bc003d9211c2cf37fe3b2cd0357fbe1c98ea0ea0446","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.details_gone"
+msgstr "此次运行的详情已不再保留"
+
+#. English: exit code {code}
+#. chrys-meta={"fingerprint":"e009512d43587c00bacb654487590314a4a7e6a3c9542b2dc0ba3c2d10279ce2","multiline":false,"placeholders":["code"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.exit_code"
+msgstr "退出码 {code}"
+
+#. English: Applied
+#. chrys-meta={"fingerprint":"c73971eb92293f6575210d852c251b2923e1956b5268764e43395cade725298b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.applied"
+msgstr "采纳"
+
+#. English: Decision
+#. chrys-meta={"fingerprint":"2d1c54b8f9715fe18dc6fd6935897b93af938024de4b3b19e63a5c4f2f4a25d8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.decision"
+msgstr "决定"
+
+#. English: Event
+#. chrys-meta={"fingerprint":"8fc5a0087cec0dffa23a9ad155b5c2c8ccc9586bc9dfeed8e858f099c51a2b2a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.event"
+msgstr "事件"
+
+#. English: Log
+#. chrys-meta={"fingerprint":"33b400523094269b6e91c373570d3cf8cdc52c0149345e6e0dd08569f775276c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.log"
+msgstr "日志"
+
+#. English: Log file
+#. chrys-meta={"fingerprint":"6e2010eb3be3d95b89af1b0aa277718581a2f099e818368123a2d64e1534f915","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.log_file"
+msgstr "日志文件"
+
+#. English: Mode
+#. chrys-meta={"fingerprint":"65e38fbafd4185e83d69fdec8cdf370bb53243d56276f066f9150df1888e125b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.mode"
+msgstr "方式"
+
+#. English: Overview
+#. chrys-meta={"fingerprint":"b9ad84991d7daa4ad9f8a22fdf25f00dd38773173eb33646e011e7646ed19e29","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.overview"
+msgstr "概览"
+
+#. English: Payload
+#. chrys-meta={"fingerprint":"cd530b348473e964964ed0eeb7090558280c7a347d3541787e50b27a1b3e3818","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.payload"
+msgstr "Payload"
+
+#. English: Queued
+#. chrys-meta={"fingerprint":"c4442bc21ce24ef79d0ee677283811ada44d78aafca431b2a52d36beefb768eb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.queued"
+msgstr "排队"
+
+#. English: Result
+#. chrys-meta={"fingerprint":"26e6b71d0b6f7f7005eaeef64cfb341a12d773a71146d47e74b8fd377399b911","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.result"
+msgstr "结果"
+
+#. English: Run
+#. chrys-meta={"fingerprint":"0b0e1acb1eb53197a4a6fb0739fe1ee34bfe598858edac41d63eee6bc9148c7c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.run"
+msgstr "运行"
+
+#. English: Session
+#. chrys-meta={"fingerprint":"ff5347f05cc1e039d9010c2905058f253aa7ab5e0fb4e243daf5d0787404db29","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.session"
+msgstr "会话"
+
+#. English: Source
+#. chrys-meta={"fingerprint":"8a23381b73255be7becb386ff5bf8b4846f3fcba4f6d5404413d16d72d5ed687","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.source"
+msgstr "来源"
+
+#. English: Started
+#. chrys-meta={"fingerprint":"826982e6ab2fb3751c2f9c2d5d536b77262189c6a8a4e6bc67dfa5f4fd30d5f2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.started"
+msgstr "开始时间"
+
+#. English: stderr
+#. chrys-meta={"fingerprint":"a3d13bf12753a05efbb0dfed9972765064dbb5fc33d31a2399a7951e8c8e4f75","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.stderr"
+msgstr "stderr"
+
+#. English: stdout
+#. chrys-meta={"fingerprint":"ee75972b99d9c354c23287cc6cfe77e2cc9fe335813500d16c5b4b53db306cbf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.stdout"
+msgstr "stdout"
+
+#. English: Triggered by
+#. chrys-meta={"fingerprint":"5cd22b0cf77e16370b37ac79a34cd00c327d796573870f049826aff9da5054a4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.field.triggered_by"
+msgstr "触发者"
+
+#. English: The result file was invalid and was ignored
+#. chrys-meta={"fingerprint":"18480780d9864e4cf8c1178e8f5f856f3ab98d8302e2b993b7b45f21ac8e3603","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.invalid_result_file"
+msgstr "结果文件无效，已忽略"
+
+#. English: Main agent
+#. chrys-meta={"fingerprint":"2a6d7b7905e27f4347f243fecd0fd6331e8bfa169a9cc24685d5b5b14d3a91cc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.main_agent"
+msgstr "主智能体"
+
+#. English: No result file
+#. chrys-meta={"fingerprint":"04c2e7eb5cd03a9e5ef3ef72ad7b833463eb2301237ab59239ebe0f7b4716be6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.no_result_file"
+msgstr "没有结果文件"
+
+#. English: The hook failed, so its result file was ignored
+#. chrys-meta={"fingerprint":"5941f7b7eacc65678eb54266c7cd1183f55380f8fdbed7e7158a640316ea180c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.not_applied.failed"
+msgstr "钩子运行失败，其结果文件已忽略"
+
+#. English: The hook failed and on_error is block, so the action was blocked
+#. chrys-meta={"fingerprint":"25514934918920bf7c4f487119c01f3a47f175b825bf9f1a408d3d729387b9c8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.not_applied.failed_blocked"
+msgstr "钩子运行失败且 on_error 为 block，因此阻止了此操作"
+
+#. English: Async and fire_and_forget hooks can't change the action
+#. chrys-meta={"fingerprint":"d1a52020e2498e1b7988c02d2dfaf97dc177f66471e5df38d0b2bc56da895090","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.not_applied.nonblocking"
+msgstr "async 和 fire_and_forget 钩子不能改变操作"
+
+#. English: {event} doesn't support this action
+#. chrys-meta={"fingerprint":"ffb21cb152099cd58c6ade26cf07bd47ed8c49302b9556f4f59a3d5b876cefa8","multiline":false,"placeholders":["event"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.not_applied.unsupported"
+msgstr "{event} 不支持此操作"
+
+#. English: Payload cut at 64 KB of {size}
+#. chrys-meta={"fingerprint":"95bc340815d859aa5908b17774f108a24218dd554b5853dc114b2c9ee0d2745e","multiline":false,"placeholders":["size"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.payload_truncated"
+msgstr "Payload 共 {size}，只保留前 64 KB"
+
+#. English: Retry of an earlier run
+#. chrys-meta={"fingerprint":"f9ac568b9f02169a0ead2504c0ff7317e973cef24f9f8404ebe12255aac3a9b0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.retry"
+msgstr "重试之前的一次运行"
+
+#. English: Running… output shows when the hook ends
+#. chrys-meta={"fingerprint":"35230ed1ed71285e58b95a23ecc45da5b076e124f83c2797286edb44e7dec7f5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.running"
+msgstr "运行中… 钩子结束后显示输出"
+
+#. English: Another run of this hook started in the same second and writes to
+#. this log too
+#. chrys-meta={"fingerprint":"c81fd0c547460ed1c031017f8424f5bec3995355d8d000041a098ab07f908f9e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.shared_log"
+msgstr "此钩子的另一次运行在同一秒开始，也写入这个日志"
+
+#. English: succeeded
+#. chrys-meta={"fingerprint":"d20404943dcd141e2e88a8b0299a224899fc4d8746b9283f1cc6b76f83f50a54","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.succeeded"
+msgstr "成功"
+
+#. English: Input
+#. chrys-meta={"fingerprint":"aa801f5aa47a9644ff6d258e4f0dc34a47b07d38685b021f96fe2a5f3c4e0ee6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.tab.input"
+msgstr "输入"
+
+#. English: Output
+#. chrys-meta={"fingerprint":"05859c2cb178f6b52e68ea789358b4f6d9958c27ad628104ccee05f67586426d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.tab.output"
+msgstr "输出"
+
+#. English: Hook #{number} · {hook_id}
+#. chrys-meta={"fingerprint":"8e82c147d2837aca116516d443f774394ca47647ed6bbebd7007b2fbf84655bf","multiline":false,"placeholders":["hook_id","number"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.title"
+msgstr "钩子 #{number} · {hook_id}"
+
+#. English: {bytes} bytes from the middle were not kept
+#. chrys-meta={"fingerprint":"f46f77b798cdf4ad57c33b49b4dc605b60334c7b9e098be9f482c6bc6fec4305","multiline":false,"placeholders":["bytes"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.truncated"
+msgstr "中间的 {bytes} 字节未保留"
+
 #. English: Arguments:
 #. chrys-meta={"fingerprint":"abee83246fc63d7f641b344313ab75e31d459c0f4c99231da217a066e73be558","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/renderers/hosted_generic.py
@@ -10788,6 +11059,116 @@ msgstr "上下文用量"
 msgid "tui.sidebar.debug.event_stream"
 msgstr "事件流"
 
+#. English: Clear ended
+#. chrys-meta={"fingerprint":"dcb6a0d30ef78d850aaba51180142bacbdaa9a48b7a3679ec9f128ff97c7a0ca","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.clear_ended"
+msgstr "清除已结束"
+
+#. English: Ended runs cleared
+#. chrys-meta={"fingerprint":"ba6607222905de97189e941a750c15087d87caec10e868e928859598c72485de","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.cleared"
+msgstr "已清除结束的运行"
+
+#. English: No hook has run since {app} started
+#. chrys-meta={"fingerprint":"2478bf8fe82a678e47b454d6e27e963aee8cfdfdb23f0bbba9cfe1dccb3eefe0","multiline":false,"placeholders":["app"]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.empty"
+msgstr "{app} 启动以来还没有运行过钩子"
+
+#. English: No hooks configured
+#. chrys-meta={"fingerprint":"322a4dcf13cf9491d6d5cd0110f494c7fa8c6471abc32932ed0075e1d1e34b10","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.empty_unconfigured"
+msgstr "没有配置钩子"
+
+#. English: Only the latest {limit} runs are kept
+#. chrys-meta={"fingerprint":"31444529819e96841ea27028af2ac4822b9296144dfb12ad85ecb3527975a294","multiline":false,"placeholders":["limit"]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.only_latest_kept"
+msgstr "只保留最近 {limit} 次运行"
+
+#. English: added context
+#. chrys-meta={"fingerprint":"3fc7dccf24c12cc1fe775bb143e1897ef236d958265032a4799523254fb12ae0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.added_context"
+msgstr "追加了上下文"
+
+#. English: added reminder
+#. chrys-meta={"fingerprint":"b3645d6786c7cd80ef5bbfd979f084e10375a347f8819f1e2a2224659f8adf8a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.added_reminder"
+msgstr "添加了提醒"
+
+#. English: blocked
+#. chrys-meta={"fingerprint":"23bcab7ae9ef97e9666043447f5b6968da692cbfffdf79d3a1fb059da04e7d7e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.blocked"
+msgstr "已阻止"
+
+#. English: cancelled
+#. chrys-meta={"fingerprint":"a5fb27a22343ae45dffbf8e925df54667260b67e79f86aabb0cfa7dd81b207f2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.cancelled"
+msgstr "已取消"
+
+#. English: couldn't start
+#. chrys-meta={"fingerprint":"75f6bf66f713d1eda2acb6a5ca8cf69e72af47ca156013576b17393908583a3f","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.couldnt_start"
+msgstr "无法启动"
+
+#. English: detached
+#. chrys-meta={"fingerprint":"f6f4dc1067c3131bf2f47ad10b96c2d8d8d4e164e21b31e15b96bbffbf0e5247","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.detached"
+msgstr "已分离"
+
+#. English: exit {code}
+#. chrys-meta={"fingerprint":"19d84c7da6f00031ba6efcaf7ea40ad59766c004b4654ac15b6e4c82aa079b64","multiline":false,"placeholders":["code"]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.exit"
+msgstr "退出码 {code}"
+
+#. English: modified args
+#. chrys-meta={"fingerprint":"29d632bd5cb8ff86dc4aa9e9b65518077c1723aeebde9a531f31471c18788ae3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.modified_args"
+msgstr "修改了参数"
+
+#. English: queued
+#. chrys-meta={"fingerprint":"292031914838efc235b6a1d841d6c5a9ba8e1d5dfeea522e30b6ac43c8b8f9f1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.queued"
+msgstr "排队中"
+
+#. English: running
+#. chrys-meta={"fingerprint":"30a70ec2e1543266fdf8c3d3507853a36b54e6a70feed23c5ae22fd78476fa4a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.running"
+msgstr "运行中"
+
+#. English: timed out
+#. chrys-meta={"fingerprint":"3ca20c7b1a56196dd6efffe72762fb8519065f05ea75a7578129f84f758ec0a5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.timed_out"
+msgstr "已超时"
+
+#. English: Hooks
+#. chrys-meta={"fingerprint":"bc590033958e925397df73037927d0966b3d6b872ec389277b25224deed0ebd3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.title"
+msgstr "钩子"
+
+#. English: Hooks ({count} active)
+#. English-plural: Hooks ({count} active)
+#. chrys-meta={"fingerprint":"3717b8678ac91680244380334d4243cf19a6e6973d36abe39a7f7ce6128761ee","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.title_active"
+msgid_plural "tui.sidebar.hooks.title_active#plural"
+msgstr[0] "钩子（{count} 个进行中）"
+
 #. English: Buddy
 #. chrys-meta={"fingerprint":"b24977515f388242f6162756260851ee0929d9063bb635c662fc21f76399f966","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/panel.py
@@ -10805,6 +11186,12 @@ msgstr "上下文"
 #: src/chrys/app/tui/widgets/sidebar/panel.py
 msgid "tui.sidebar.tab.debug"
 msgstr "调试"
+
+#. English: Hooks
+#. chrys-meta={"fingerprint":"bc590033958e925397df73037927d0966b3d6b872ec389277b25224deed0ebd3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/panel.py
+msgid "tui.sidebar.tab.hooks"
+msgstr "钩子"
 
 #. English: Messages
 #. chrys-meta={"fingerprint":"dc539a1862021f7a116d2443dde9458f890e3f149671bfc0021d3b6300e6147f","multiline":false,"placeholders":[]}
@@ -14986,6 +15373,9 @@ msgstr "提示已被钩子阻止。"
 
 #~ msgid "tui.sidebar.buddy.personality"
 #~ msgstr "性格：{personality}"
+
+#~ msgid "tui.sidebar.hooks.not_all_listed"
+#~ msgstr "部分运行已不在列表中"
 
 #~ msgid "tui.status.tool_call_plural"
 #~ msgid_plural "tui.status.tool_call_plural#plural"

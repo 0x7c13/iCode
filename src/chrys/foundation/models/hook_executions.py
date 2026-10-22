@@ -23,3 +23,5 @@ class HookExecutionView:
     """Still waiting for a ``max_parallel_hooks`` slot."""
     started_at: float
     """When the run was registered, in this process's ``time.monotonic()``."""
+    run_id: str = ""
+    """The run's id in the hook run log, where its details are kept."""

@@ -109,6 +109,7 @@ class _HookLoader:
     def __init__(self, bus, session) -> None:
         self._bus = bus
         self._session = session
+        self._hook_runs = None
 
 
 class _Engine:

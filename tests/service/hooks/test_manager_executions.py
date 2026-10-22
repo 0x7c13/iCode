@@ -815,12 +815,13 @@ async def test_a_queued_interrupt_observer_that_takes_its_slot_after_close_publi
 
 
 def test_the_view_carries_only_what_the_indicator_uses() -> None:
-    """Only what the indicator reads: no trigger point and no sub-agent attribution."""
+    """The run's details live in the run log; the view only names the run there (``run_id``)."""
     assert [field.name for field in dataclasses.fields(HookExecutionView)] == [
         "hook_id",
         "waited_at",
         "queued",
         "started_at",
+        "run_id",
     ]
 
 

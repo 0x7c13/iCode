@@ -77,6 +77,7 @@ from chrys.foundation.events.types import (
     ContextCompressed,
     Error,
     HookExecutionsChanged,
+    HookRunsChanged,
     ImageAttachmentCompressionFinished,
     ImageAttachmentCompressionStarted,
     InvocationAborted,
@@ -1703,6 +1704,12 @@ class BackendEventHandler:
         self._state.runtime.hook_snapshots[event.session_id or ""] = event
         if event.session_id == self.main_usage_source_id:
             self.refresh_hook_indicator()
+
+    async def on_hook_runs_changed(self, _event: HookRunsChanged) -> None:
+        # Every session's runs show, so no session filter. Only marks the panel
+        # stale: it rereads the run log on its own pump, once per pump at most,
+        # and only while it shows.
+        self._ui().hook_runs_changed()
 
     def refresh_hook_indicator(self) -> None:
         """Queue one render of the last hook snapshot; snapshots arriving before it runs share it."""

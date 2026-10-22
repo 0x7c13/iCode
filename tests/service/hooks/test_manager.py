@@ -400,7 +400,9 @@ async def test_explicit_trajectory_context_applies_only_to_blocking_hooks(hooks_
     mgr = HookManager(file=_file(blocking, asynchronous), hooks_dir=hooks_dir)
     release_async = asyncio.Event()
 
-    async def _run_and_wait(hook: HookConfig, _payload: dict[str, object]) -> HookResult:
+    async def _run_and_wait(
+        hook: HookConfig, _payload: dict[str, object], *, payload_text: str | None = None
+    ) -> HookResult:
         if hook is asynchronous:
             await release_async.wait()
         return HookResult(hook_id=hook.id, exit_code=0)
@@ -778,7 +780,9 @@ async def test_session_drain_preserves_background_result_while_log_stays_open(
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def run_and_wait(config: HookConfig, _payload: dict[str, Any]) -> HookResult:
+    async def run_and_wait(
+        config: HookConfig, _payload: dict[str, Any], *, payload_text: str | None = None
+    ) -> HookResult:
         entered.set()
         await release.wait()
         return HookResult(hook_id=config.id, exit_code=0)
@@ -854,9 +858,12 @@ async def test_committed_hook_dispatch_is_settled_before_log_close(
         hooks_dir=hooks_dir,
     )
 
-    async def held_spawn(hook: HookConfig, payload: dict[str, Any], *, job: OutboxJob | None = None) -> None:
+    async def held_spawn(
+        hook: HookConfig, payload: dict[str, Any], *, job: OutboxJob | None = None, payload_text: str | None = None
+    ) -> Path:
         started.set()
         await release_ack.wait()
+        return Path("hook.log")
 
     # Model the asynchronous OS handoff without creating an orphan process.
     monkeypatch.setattr(mgr._runner, "spawn_detached", held_spawn)
@@ -896,7 +903,9 @@ async def test_drain_session_fences_inflight_blocking_hook_dispatch(hooks_dir: P
     release = asyncio.Event()
     executed: list[str] = []
 
-    async def _run_and_wait(hook: HookConfig, _payload: dict[str, object]) -> HookResult:
+    async def _run_and_wait(
+        hook: HookConfig, _payload: dict[str, object], *, payload_text: str | None = None
+    ) -> HookResult:
         executed.append(hook.id)
         if hook is blocking_one:
             entered.set()
@@ -943,7 +952,9 @@ async def test_drain_session_fences_blocking_dispatch_during_start_ack(hooks_dir
     mgr = HookManager(file=_file(hook), hooks_dir=hooks_dir)
     executed: list[str] = []
 
-    async def _run_and_wait(config: HookConfig, _payload: dict[str, object]) -> HookResult:
+    async def _run_and_wait(
+        config: HookConfig, _payload: dict[str, object], *, payload_text: str | None = None
+    ) -> HookResult:
         executed.append(config.id)
         return HookResult(hook_id=config.id, exit_code=0)
 
@@ -991,7 +1002,9 @@ async def test_drain_session_fences_durable_async_dispatch_during_start_ack(hook
     mgr = HookManager(file=file, hooks_dir=hooks_dir)
     executed: list[str] = []
 
-    async def _run_and_wait(config: HookConfig, _payload: dict[str, object]) -> HookResult:
+    async def _run_and_wait(
+        config: HookConfig, _payload: dict[str, object], *, payload_text: str | None = None
+    ) -> HookResult:
         executed.append(config.id)
         return HookResult(hook_id=config.id, exit_code=0)
 
@@ -1066,7 +1079,9 @@ async def test_detached_scope_async_hook_is_reaped_only_after_completion(hooks_d
     entered = asyncio.Event()
     release = asyncio.Event()
 
-    async def _run_and_wait(config: HookConfig, _payload: dict[str, object]) -> HookResult:
+    async def _run_and_wait(
+        config: HookConfig, _payload: dict[str, object], *, payload_text: str | None = None
+    ) -> HookResult:
         entered.set()
         await release.wait()
         return HookResult(hook_id=config.id, exit_code=0)

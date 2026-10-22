@@ -11,6 +11,7 @@ from chrys.service.hooks.events import HookEvent
 
 if TYPE_CHECKING:
     from chrys.foundation.events.types import ApprovalResponse
+    from chrys.foundation.models.invocations import InvocationOrigin
     from chrys.service.hooks.manager import HookManager
 
 
@@ -29,8 +30,12 @@ async def await_approval_with_hooks(
     call_id: str,
     args: dict[str, Any],
     target_operation_id: str | None,
+    origin: InvocationOrigin | None = None,
 ) -> ApprovalResponse:
-    """Wait for the existing decision future, notifying only actual human waits."""
+    """Wait for the existing decision future, notifying only actual human waits.
+
+    *origin* is the invocation whose tool waits; it names a sub-agent in the hook run log.
+    """
     if manager is None or not (
         manager.has_hooks_for(HookEvent.APPROVAL_REQUESTED) or manager.has_hooks_for(HookEvent.APPROVAL_RESOLVED)
     ):
@@ -52,11 +57,12 @@ async def await_approval_with_hooks(
         "tool": {"name": tool_name, "kind": tool_kind, "call_id": call_id, "args": args},
     }
     # These are observer events. Ignore every decision returned by the manager.
-    await manager.fire(HookEvent.APPROVAL_REQUESTED, payload, target_operation_id=target_operation_id)
+    await manager.fire(HookEvent.APPROVAL_REQUESTED, payload, target_operation_id=target_operation_id, origin=origin)
     result = await future
     await manager.fire(
         HookEvent.APPROVAL_RESOLVED,
         {**payload, "approved": result.approved},
         target_operation_id=target_operation_id,
+        origin=origin,
     )
     return result

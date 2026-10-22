@@ -18,7 +18,7 @@ from chrys.app.tui.screens.dialogs import background_task
 from chrys.app.tui.screens.dialogs.background_task import (
     ROLLBACK_NOTE,
     BackgroundTaskModal,
-    _LogTail,
+    LogTail,
     confirm_stopping,
 )
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
@@ -48,7 +48,7 @@ def _task(log_path: Path, **fields: object) -> BackgroundTaskView:
 def test_log_tail_reads_only_what_was_added(tmp_path: Path) -> None:
     log = tmp_path / "x.log"
     log.write_bytes(b"one\ntwo\n")
-    tail = _LogTail(str(log))
+    tail = LogTail(str(log))
     assert tail.read() == ("one\ntwo\n", False)
     assert tail.read() == ("", False)
     with log.open("ab") as file:
@@ -59,7 +59,7 @@ def test_log_tail_reads_only_what_was_added(tmp_path: Path) -> None:
 def test_log_tail_starts_over_when_the_log_shrinks(tmp_path: Path) -> None:
     log = tmp_path / "x.log"
     log.write_bytes(b"one\ntwo\n")
-    tail = _LogTail(str(log))
+    tail = LogTail(str(log))
     tail.read()
     log.write_bytes(b"new\n")
     assert tail.read() == ("new\n", True)
@@ -68,7 +68,7 @@ def test_log_tail_starts_over_when_the_log_shrinks(tmp_path: Path) -> None:
 def test_log_tail_starts_over_when_the_log_rotated_to_the_same_size(tmp_path: Path) -> None:
     log = tmp_path / "x.log"
     log.write_bytes(b"old\n")
-    tail = _LogTail(str(log))
+    tail = LogTail(str(log))
     tail.read()
     # Between two reads the log rotated and its new file grew as large as the old one.
     rotated = tmp_path / "new.log"
@@ -81,7 +81,7 @@ def test_log_tail_skips_ahead_from_a_whole_line(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setattr(background_task, "_TAIL_BYTES", 12)
     log = tmp_path / "x.log"
     log.write_bytes(b"first line\nsecond\nthird\n")
-    tail = _LogTail(str(log))
+    tail = LogTail(str(log))
     # The last 12 bytes start inside "second": that partial line is dropped.
     assert tail.read() == ("third\n", True)
     with log.open("ab") as file:
@@ -91,7 +91,7 @@ def test_log_tail_skips_ahead_from_a_whole_line(tmp_path: Path, monkeypatch: pyt
 
 def test_log_tail_joins_a_character_split_between_reads(tmp_path: Path) -> None:
     log = tmp_path / "x.log"
-    tail = _LogTail(str(log))
+    tail = LogTail(str(log))
     chunks = [b"done ", "中文".encode()[:4], "中文".encode()[4:] + b"\n"]
     log.write_bytes(b"")
     read = ""

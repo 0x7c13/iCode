@@ -483,7 +483,12 @@ async def test_re_dispatched_hooks_target_the_tool_operation_they_can_still_bloc
             return event == HookEvent.BEFORE_TOOL_CALL
 
         async def fire(
-            self, _event: HookEvent, _payload: dict[str, Any], *, target_operation_id: str | None = None
+            self,
+            _event: HookEvent,
+            _payload: dict[str, Any],
+            *,
+            target_operation_id: str | None = None,
+            origin: InvocationOrigin | None = None,
         ) -> HookDecision:
             self.targets.append(target_operation_id)
             return HookDecision()

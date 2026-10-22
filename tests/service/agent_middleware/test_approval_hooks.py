@@ -13,6 +13,7 @@ import pytest
 
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import ApprovalRequest, ApprovalResponse
+from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.tool_kinds import KIND_MCP, set_tool_kind
 from chrys.foundation.trajectory.context import trajectory_scope
 from chrys.foundation.trajectory.event_types import EventType
@@ -61,7 +62,11 @@ async def test_approval_hooks_follow_human_wait_before_tool_execution(
     order: list[str] = []
 
     async def observe(
-        event: HookEvent, payload: dict[str, Any], *, target_operation_id: str | None = None
+        event: HookEvent,
+        payload: dict[str, Any],
+        *,
+        target_operation_id: str | None = None,
+        origin: InvocationOrigin | None = None,
     ) -> HookDecision:
         observed.append((event, payload))
         order.append(str(event))
@@ -143,7 +148,11 @@ async def test_cancelled_approval_hook_wait_releases_response_subscription() -> 
     hooks.has_hooks_for.return_value = True
 
     async def observe(
-        event: HookEvent, payload: dict[str, Any], *, target_operation_id: str | None = None
+        event: HookEvent,
+        payload: dict[str, Any],
+        *,
+        target_operation_id: str | None = None,
+        origin: InvocationOrigin | None = None,
     ) -> HookDecision:
         notified.set()
         return HookDecision()

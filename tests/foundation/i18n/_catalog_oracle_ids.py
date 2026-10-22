@@ -8,6 +8,7 @@ from tests.foundation.i18n._approval_catalog_oracle_ids import APPROVAL_MESSAGE_
 from tests.foundation.i18n._buddy_catalog_oracle_ids import BUDDY_MESSAGE_IDS
 from tests.foundation.i18n._error_catalog_oracle_ids import ERROR_MESSAGE_IDS
 from tests.foundation.i18n._help_catalog_oracle_ids import HELP_MESSAGE_IDS
+from tests.foundation.i18n._hook_panel_catalog_oracle_ids import HOOK_PANEL_MESSAGE_IDS
 from tests.foundation.i18n._settings_catalog_oracle_ids import SETTINGS_MESSAGE_IDS
 from tests.foundation.i18n._web_catalog_oracle_ids import WEB_MESSAGE_IDS
 from tests.foundation.i18n._workflow_catalog_oracle_ids import WORKFLOW_MESSAGE_IDS
@@ -1938,6 +1939,7 @@ EXPECTED_MESSAGE_IDS: frozenset[str | tuple[str, str]] = (
     | WORKFLOW_MESSAGE_IDS
     | HELP_MESSAGE_IDS
     | WEB_MESSAGE_IDS
+    | HOOK_PANEL_MESSAGE_IDS
     | ERROR_MESSAGE_IDS
     | SETTINGS_MESSAGE_IDS
 )

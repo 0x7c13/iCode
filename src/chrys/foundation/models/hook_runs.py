@@ -1,0 +1,114 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""What the TUI's Hooks panel shows of the hook runs since iCode started."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+HookRunState = Literal["queued", "running", "ended"]
+
+HookRunEffect = Literal["blocked", "modified_args", "added_reminder", "added_context"]
+"""What iCode took from a run; a run has at most one (the event groups that take each are disjoint)."""
+
+HookNotApplied = Literal["nonblocking", "unsupported", "failed", "failed_blocked"]
+"""Why a run's decision was not taken: an ``async``/``fire_and_forget`` run's never is, the event
+does not take that action, or the run failed (its result file ignored; with ``on_error: block`` on a
+gated event the action was blocked instead)."""
+
+HookResultFileStatus = Literal["ok", "missing", "invalid"]
+"""``missing`` covers an absent or empty result file; ``invalid`` one too large, not JSON or not an object."""
+
+
+@dataclass(frozen=True, slots=True)
+class HookRunRecord:
+    """One hook run, as it is at one moment."""
+
+    run_id: str
+    """Also the run's ``hook.operation.*`` ``operation_id`` when the trajectory records it."""
+    session_id: str
+    hook_id: str
+    hook_event: str
+    execution_mode: str
+    detach: bool
+    tool_name: str
+    """The tool of a tool event; empty for other events."""
+    sub_agent: str
+    """The sub-agent that fired it; empty for the main agent."""
+    retry: bool
+    """An outbox retry of an earlier run."""
+    registered_at: float
+    """``time.monotonic()`` when registered, queued or not."""
+    started_at: float | None
+    """``time.monotonic()`` when it took a ``max_parallel_hooks`` slot; None when it never did."""
+    ended_at: float | None
+    registered_wall: float
+    """``time.time()`` when registered."""
+    state: HookRunState
+    outcome: str | None
+    """A ``hook.operation.finished`` outcome (``HookOutcome``) once ended."""
+    exit_code: int | None
+    effect: HookRunEffect | None
+    number: int = 0
+    """The run's place among every run since the process started, from 1; kept as older runs are dropped."""
+
+
+@dataclass(frozen=True, slots=True)
+class HookRunIO:
+    """What a run read and wrote: kept for the runs the panel lists, within a memory cap."""
+
+    payload: str
+    """The payload file's text as the hook read it, cut at ``payload_size`` when longer."""
+    payload_size: int
+    """The payload's full length in UTF-8 bytes."""
+    result_file: HookResultFileStatus | None
+    """None until the run ends, and for runs whose result is never read (detached)."""
+    decision: str
+    """The result file's JSON object, as read."""
+    stdout: str
+    stderr: str
+    stdout_dropped: int
+    stderr_dropped: int
+    """Bytes cut from the middle of each stream."""
+
+
+@dataclass(frozen=True, slots=True)
+class HookRunApplied:
+    """What iCode took from a run, or why it took nothing."""
+
+    block_reason: str = ""
+    args: str = ""
+    """The tool arguments after the run's override, as JSON; empty when unchanged."""
+    reminder: str = ""
+    extra_context: str = ""
+    not_applied: HookNotApplied | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HookRunDetail:
+    """A run's record with what its details dialog shows."""
+
+    record: HookRunRecord
+    tool_call_id: str
+    timeout_seconds: float
+    on_error: str
+    delivery: str
+    source: str
+    """``project`` or ``global``; empty when unknown."""
+    source_path: str
+    run_type: str
+    """``script``, ``command`` or ``shell``."""
+    run_argv: tuple[str, ...]
+    """The script path and its args, the command's argv, or the shell command line."""
+    run_cwd: str
+    run_env_names: tuple[str, ...]
+    """The names ``run.env`` sets; never their values, which may be expanded secrets."""
+    log_path: str
+    """A detached run's log file."""
+    shared_log: bool
+    """Another run of the hook writes to the same log (they started in the same second)."""
+    io: HookRunIO | None
+    """None once the details are no longer kept."""
+    applied: HookRunApplied | None
+    """None until the run ends."""

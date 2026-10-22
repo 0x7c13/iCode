@@ -13,6 +13,8 @@ from chrys.service.mutations.tracker import MutationTracker
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from chrys.foundation.models.hook_runs import HookRunDetail, HookRunRecord
+    from chrys.service.hooks.run_log import HookRunLog
     from chrys.service.mutations.coordination import MutationCoordinator
     from chrys.service.mutations.types import RollbackPlan
 
@@ -37,6 +39,9 @@ class EngineSnapshotSource(Protocol):
 
     @property
     def workspace_primary_cwd(self) -> str: ...
+
+    @property
+    def hook_runs(self) -> HookRunLog | None: ...
 
     def available_rollback_turns(self) -> list[int]:
         """Return rollback turn numbers available for display."""
@@ -116,6 +121,21 @@ class EngineReadModel:
     def workspace_cwd(self) -> str:
         """Return the normalized primary cwd owned by the current runtime build."""
         return self._engine.workspace_primary_cwd
+
+    def hook_runs(self) -> tuple[HookRunRecord, ...]:
+        """Every session's hook runs since iCode started, in the Hooks panel's order; in memory, cheap."""
+        log = self._engine.hook_runs
+        return log.records() if log is not None else ()
+
+    def hook_runs_dropped(self) -> int:
+        """Ended runs the run log no longer keeps, past its cap."""
+        log = self._engine.hook_runs
+        return log.dropped if log is not None else 0
+
+    def hook_run_detail(self, run_id: str) -> HookRunDetail | None:
+        """One run's details; None once the run log no longer keeps the run."""
+        log = self._engine.hook_runs
+        return log.detail(run_id) if log is not None else None
 
     async def begin_rollback_projection(
         self,

@@ -169,7 +169,13 @@ For most hooks, choose an execution mode based on whether the current operation 
 
 An asynchronous hook (`async`) does not delay the event that triggered it or the current operation. When the current turn or session ends, if an applicable asynchronous hook is still running, iCode waits for it to finish before ending the turn or session. iCode does not wait for asynchronous hooks triggered by `user_interrupt`. The wait limit at session end is configurable in [Global settings](../../reference/hooks.md#global-settings). To retry unfinished tasks after iCode exits, also configure `delivery: durable`.
 
-In a chat, the bottom-right corner shows the hook that is running; select it to see the hooks iCode loaded.
+## See which hooks ran
+
+In a chat, the bottom-right corner shows the hook iCode is waiting for. Select it to open the **Hooks** tab of the sidebar (**Ctrl+G** shows or hides the sidebar) and, when a hook is shown there, that hook's details over it; the list scrolls to that hook's row and marks it.
+
+The **Hooks** tab lists the hooks that ran since iCode started, in every session, numbered in the order they started, the newest at the bottom: those still running or waiting for their turn, and the 100 that ended last. Each row shows its number, the hook, the tool or event that triggered it (and the sub-agent, when one did), how long it ran, and its result, such as `exit 1`, `timed out`, `blocked`, `modified args` or `added context`. A hook that failed is marked `✗`. **Clear ended** removes the runs that ended from the list; running ones stay. Cleared runs can't be shown again, and new runs keep counting from the last number. Once more than 100 runs have ended, the top of the list says that only the latest 100 are kept.
+
+Click a run to see its details. **Input** shows the payload iCode gave the hook and how it was run; **Output** shows its result file, what iCode took from it (or why it took nothing), and what it printed to stdout and stderr. Click a box to copy what it shows, or press **c** to copy the whole tab. The list starts empty each time iCode starts; to see the hooks iCode loaded, enter `/runtime` and open the **Hooks** tab.
 
 ## Use global hooks
 
