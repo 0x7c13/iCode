@@ -307,6 +307,12 @@ msgstr ""
 msgid "error.kind.auth_failed"
 msgstr ""
 
+#. English: The model returned no answer.
+#. chrys-meta={"fingerprint":"57d84b9049c3aab01b03a27486af3f2fb3ba147bc5b54cb91d6d67f3f79492df","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.blank_response"
+msgstr ""
+
 #. English: Connecting to {host} timed out. Check your network and firewall.
 #. chrys-meta={"fingerprint":"2095647ac8e4488d51d71298d5de8f48aa5891fcd6f1470bd706bdbbf777c43a","multiline":false,"placeholders":["host"]}
 #: src/chrys/foundation/errors/display.py
@@ -9365,6 +9371,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"7a7fc19d6885f178f32854c53b638a10b84a550600622e124e13fc6b1ee07195","multiline":true,"placeholders":["session_id"]}
 #: src/chrys/app/tui/screens/sessions/screen.py
 msgid "tui.sessions.delete.confirm_message"
+msgstr ""
+
+#. English: The session could not be fully deleted. Close any program that may
+#. have its files open, then try again.
+#. chrys-meta={"fingerprint":"f4c7e3811e4ea8566725e79a4e1e76545d8fc7207fb0e1c94dafbb42509d25cd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/screen.py
+msgid "tui.sessions.delete.failed"
 msgstr ""
 
 #. English: Session is open in another {app_name} instance.

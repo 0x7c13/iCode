@@ -279,9 +279,11 @@ iCode selects the runtime based on the file extension:
 | `.pl` | `perl` |
 | Other | Run as a Python script |
 
-For `.py` files, iCode first searches the user's `PATH` for `uv`, `python3`, and `python`, in that order. If it finds `uv`, it runs the script with `uv run`; if it finds Python, it uses that interpreter directly. If none are found, it uses `uv` or Python from iCode's bundled runtime.
+For `.py` files, iCode first searches the user's `PATH` for `uv`, `python3`, and `python`, in that order. If it finds `uv`, it runs the script with `uv run`; if it finds Python, it uses that interpreter directly. If none are found, it uses `uv` or Python from iCode's bundled runtime. On Windows, iCode skips the `python` and `python3` placeholders that only offer Python from the Microsoft Store, and keeps looking.
 
 Before running other script types, install the corresponding runtime from the table and ensure iCode can find it through `PATH`.
+
+On Windows, shell scripts need a Windows `bash`, such as the one Git for Windows installs. iCode does not use WSL's `bash`, because it cannot open the script from its Windows path. If iCode finds no other `bash` or `sh`, the hook fails and its error says what is missing.
 
 ### Running commands
 
@@ -302,6 +304,8 @@ iCode does not interpret arguments through a shell, so redirection, pipes, varia
 | `args` | List of strings | `[]` | Arguments appended to the end of `argv`. |
 
 Write each argument as a separate list item, without shell escaping. You can put all arguments in `argv`, or put trailing arguments in `args`; both forms produce the same result. Prefer `command` when you do not need shell syntax, to avoid differences in quoting and escaping between shells.
+
+> **Note**: On Windows, `python` and `python3` can be placeholders that only offer Python from the Microsoft Store: both are until a Python is on `PATH`, and `python3` stays one after python.org's traditional installer, which adds no `python3`. Windows itself picks the program for `command` and `shell` hooks, so iCode cannot skip the placeholders there: such a hook can fail with exit code 9009, and a `command` hook can instead run the Python iCode itself uses, without your packages. Write the full path of the Python you installed, or turn off the **App Installer** entries for `python.exe` and `python3.exe` under **App execution aliases** in Windows Settings.
 
 ### Running shell snippets
 
@@ -687,7 +691,7 @@ These problems are warnings:
 | `broad_before_tool_call` | A `before_tool_call` hook has no match conditions, so it runs for every tool call |
 | `duplicate_id_across_files` | The project and global files both define this `id`; both hooks run |
 | `shadowed_file` | The folder holds more than one hook configuration file; only the first is read (see [Configuration file locations](#configuration-file-locations)) |
-| `program_not_found` | The program that runs an enabled hook's command or script is not found on `PATH` |
+| `program_not_found` | The program that runs an enabled hook's command or script is not found on `PATH`, or on Windows is only the placeholder that offers Python from the Microsoft Store |
 | `unknown_template_var` | `run.cwd` or `run.env` uses a `${...}` variable that iCode does not fill in, or `run.argv` or `run.args` uses any `${...}` variable (iCode fills in variables only in `cwd` and `env` values), so it is passed on as written |
 
 Missing scripts and programs are checked only for enabled hooks. A hook whose `run.env` sets `PATH` is not checked for a missing program.

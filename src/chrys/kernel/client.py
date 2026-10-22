@@ -90,6 +90,10 @@ def _report_side_call_update(_update: ChatResponseUpdate) -> None:
     report_wire_progress()
 
 
+EXHAUSTION_TAIL_KWARG = "exhaustion_tail"
+"""``client_kwargs`` key of the tool loop's exhaustion tail call: its chat middleware leaves a response that showed
+nothing to the loop's fallback text. A loop-to-middleware flag, never a provider request parameter."""
+
 # Output-cap spellings in provider conflict-priority order. The canonical
 # ``max_tokens`` alias wins when more than one is supplied.
 OUTPUT_CAP_OPTION_ALIASES: tuple[str, ...] = ("max_tokens", "max_output_tokens", "max_completion_tokens")
@@ -1005,6 +1009,7 @@ class BaseChatClient(SerializationMixin, _PreparedRequestObserverClient, ABC):
             tokenizer=tokenizer,
         )
         merged_client_kwargs = dict(client_kwargs) if client_kwargs is not None else {}
+        merged_client_kwargs.pop(EXHAUSTION_TAIL_KWARG, None)
         options_snapshot, sanitized_client_kwargs, kwargs_cap_ceiling = self._normalize_wire_inputs(
             options,
             merged_client_kwargs,

@@ -16,6 +16,7 @@ from chrys.service.approval.judge import ApprovalJudge, JudgeVerdict
 from chrys.service.approval.predicate import TruthValue, load_default_asset
 from chrys.service.llm import clients
 from chrys.service.profiles.models.schema import ModelProfile
+from tests.support.gc_isolation import earlier_tests_heap_frozen
 
 
 def predicate_values(value: TruthValue = False) -> dict[str, TruthValue]:
@@ -82,7 +83,9 @@ async def judge_client(
         client = await judge._get_client()
         sdk = client.inner.inner.sdk_client
         await asyncio.to_thread(lambda: sdk.chat.completions.with_raw_response)
-        yield judge, calls
+        # Nor a full collection walking what earlier tests in this worker left alive.
+        with earlier_tests_heap_frozen():
+            yield judge, calls
     finally:
         await judge.aclose()
         assert all(client.is_closed for client in http_clients)

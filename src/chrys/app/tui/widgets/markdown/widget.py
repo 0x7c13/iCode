@@ -10,6 +10,11 @@ widget, but avoids mounting one widget per block.
 from __future__ import annotations
 
 import asyncio
+import logging
+import sys
+import threading
+import time
+import traceback
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Callable, Coroutine, Sequence
@@ -65,9 +70,13 @@ from chrys.app.tui.widgets.markdown.parser import (
 from chrys.app.tui.widgets.markdown.stream import MarkdownStream
 from chrys.foundation.i18n import msg
 
+logger = logging.getLogger(__name__)
+
 _DIAGRAM_OPEN = msg("tui.markdown.diagram.open", fallback="Open full diagram")
 _INLINE_DIAGRAM_MAX_HEIGHT = 24
 _DIAGRAM_COMPILE_CACHE_SIZE = 24
+_PARSE_STALL_REPORT_SECONDS = 15.0
+"""A parse still running this long logs every thread's stack once, and how long it took when it ends."""
 
 
 def _strip_plain_text(strip: Strip) -> str:
@@ -193,6 +202,61 @@ class _DiagramLayout:
     @property
     def total_height(self) -> int:
         return self.preview_height + 1
+
+
+class _ParseWatch:
+    """Leaves evidence of a parse that runs long: no parse of a streamed answer takes seconds.
+
+    While one parse runs, every later update joins the parse after it, so a parse that never
+    ends freezes the document; what its thread is doing is all that can explain why.
+    """
+
+    __slots__ = ("finished", "reported", "started_at", "thread_id")
+
+    def __init__(self) -> None:
+        self.started_at = time.monotonic()
+        self.thread_id: int | None = None
+        """The executor thread running the parse; None while the parse still waits for one."""
+        self.finished = False
+        """Set by that thread: a busy loop can run the report after the parse ended."""
+        self.reported = False
+
+    def run(self, build: Callable[[str], list[MarkdownBlock]], markdown: str) -> list[MarkdownBlock]:
+        self.thread_id = threading.get_ident()
+        try:
+            return build(markdown)
+        finally:
+            self.finished = True
+
+    def report(self) -> None:
+        if self.finished:
+            return
+        self.reported = True
+        names = {thread.ident: thread.name for thread in threading.enumerate()}
+        if self.thread_id is None:
+            where = "has not started: no executor thread took it"
+        else:
+            where = f"is running on thread {names.get(self.thread_id, self.thread_id)}"
+        stacks = [
+            f"--- {names.get(ident, ident)}{' (the parse)' if ident == self.thread_id else ''}\n"
+            + "".join(traceback.format_stack(frame))
+            for ident, frame in sys._current_frames().items()
+        ]
+        logger.warning(
+            "Markdown parse %s after %.0fs; every thread's stack:\n%s",
+            where,
+            time.monotonic() - self.started_at,
+            "\n".join(stacks),
+        )
+
+    def ended(self) -> None:
+        if self.reported:
+            # Quitting cancels the wait for a parse that never ends.
+            logger.warning(
+                "Markdown parse %s after %.1fs",
+                "ended" if self.finished else "was given up unfinished",
+                time.monotonic() - self.started_at,
+            )
 
 
 class _PendingParse:
@@ -1757,7 +1821,14 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
             if self._pending_parse is request:
                 self._pending_parse = None
             markdown = self._markdown
-            blocks = await asyncio.get_running_loop().run_in_executor(None, self._build_blocks, markdown)
+            loop = asyncio.get_running_loop()
+            watch = _ParseWatch()
+            report = loop.call_later(_PARSE_STALL_REPORT_SECONDS, watch.report)
+            try:
+                blocks = await loop.run_in_executor(None, watch.run, self._build_blocks, markdown)
+            finally:
+                report.cancel()
+                watch.ended()
             self._install_blocks(blocks)
 
             lines = markdown.splitlines()

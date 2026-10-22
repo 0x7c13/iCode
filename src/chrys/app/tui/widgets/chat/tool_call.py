@@ -1300,6 +1300,16 @@ class ToolCall(BaseToolCard):
         panel.border_title = Text(self._border_title_text())
         yield panel
 
+    def update_identity(self, tool_name: str, tool_kind: str) -> None:
+        """Show the call's new name and kind; the card keeps the renderer its first start chose."""
+        if (tool_name, tool_kind) == (self.tool_name, self.tool_kind):
+            return
+        self.tool_name = tool_name
+        self.tool_kind = tool_kind
+        with suppress(Exception):
+            self.query_one("#tc-label", Static).update(self._label_text(self.duration_ms))
+            self.query_one("#tc-panel").border_title = Text(self._border_title_text())
+
     def update_args(self, args: dict[str, Any]) -> None:
         """Refresh the displayed arguments after an approval edit."""
         self.args = args
@@ -1698,8 +1708,16 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
                 self._finish_if_all_complete()
                 return
             if existing := self._tools.get(call_id):
+                running = isinstance(existing, BaseToolCard) and existing.status == "running"
                 if record := self._tool_records.get(call_id):
                     self._apply_tool_record_state(record, existing)
+                # A running call's start again shows its name, kind and arguments on its card, as far as the
+                # renderer its first start chose updates them in place. A finished card keeps the call its
+                # result answered.
+                if running and isinstance(existing, ToolCall):
+                    existing.update_identity(tool_name, tool_kind)
+                if running and args is not None and isinstance(existing, _ToolArgsUpdatable):
+                    existing.update_args(args)
                 self._update_title()
                 return
             if not self._content_mounted:
@@ -1876,8 +1894,8 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
         )
         self._update_title()
 
-    def update_sub_agent_activity(self, parent_call_id: str, activity: _ToolActivity) -> None:
-        """Replace a running sub-agent's latest assistant/tool activity."""
+    def update_sub_agent_activity(self, parent_call_id: str, activity: _ToolActivity | None) -> None:
+        """Replace a running sub-agent's latest assistant/tool activity; None shows the agent's own."""
         record = self._tool_records.get(parent_call_id)
         if record is None or record.status != "running" or record.tool_kind != KIND_SUB_AGENT:
             return

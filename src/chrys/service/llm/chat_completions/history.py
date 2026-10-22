@@ -18,6 +18,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY
 from chrys.foundation.text.model_json import model_json
 from chrys.kernel import TOOL_CALL_CONTENT_TYPES, Content, Message, is_image_content
 from chrys.service.agent_middleware.events.hosted_tools import cross_provider_hosted_degradations
@@ -45,6 +46,9 @@ logger = logging.getLogger(__name__)
 # message after the results, and the marker on a hosted-history summary.
 _PENDING_IMAGES = "_chrys_pending_image_parts"
 _HOSTED_SUMMARY = "_chrys_hosted_context_summary"
+# Markers a text content carries for Chrys alone: the request-local summary
+# marker and the segment the answer was shown in.
+_PRIVATE_TEXT_KEYS = frozenset({_HOSTED_SUMMARY, ANSWER_SEGMENT_KEY})
 
 # OpenAI checks ``name`` against ``^[^\s<|\\/>]+$`` with at most 64 characters.
 # CJK and hyphens pass, so only the characters the rule forbids are removed.
@@ -369,8 +373,8 @@ def encode_content(content: Content) -> dict[str, Any]:
             }
         case "function_result":
             return {"tool_call_id": content.call_id, "content": "" if content.result is None else content.result}
-        case "text" if _HOSTED_SUMMARY in content.additional_properties:
-            return _unmarked_summary(content)
+        case "text":
+            return _text_part(content)
         case "data" | "uri":
             return _media_part(content)
         case _:
@@ -416,18 +420,19 @@ def _media_part(content: Content) -> dict[str, Any]:
     return {"type": "text", "text": _UNSUPPORTED_MEDIA_TEXT.format(media_type=media_type)}
 
 
-def _unmarked_summary(content: Content) -> dict[str, Any]:
-    """A summary's text part without the request-local marker; history keeps it.
+def _text_part(content: Content) -> dict[str, Any]:
+    """A text part without Chrys's private markers; history keeps them.
 
-    Text parts of a multimodal message carry their properties to the wire.
+    Text parts of a multimodal message carry their other properties to the wire.
     """
     part = content.to_dict(exclude_none=True)
-    properties = dict(part["additional_properties"])
-    del properties[_HOSTED_SUMMARY]
+    properties = {
+        key: value for key, value in part.get("additional_properties", {}).items() if key not in _PRIVATE_TEXT_KEYS
+    }
     if properties:
         part["additional_properties"] = properties
     else:
-        del part["additional_properties"]
+        part.pop("additional_properties", None)
     return part
 
 

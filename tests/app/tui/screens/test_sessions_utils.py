@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import errno
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -435,6 +436,45 @@ async def test_delete_session_cancel_leaves_row_intact() -> None:
 
         assert table.row_count == 2
         assert [session.session_id for session in store.sessions] == ["session-0", "session-1"]
+
+
+class _UndeletableSessionStore(FakeSessionStore):
+    async def delete_session(self, session_id: str, *, allow_active: bool = False) -> None:
+        raise OSError(errno.ENOTEMPTY, "The directory is not empty", f"sessions/{session_id}/trajectory")
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_cannot_be_deleted_stays_listed_with_an_error() -> None:
+    store = _UndeletableSessionStore(2)
+    screen = SessionsScreen(store)
+    notified: list[tuple[str, str, str, bool]] = []
+
+    def notify(
+        message: str, *, title: str = "", severity: str = "information", timeout: float | None = None, markup: bool
+    ) -> None:
+        notified.append((severity, title, message, markup))
+
+    async with SessionsHostApp().run_test(size=(120, 40)) as pilot:
+        await pilot.app.push_screen(screen)
+        table = screen.query_one("#sessions", DataTable)
+        await wait_for_row_count(table, pilot, 2)
+        screen.notify = notify  # type: ignore[method-assign]
+
+        await confirm_delete(screen, pilot)
+        # A failure the screen does not handle ends the App instead.
+        await wait_for(lambda: notified or not pilot.app.is_running, pilot=pilot, description="delete failure reported")
+
+        assert pilot.app.is_running
+        assert notified == [
+            (
+                "error",
+                "Delete Session",
+                "The session could not be fully deleted. Close any program that may have its files open, then try again.",
+                False,
+            )
+        ]
+        assert table.row_count == 2
+        assert screen._get_selected_session_id() == "session-0"
 
 
 @pytest.mark.asyncio

@@ -378,9 +378,11 @@ def test_a_retry_notice_for_a_context_overflow_announces_the_resend_after_compac
     assert (_key(message), hint) == (key, None)
 
 
-@pytest.mark.parametrize(("retry_notice", "key"), [(True, "retry.blank_response"), (False, None)])
-def test_a_retry_notice_for_a_response_that_showed_nothing_announces_the_one_resend(
-    retry_notice: bool, key: str | None
+@pytest.mark.parametrize(
+    ("retry_notice", "key"), [(True, "retry.blank_response"), (False, "error.kind.blank_response")]
+)
+def test_a_response_that_showed_nothing_is_described_and_its_retry_notice_announces_the_one_resend(
+    retry_notice: bool, key: str
 ) -> None:
     blank = ContinuationVerdictError("empty contents")
     blank.blank_response = True

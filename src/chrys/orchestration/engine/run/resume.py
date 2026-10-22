@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -156,7 +156,11 @@ class TurnResumePolicy:
 
     @asynccontextmanager
     async def retry_request(
-        self, additional_text: str = "", created_at: datetime | str | None = None
+        self,
+        additional_text: str = "",
+        created_at: datetime | str | None = None,
+        *,
+        withdraw: Callable[[tuple[str, ...]], Awaitable[None]] | None = None,
     ) -> AsyncGenerator[RunRequest | None]:
         """Resume from current conversation state.
 
@@ -165,7 +169,8 @@ class TurnResumePolicy:
         the current turn, so it appears as a proper user turn in history.
 
         When *additional_text* is empty, a trailing answer the failed pass
-        showed is dropped first, so it is asked for again, and then:
+        showed is dropped first, so it is asked for again (*withdraw* hears
+        the segments it was shown in, before anything else runs), and then:
 
         * If there are completed tool calls after the last user message,
           continues from the transcript with empty input.
@@ -215,7 +220,8 @@ class TurnResumePolicy:
 
         history = SessionHistoryManager()
         history.bind(state)
-        history.remove_trailing_answer()
+        if (withdrawn := history.remove_trailing_answer()) and withdraw is not None:
+            await withdraw(withdrawn)
 
         # Find the last real user input. Legacy synthetic nudges stay in
         # persisted history for read compatibility but cannot become anchors.

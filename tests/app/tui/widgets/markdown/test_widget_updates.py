@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 
 import pytest
@@ -149,6 +150,73 @@ async def test_every_awaitable_resolves_after_its_own_text_or_newer_is_installed
         assert seen["one"] in {"one", "three"}
         assert seen["two"] == "three"
         assert seen["three"] == "three"
+
+
+async def test_a_parse_that_runs_long_logs_every_threads_stack_once_and_then_how_long_it_took(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def reports(text: str) -> list[str]:
+        return [record.getMessage() for record in caplog.records if text in record.getMessage()]
+
+    app = App()
+    async with app.run_test() as pilot:
+        widget = await _mounted(app, pilot)
+        parse_watch = widget_module._ParseWatch
+        due: list[widget_module._ParseWatch] = []
+
+        class _ReportWhenRunning(parse_watch):
+            """Keeps the timer's report: a loaded runner may start the parse's thread after the shortened timer."""
+
+            __slots__ = ()
+
+            def report(self) -> None:
+                due.append(self)
+
+        # Only now: the mount's own parse keeps the real timer.
+        monkeypatch.setattr(widget_module, "_PARSE_STALL_REPORT_SECONDS", 0.05)
+        monkeypatch.setattr(widget_module, "_ParseWatch", _ReportWhenRunning)
+        widget.hold_first_parse = True
+        with caplog.at_level(logging.WARNING, logger=widget_module.__name__):
+            try:
+                update = widget.update("held\n")
+                await wait_for(
+                    lambda: due and widget.first_parse_started.is_set(),
+                    pilot=pilot,
+                    description="held parse due its report",
+                )
+                # On the loop, as the timer runs it.
+                parse_watch.report(due[0])
+                assert reports("Markdown parse is running on thread")
+                assert not reports("Markdown parse ended")
+            finally:
+                widget.release_first_parse.set()
+            await update
+
+        [report] = reports("Markdown parse is running on thread")
+        # The parse's own frame is in it, where the test double holds it.
+        [parse_stack] = [stack for stack in report.split("\n--- ") if "(the parse)" in stack]
+        assert "in _build_blocks" in parse_stack
+        assert len(reports("Markdown parse ended after")) == 1
+        assert _installed_text(widget) == "held"
+
+
+def test_a_parse_report_says_only_what_the_parse_did(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger=widget_module.__name__):
+        # A loop that resumes late runs the report after the parse ended: nothing to report.
+        ended = widget_module._ParseWatch()
+        ended.run(lambda markdown: [], "done\n")
+        ended.report()
+        ended.ended()
+        assert caplog.records == []
+
+        # Quitting gives up waiting for a parse that never ended.
+        stuck = widget_module._ParseWatch()
+        stuck.report()
+        stuck.ended()
+    assert [record.getMessage().split(" after ")[0] for record in caplog.records] == [
+        "Markdown parse has not started: no executor thread took it",
+        "Markdown parse was given up unfinished",
+    ]
 
 
 async def test_a_table_keeps_painting_while_a_newer_update_parses() -> None:

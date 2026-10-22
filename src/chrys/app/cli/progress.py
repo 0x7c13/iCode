@@ -459,8 +459,8 @@ class InvocationActivity:
         summary = summarize_tool(event.tool_name, event.tool_kind, event.args, hosted_family=event.hosted_family)
         call = self._calls.get(key)
         if call is not None:
-            # ACP re-emits a start whenever a call's title, kind or input changes, and once more before its
-            # result: the open call keeps its first timestamp and only learns the newer description.
+            # ACP emits a call's start again when what it shows changes (title, kind, input, hosted details): the
+            # open call keeps its first timestamp and only learns the newer description.
             call.summary = summary
             call.tool_name, call.tool_kind = event.tool_name, event.tool_kind
             call.hosted_family = event.hosted_family or call.hosted_family
@@ -603,14 +603,16 @@ class InvocationActivity:
         """
         for key in [key for key in self._answers if invocation_id is None or key[0] == invocation_id]:
             answer = self._answers.pop(key)
-            for parts in answer.segments.values():
-                self._commentary(answer.lead, "".join(parts))
+            self._print_held(answer, answer.lead)
 
     def _flush_answer(self, origin: InvocationOrigin, lead: str) -> None:
         answer = self._answers.pop((origin.invocation_id, origin.attempt), None)
         if answer is not None:
-            for parts in answer.segments.values():
-                self._commentary(lead, "".join(parts))
+            self._print_held(answer, lead)
+
+    def _print_held(self, answer: _PendingAnswer, lead: str) -> None:
+        for parts in answer.segments.values():
+            self._commentary(lead, "".join(parts))
 
     def _commentary(self, lead: str, text: str) -> None:
         body = sanitize_terminal_block(surrogate_safe_text(text)).strip("\n")

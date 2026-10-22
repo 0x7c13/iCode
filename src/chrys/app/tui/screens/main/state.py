@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -246,7 +247,7 @@ class TurnRenderGate:
     """Defers fast backend events while the accepted user bubble mounts, then replays them in order."""
 
     active: bool = False
-    _deferred: list[DeferredTurnEvent] = field(default_factory=list)
+    _deferred: deque[DeferredTurnEvent] = field(default_factory=deque)
     _replaying: DeferredTurnEvent | None = None
 
     def begin(self) -> None:
@@ -279,7 +280,7 @@ class TurnRenderGate:
         """
         try:
             while self._deferred:
-                self._replaying = self._deferred.pop(0)
+                self._replaying = self._deferred.popleft()
                 await replay(self._replaying)
         finally:
             self._replaying = None

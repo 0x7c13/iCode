@@ -72,16 +72,17 @@ jobs:
           version: "0.13.1"
           prune-cache: true
           enable-cache: true
-      # The oldest interpreter a workflow worker may run in; set up first so
-      # the project interpreter below stays first on PATH.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        id: py39
-        with:
-          python-version: "3.9"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version-file: .python-version
           allow-prereleases: true
+      - name: Install Python 3.9
+        # The oldest interpreter a workflow worker may run in. uv's standalone
+        # builds do not depend on the runner image; setup-python's manifest
+        # has no 3.9 for newer Ubuntu images, which ubuntu-latest moves to.
+        run: |
+          uv python install 3.9
+          echo "CHRYS_PY39_INTERPRETER=$(uv python find 3.9)" >> "$GITHUB_ENV"
       - run: uv sync
       - name: Prewarm src bytecode
         run: uv run python -m compileall -q src
@@ -97,7 +98,6 @@ jobs:
       - name: Run tests
         timeout-minutes: 15
         env:
-          CHRYS_PY39_INTERPRETER: ${{ steps.py39.outputs.python-path }}
           CHRYS_TEST_STALL_DIAGNOSTICS: "1"
         run: uv run pytest -q --tb=short --durations=20 --dist=worksteal --junitxml=test-results-${{ matrix.artifact }}.xml -n ${{ matrix.workers }} -m "not integration and not gc_calibration" ${{ matrix.pytest_args }}
       - name: Typecheck (ty)

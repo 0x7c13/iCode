@@ -79,15 +79,19 @@ class ChildHistory:
         manager.keep_partial_answer(partial_answer)
         self.session.service_session_id = None
 
-    def retry_input(self, seed: Callable[[], list[Any]]) -> list[Any]:
+    def retry_input(self, seed: Callable[[], list[Any]]) -> tuple[list[Any], tuple[str, ...]]:
         """Continue completed work, otherwise replay the seed without duplicating its anchor.
 
         Synthetic continuation nudges cannot become the user anchor for this decision. An answer
-        the failed pass left at the end is asked for again, as a bare Continue of a turn does.
+        the failed pass left at the end is asked for again, as a bare Continue of a turn does: the
+        segment ids it was shown in come back beside the input, for its views to withdraw.
         """
         manager = SessionHistoryManager()
         manager.bind(self.state())
-        manager.remove_trailing_answer()
+        withdrawn = manager.remove_trailing_answer()
+        return self._retry_messages(seed), withdrawn
+
+    def _retry_messages(self, seed: Callable[[], list[Any]]) -> list[Any]:
         messages = self.messages()
         user_idx = -1
         for i in range(len(messages) - 1, -1, -1):

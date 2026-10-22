@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import sys
 import textwrap
@@ -11,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from chrys.foundation.platform import script_commands
+from chrys.service.hooks import validation
 from chrys.service.hooks.loader import HookEntryError, HooksConfigError, load_hooks_file, parse_hooks_dict
 from chrys.service.hooks.validation import (
     HookDiagnostic,
@@ -424,6 +427,34 @@ def test_a_script_whose_interpreter_is_missing_is_named(tmp_path: Path, monkeypa
     report = _check(tmp_path, _hook("after_turn", run="{type: script, path: notify.rb}"))
 
     assert "'ruby', which runs .rb scripts, was not found on PATH" in _only(report, "program_not_found").message
+
+
+def test_a_shell_script_with_no_bash_to_run_it_says_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_bash() -> str:
+        raise FileNotFoundError(errno.ENOENT, script_commands._NO_WINDOWS_BASH)
+
+    _write(tmp_path / "hooks" / "notify.sh", "echo 1\n")
+    monkeypatch.setattr(script_commands, "_find_bash", no_bash)
+
+    report = _check(tmp_path, _hook("after_turn", run="{type: script, path: notify.sh}"))
+
+    diagnostic = _only(report, "program_not_found")
+    assert (diagnostic.severity, diagnostic.message) == ("warning", script_commands._NO_WINDOWS_BASH)
+
+
+def test_a_command_that_is_the_store_python_placeholder_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    placeholder = r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\python3.exe"
+    monkeypatch.setattr(validation.shutil, "which", lambda program: placeholder if program == "python3" else None)
+    monkeypatch.setattr(validation, "is_windows_store_python_stub", lambda path: path == placeholder)
+
+    report = _check(tmp_path, _hook("after_turn", run="{type: command, argv: [python3, guard.py]}"))
+
+    assert _only(report, "program_not_found").message == (
+        "on PATH, the program in run.argv[0] is only Windows' placeholder that offers Python from the Microsoft "
+        "Store; write the full path of an installed Python"
+    )
 
 
 @pytest.mark.parametrize(

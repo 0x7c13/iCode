@@ -14,10 +14,13 @@ The provider-hosted work a landed response ran waits for the text before it
 
 Answer text that was shown is never sent again: :attr:`exposed` tells a retry
 owner that replaying the pass would repeat it, and
-:meth:`take_unlanded_answer` hands over the answer a failed turn keeps: what a
-response streamed before it failed, the whole landed response while its
-segments close, and a final answer until history records it. Reasoning may
-stream again: a retry shows a fresh run of thought, never a repeated answer.
+:meth:`take_unlanded_answer` hands over the answer a failed turn keeps: what
+the response being streamed showed before it failed, and the text the last
+landed response showed, which history may already hold. Every answer text
+content that goes out is stamped with its segment id
+(:data:`ANSWER_SEGMENT_KEY`), so the history that keeps it can later name
+what to withdraw. Reasoning may stream again: a retry shows a fresh run of
+thought, never a repeated answer.
 A retry gives up the response being streamed (:meth:`on_retry_boundary`): one
 ``InvocationContentAbandoned`` names its segments before the open one closes
 as failed, and none of its text is kept.
@@ -37,6 +40,7 @@ from typing import TYPE_CHECKING, Protocol
 from uuid import uuid4
 
 from chrys.foundation.events.types import InvocationContentAbandoned, InvocationContentDelta, InvocationContentFinished
+from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY
 from chrys.kernel import TOOL_CALL_CONTENT_TYPES, TOOL_RESULT_CONTENT_TYPES
 from chrys.service.llm.reasoning_display import readable_reasoning
 
@@ -97,9 +101,6 @@ class ContentProjector:
             if content.type == "usage" or id(content) in self._seen:
                 continue
             self._seen[id(content)] = content
-            if content.type == "text" and content.text and not self._whole_segments:
-                # Kept before the publish: a subscriber may show it before a cancel cuts the publish short.
-                self._unlanded_answer.append(content)
             if await self._project(content):
                 self._streamed = True
 
@@ -114,15 +115,19 @@ class ContentProjector:
         streamed = self._streamed
         self._reset_response()
         answers = [message for message in response.messages if message.role == "assistant"]
-        # History stores a final answer only once the run's providers run: a
-        # pass cancelled before then keeps the landed answer, which history may
-        # already hold, as it does a response the loop recorded. A
-        # whole-segment caller keeps a response that did not stream as its
-        # segments complete: one cancelled midway showed only those.
+        # History stores a response only once the loop records it or the run's
+        # providers run: a pass cancelled before then keeps the text it
+        # showed, which history may already hold. A response that streamed
+        # showed its landed text (the fragments' stamps carry over); one that
+        # did not is kept as it goes out, or, by a whole-segment caller, as
+        # its segments complete: one cancelled midway showed only those.
         self._landing = streamed or not self._whole_segments
-        if self._landing:
+        if streamed:
             self._unlanded_answer = [
-                content for message in answers for content in message.contents if content.type == "text"
+                content
+                for message in answers
+                for content in message.contents
+                if content.type == "text" and ANSWER_SEGMENT_KEY in content.additional_properties
             ]
         try:
             if not streamed:
@@ -138,13 +143,6 @@ class ContentProjector:
             # The next response is another wire call.
             self._landing = self._response_exposed = False
             self._response_segments = []
-        # The loop records a response whose calls it runs; hosted calls ran at the provider.
-        if any(
-            content.type == "function_call" and not content.informational_only
-            for message in answers
-            for content in message.contents
-        ):
-            self._unlanded_answer = []
 
     async def on_retry_boundary(self) -> None:
         """The response being streamed is abandoned for a fresh attempt."""
@@ -162,10 +160,9 @@ class ContentProjector:
             )
         await self._close("failed")
 
-    async def publish_text(self, channel: ContentChannel, text: str) -> None:
-        """Publish plain *text* on *channel*, for a backend that streams text rather than contents."""
-        if text:
-            await self._append(channel, text)
+    async def publish_text(self, channel: ContentChannel, text: str) -> str | None:
+        """Publish plain *text* on *channel*, for a backend that streams text rather than contents; name its segment."""
+        return await self._append(channel, text) if text else None
 
     async def end_segment(self, status: ContentStatus = "completed") -> None:
         """Close the open segment with *status*; the next text opens a new one."""
@@ -176,7 +173,7 @@ class ContentProjector:
         await self._close(status)
 
     def take_unlanded_answer(self) -> tuple[Content, ...]:
-        """Hand over the answer contents of the response this pass left unrecorded, once."""
+        """Hand over, once, the answer contents this pass showed that history may not hold."""
         answer, self._unlanded_answer = tuple(self._unlanded_answer), []
         return answer
 
@@ -204,13 +201,19 @@ class ContentProjector:
             await self._close("completed")
         return False
 
-    async def _append(self, channel: ContentChannel, text: str, content: Content | None = None) -> None:
+    async def _append(self, channel: ContentChannel, text: str, content: Content | None = None) -> str:
         segment = self._open
         if segment is None or segment.channel != channel:
             await self._close("completed")
             segment = self._open = _Segment(uuid4().hex, channel)
             self._response_segments.append(segment.segment_id)
         readable = channel == "answer" and not text.isspace()
+        if content is not None:
+            # A fresh dict: the content's own may be shared with another copy.
+            content.additional_properties = {**content.additional_properties, ANSWER_SEGMENT_KEY: segment.segment_id}
+            if not self._whole_segments:
+                # Kept before the publish: a subscriber may show it before a cancel cuts the publish short.
+                self._unlanded_answer.append(content)
         if self._whole_segments:
             segment.readable = segment.readable or readable
             if content is not None:
@@ -229,6 +232,7 @@ class ContentProjector:
                 text=text,
             )
         )
+        return segment.segment_id
 
     async def _close(self, status: ContentStatus) -> None:
         segment, self._open = self._open, None

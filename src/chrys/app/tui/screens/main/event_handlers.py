@@ -79,6 +79,7 @@ from chrys.foundation.events.types import (
     ImageAttachmentCompressionFinished,
     ImageAttachmentCompressionStarted,
     InvocationAborted,
+    InvocationAnswerWithdrawn,
     InvocationCascadeAborted,
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
@@ -1470,6 +1471,13 @@ class BackendEventHandler:
             ),
         )
 
+    async def on_answer_withdrawn(self, event: InvocationAnswerWithdrawn) -> None:
+        """A bare Continue or Retry dropped this answer from history to ask for it again: it goes from view."""
+        if event.origin.kind == "turn":
+            await self._ui().withdraw_answer(event.segment_ids)
+        elif _chat_sub_agent(event.origin):
+            self._ui().sub_agent_answer_withdrawn(event.origin.invocation_id, event.segment_ids)
+
     async def on_sub_agent_resumed_after_pause(self, event: InvocationResumed) -> None:
         """Clear the paused state — the controller is running again."""
         if not _chat_sub_agent(event.origin):
@@ -1936,7 +1944,7 @@ class BackendEventHandler:
         terminal_owned = not was_live
         try:
             ui.flash_status(STATUS_ERROR.bind(message=short_msg), error=True)
-            await ui.add_error(chat_msg, ends_turn=was_live)
+            await ui.add_error(chat_msg)
         finally:
             if not was_live or (self._state.run.generation == terminal_generation and s.agent_running):
                 if was_live:
@@ -2017,8 +2025,7 @@ class BackendEventHandler:
             # card and its action so the user can retry after resolving this.
             s.notify(chat_msg, title=_RETRY_NOT_STARTED.bind(), severity="error", timeout=8)
         else:
-            # No turn ran: a bare Retry later must not take the last answer for this card's.
-            await ui.add_error(chat_msg, action_label=None, ends_turn=False)
+            await ui.add_error(chat_msg, action_label=None)
         s.debug("Error", f"[{code}] {(message if raw_message is None else raw_message)[:60]}")
 
     async def on_retry_attempt(self, event: InvocationRetryAttempt) -> None:

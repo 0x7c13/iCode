@@ -126,6 +126,7 @@ _CONTEXT_OVERFLOW_RESEND = msg(
     "retry.context_overflow", fallback="The context window is full. Compacting the context before one retry."
 )
 _BLANK_RESPONSE_RESEND = msg("retry.blank_response", fallback="The model returned no answer. Asking again once.")
+_BLANK_RESPONSE = msg("error.kind.blank_response", fallback="The model returned no answer.")
 # The probe checks the device {app} runs on: under ``icode serve`` that is the
 # server, not the device showing the browser.
 _MAYBE_OFFLINE = msg(
@@ -244,8 +245,8 @@ def describe_error(
         return ErrorDescription(kind, _STREAM_STALLED.bind())
     if kind is ErrorKind.CONTEXT_OVERFLOW and retry_notice:
         return ErrorDescription(kind, _CONTEXT_OVERFLOW_RESEND.bind())
-    if retry_notice and is_blank_response(exc):
-        return ErrorDescription(kind, _BLANK_RESPONSE_RESEND.bind())
+    if is_blank_response(exc):
+        return ErrorDescription(kind, (_BLANK_RESPONSE_RESEND if retry_notice else _BLANK_RESPONSE).bind())
     if (definition := _HOSTLESS_MESSAGES.get(kind)) is not None:
         if not result.from_model_service:
             return None

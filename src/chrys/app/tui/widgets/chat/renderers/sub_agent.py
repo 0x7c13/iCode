@@ -25,6 +25,7 @@ from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     AgentTranscriptJournal,
     AgentTranscriptSurface,
+    TranscriptAnswerWithdrawnOp,
     TranscriptAssistantOp,
     TranscriptCompactionFinishedOp,
     TranscriptCompactionStartOp,
@@ -353,8 +354,9 @@ class SubAgentToolCall(BaseToolCard):
         self._transcript_log_file = ""
         self._transcript_profile_name = tool_name
         self._linked_display_name = ""
-        initial_activity = tool_activity_reference(tool_name, KIND_SUB_AGENT, {"agent_name": tool_name})
-        self._latest_activity: MessageRef | str = initial_activity
+        self._latest_activity: MessageRef | str = self._agent_activity()
+        self._activity_segment: str | None = None
+        """The answer segment the latest activity shows, if it shows one."""
 
         self._invocation_id: str | None = None
         self._inner_tools: dict[str, _InnerToolEntry] = {}
@@ -390,8 +392,13 @@ class SubAgentToolCall(BaseToolCard):
         plain = activity if isinstance(activity, str) else self._render_message(activity)
         return Text(plain, no_wrap=True, overflow="ellipsis")
 
-    def _remember_activity(self, activity: MessageRef | str) -> MessageRef | str:
+    def _agent_activity(self) -> MessageRef | str:
+        agent_name = self._linked_display_name or self.tool_name
+        return tool_activity_reference(self.tool_name, KIND_SUB_AGENT, {"agent_name": agent_name})
+
+    def _remember_activity(self, activity: MessageRef | str, *, segment_id: str | None = None) -> MessageRef | str:
         self._latest_activity = activity
+        self._activity_segment = segment_id
         self._sync_activity_summary()
         return activity
 
@@ -684,9 +691,23 @@ class SubAgentToolCall(BaseToolCard):
             self._transcript_profile_name = profile_name
         self._transcript_journal.record(TranscriptAssistantOp(text, segment_id=segment_id))
         single_line = sanitize_legacy_scalar(" ".join(text[:_ACTIVITY_TEXT_LIMIT].splitlines()).strip())
-        if not single_line or single_line == self._latest_activity:
+        if not single_line:
             return None
-        return self._remember_activity(single_line)
+        if single_line == self._latest_activity:
+            self._activity_segment = segment_id
+            return None
+        return self._remember_activity(single_line, segment_id=segment_id)
+
+    def withdraw_answer(self, segment_ids: tuple[str, ...]) -> bool:
+        """A retry dropped the answer these segments showed from history: the nested transcript drops it too.
+
+        Returns whether the latest activity showed that answer, and so went back to the agent's own.
+        """
+        self._transcript_journal.record(TranscriptAnswerWithdrawnOp(segment_ids))
+        if self._activity_segment not in segment_ids:
+            return False
+        self._remember_activity(self._agent_activity())
+        return True
 
     def _record_final_transcript(self, text: str, *, streamed: bool) -> None:
         if self._final_transcript_recorded:
@@ -705,13 +726,7 @@ class SubAgentToolCall(BaseToolCard):
             return
         self._linked_display_name = agent_name
         self._transcript_profile_name = agent_name
-        self._remember_activity(
-            tool_activity_reference(
-                self.tool_name,
-                KIND_SUB_AGENT,
-                {"agent_name": agent_name},
-            )
-        )
+        self._remember_activity(self._agent_activity())
 
     def update_progress(
         self,
@@ -743,10 +758,10 @@ class SubAgentToolCall(BaseToolCard):
         provider_item_type: str = "",
         provider_status: str = "",
         provider_call_id: str = "",
-    ) -> None:
-        """Insert or refresh a running inner tool call by its lifetime id."""
+    ) -> bool:
+        """Insert or refresh a running inner tool call by its lifetime id; return whether it is new or changed."""
         if call_id in self._terminal_inner_call_ids:
-            return
+            return False
         self._transcript_journal.record(
             TranscriptToolStartOp(
                 call_id=call_id,
@@ -761,7 +776,12 @@ class SubAgentToolCall(BaseToolCard):
                 provider_call_id=provider_call_id,
             )
         )
-        self._remember_activity(tool_activity_reference(tool_name, tool_kind, args))
+        entry = self._inner_tools.get(call_id)
+        # A running call's start can come again (ACP: when what it shows changes, hosted details included): only
+        # a change of its name, kind or input moves the latest activity back to it.
+        changed = entry is None or (entry.tool_name, entry.tool_kind, entry.args) != (tool_name, tool_kind, args)
+        if changed:
+            self._remember_activity(tool_activity_reference(tool_name, tool_kind, args))
         # A new inner tool call means the sub-agent is making forward
         # progress — if a retry banner is still visible from a prior
         # transient failure, the retry has clearly succeeded. Drop it
@@ -771,7 +791,6 @@ class SubAgentToolCall(BaseToolCard):
             self.remove_class("-retrying")
             with suppress(Exception):
                 self.query_one("#sa-retry-banner", Static).update("")
-        entry = self._inner_tools.get(call_id)
         if entry is None:
             entry = _InnerToolEntry(
                 call_id=call_id,
@@ -788,6 +807,7 @@ class SubAgentToolCall(BaseToolCard):
             self._seen_inner_call_ids.add(call_id)
             self._total_inner_calls += 1
         self._refresh_sleep_action_state()
+        return changed
 
     def update_inner_tool_args(self, call_id: str, args: dict[str, Any]) -> None:
         """Refresh arguments on a running nested tool entry."""

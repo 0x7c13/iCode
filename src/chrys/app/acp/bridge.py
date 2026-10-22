@@ -12,13 +12,11 @@ from acp import schema as acp_schema
 from acp.helpers import (
     start_tool_call,
     tool_content,
-    update_agent_thought_text,
     update_tool_call,
 )
 
 from chrys.app.acp.json_values import to_json_object
 from chrys.foundation.events.types import (
-    AgentThinking,
     Event,
     InvocationAborted,
     InvocationCascadeAborted,
@@ -248,9 +246,9 @@ class AcpEventBridge:
         # one message by this id, and the backend's segment is that message:
         # a tool call, a change of channel or a new response starts another.
         self._segment_message_ids: dict[str, str] = {}
-        # The main turn's answer messages since its last tool call: the answer
-        # a failed turn ends with, which a bare retry asks for again.
-        self._trailing_answer_message_ids: list[str] = []
+        # The message id of every answer segment the main turn sent, kept
+        # after the segment ends: a bare retry may withdraw it.
+        self._answer_message_ids: dict[str, str] = {}
 
     def begin_turn(self, turn_id: str, turn_number: int) -> None:
         """Label every later update with the turn that opened.
@@ -269,9 +267,9 @@ class AcpEventBridge:
         return self._turn_id
 
     @property
-    def trailing_answer_message_ids(self) -> tuple[str, ...]:
-        """The ``messageId``s of the answer messages the main turn sent after its last tool call."""
-        return tuple(self._trailing_answer_message_ids)
+    def answer_message_ids(self) -> dict[str, str]:
+        """The ``messageId`` each answer segment of the main turn went out as, by segment id."""
+        return dict(self._answer_message_ids)
 
     def _turn_meta(self) -> dict[str, Any]:
         if self._turn_id is None:
@@ -303,7 +301,7 @@ class AcpEventBridge:
         if message_id is None:
             message_id = self._segment_message_ids[event.segment_id] = str(uuid.uuid4())
             if event.channel == "answer":
-                self._trailing_answer_message_ids.append(message_id)
+                self._answer_message_ids[event.segment_id] = message_id
         content = acp_schema.TextContentBlock(type="text", text=event.text)
         chunk: acp_schema.AgentMessageChunk | acp_schema.AgentThoughtChunk
         if event.channel == "answer":
@@ -333,12 +331,7 @@ class AcpEventBridge:
             # Its text already streamed; a finished segment takes no more chunks.
             self._segment_message_ids.pop(event.segment_id, None)
             return []
-        if isinstance(event, AgentThinking):
-            if not event.text:
-                return []
-            return [update_agent_thought_text(event.text)]
         if isinstance(event, InvocationToolCallStart):
-            self._trailing_answer_message_ids.clear()
             if event.call_id:
                 self._tool_kinds_by_call_id[event.call_id] = event.tool_kind
             update = start_tool_call(

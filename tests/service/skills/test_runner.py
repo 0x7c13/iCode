@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import os
 import shutil
 import sys
@@ -20,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import psutil
 import pytest
 
-from chrys.foundation.platform import output_capture, runtime_paths
+from chrys.foundation.platform import output_capture, runtime_paths, script_commands
 from chrys.foundation.platform.output_capture import BoundedCapture
 from chrys.foundation.platform.process import MissingWorkingDirectoryError
 from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
@@ -48,7 +49,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def runner(monkeypatch: pytest.MonkeyPatch) -> SubprocessScriptRunner:
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     return SubprocessScriptRunner(timeout=30)
 
 
@@ -75,13 +76,6 @@ def _exe(path: Path) -> Path:
     return path
 
 
-def _make_executable(path: Path) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("", encoding="utf-8")
-    path.chmod(0o755)
-    return path
-
-
 def _patch_runtime(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -97,50 +91,6 @@ def _patch_runtime(
         "get_path",
         lambda name: str(scripts) if name == "scripts" else "",
     )
-
-
-def test_find_python_runner_prefers_system_uv_when_frozen(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_bin = tmp_path / "runtime" / "bin"
-    system_bin = tmp_path / "system" / "bin"
-    _make_executable(_exe(runtime_bin / "uv"))
-    system_uv = _make_executable(_exe(system_bin / "uv"))
-    _patch_runtime(
-        monkeypatch,
-        python=_exe(runtime_bin / "python"),
-        prefix=tmp_path / "runtime",
-        scripts=runtime_bin,
-    )
-    if sys.platform == "win32":
-        monkeypatch.setenv("PATHEXT", ".exe")
-    monkeypatch.setenv("PYAPP", "1")
-    monkeypatch.setenv("PATH", os.pathsep.join([str(runtime_bin), str(system_bin)]))
-
-    assert runner_mod._find_python_runner() == [str(system_uv), "run"]
-
-
-def test_find_python_runner_prefers_system_python_over_runtime_uv_when_frozen(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime_bin = tmp_path / "runtime" / "bin"
-    system_bin = tmp_path / "system" / "bin"
-    _make_executable(_exe(runtime_bin / "uv"))
-    system_python = _make_executable(_exe(system_bin / "python"))
-    _patch_runtime(
-        monkeypatch,
-        python=_exe(runtime_bin / "python"),
-        prefix=tmp_path / "runtime",
-        scripts=runtime_bin,
-    )
-    if sys.platform == "win32":
-        monkeypatch.setenv("PATHEXT", ".exe")
-    monkeypatch.setenv("PYAPP", "1")
-    monkeypatch.setenv("PATH", os.pathsep.join([str(runtime_bin), str(system_bin)]))
-
-    assert runner_mod._find_python_runner() == [str(system_python)]
 
 
 async def test_skill_subprocess_env_demotes_runtime_path_when_frozen(
@@ -456,8 +406,22 @@ async def test_none_value_not_added(runner: SubprocessScriptRunner, tmp_path: Pa
     assert "ok" in result
 
 
+async def test_a_shell_script_with_no_bash_to_run_it_is_an_interpreter_error(
+    tmp_path: Path, runner: SubprocessScriptRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_bash() -> str:
+        raise FileNotFoundError(errno.ENOENT, script_commands._NO_WINDOWS_BASH)
+
+    monkeypatch.setattr(script_commands, "_find_bash", no_bash)
+    skill, script = _make_skill(tmp_path, "notify.sh", "echo 1\n")
+
+    result = await runner(skill, script)
+
+    assert result == f"Error: Interpreter not found for script 'notify.sh'. {script_commands._NO_WINDOWS_BASH}"
+
+
 async def test_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     runner = SubprocessScriptRunner(timeout=1)
     skill, script = _make_skill(tmp_path, "slow.py", "import time; time.sleep(5)")
     result = await runner(skill, script)
@@ -466,7 +430,7 @@ async def test_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX stopped state only")
 async def test_stopped_script_returns_promptly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     runner = SubprocessScriptRunner(timeout=10)
     skill, script = _make_skill(
         tmp_path,
@@ -490,7 +454,7 @@ async def test_no_output(runner: SubprocessScriptRunner, tmp_path: Path) -> None
 
 
 async def test_large_output_is_cleaned_truncated_and_spilled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     runner = SubprocessScriptRunner(timeout=30, session_dir=tmp_path)
     skill, script = _make_skill(
         tmp_path,
@@ -519,7 +483,7 @@ raise SystemExit(7)
 
 
 async def test_script_max_tokens_zero_clamps_to_one_hundred(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     skill, script = _make_skill(tmp_path, "large.py", 'print("x" * 10000)')
 
     result = await SubprocessScriptRunner(timeout=30)(skill, script, max_tokens=0)
@@ -533,7 +497,7 @@ async def test_completed_script_result_propagates_spill_cancellation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     completed = "[bounded completed skill result]"
 
     async def cancelled_after_completion(*_args: object) -> str:
@@ -571,7 +535,7 @@ _NOISY_STREAM_BYTES = 200 * 100 + len("OUT-END\n")
 def small_capture_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep a 1000-byte head and a 2000-byte tail of each stream."""
     monkeypatch.setattr(output_capture, "OUTPUT_CAPTURE_LIMIT_BYTES", 3000)
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
 
 
 @pytest.mark.usefixtures("small_capture_limit")
@@ -703,7 +667,7 @@ async def test_cwd_defaults_to_runtime_cwd(tmp_path: Path, monkeypatch: pytest.M
     work_dir = tmp_path / "user-workspace"
     work_dir.mkdir()
 
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     runtime = dataclasses.replace(SessionEnvironment.capture(), cwd=str(work_dir))
 
     runner = SubprocessScriptRunner(timeout=30, runtime=runtime)
@@ -714,7 +678,7 @@ async def test_cwd_defaults_to_runtime_cwd(tmp_path: Path, monkeypatch: pytest.M
 
 async def test_explicit_absolute_cwd_is_honored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An absolute cwd supplied by the agent overrides the default."""
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     runner = SubprocessScriptRunner(timeout=30)
     alt_dir = tmp_path / "elsewhere"
     alt_dir.mkdir()
@@ -746,7 +710,7 @@ async def test_cwd_falls_back_to_script_parent_without_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Without a runtime and without an explicit cwd, use script_path.parent (legacy)."""
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     runner = SubprocessScriptRunner(timeout=30)  # no runtime bound
     skill, script = _make_skill(tmp_path, "cwd.py", _cwd_script())
     result = await runner(skill, script)
@@ -777,7 +741,7 @@ async def test_deleted_working_directory_is_reported_before_the_script_is_looked
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, skill_inside_workspace: bool
 ) -> None:
     """A project skill lives inside the working directory: report the directory, not its missing script."""
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     workspace = tmp_path / "workspace"
     skills_root = workspace / ".agents" / "skills" if skill_inside_workspace else tmp_path / "user-skills"
     skills_root.mkdir(parents=True)
@@ -796,7 +760,7 @@ async def test_deleted_working_directory_is_reported_before_the_script_is_looked
 async def test_explicit_cwd_still_runs_after_the_working_directory_is_deleted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     alt_dir = tmp_path / "elsewhere"
@@ -816,7 +780,7 @@ async def test_directory_deleted_just_before_the_spawn_is_reported_as_that_direc
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_cwd: bool
 ) -> None:
     """The check before the spawn can race a deletion; the spawn's own failure names the same directory."""
-    monkeypatch.setattr(runner_mod, "_find_python_runner", lambda: [sys.executable])
+    monkeypatch.setattr(script_commands, "_find_python_runner", lambda: [sys.executable])
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     skill, script = _make_skill(tmp_path, "cwd.py", _cwd_script())

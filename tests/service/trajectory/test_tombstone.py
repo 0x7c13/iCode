@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 from collections.abc import AsyncIterator, Callable
@@ -206,6 +207,167 @@ def test_the_sweep_holds_the_lease_for_as_long_as_the_tombstone_takes_to_go(
 
     assert sweep_tombstones(sessions_root) == 1
     assert refused == [True]
+
+
+type _OnExc = Callable[[Callable[..., object], str | Path, BaseException], object]
+
+
+class _DeletePendingRemoval:
+    """Removal as Windows without POSIX delete semantics does it.
+
+    A file deleted under an open handle stays in its directory until that
+    handle closes, so the lease file deleted while its lease is held goes
+    only when the lease is released. Files in *kept* are held open by
+    somebody else and never go.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, lease_path: Path, *, kept: tuple[Path, ...] = ()) -> None:
+        self._lease_path = lease_path
+        self._kept = kept
+        self._pending = False
+        self.gone_on_release: list[Path] = []
+        self.after_release: Callable[[], None] | None = None
+        real_release = WriterLease.release
+
+        def release(lease: WriterLease) -> None:
+            real_release(lease)
+            if self._pending and lease.path == lease_path:
+                self._pending = False
+                lease_path.unlink()
+                self.gone_on_release.append(lease_path)
+                after, self.after_release = self.after_release, None
+                if after is not None:
+                    after()
+
+        monkeypatch.setattr(WriterLease, "release", release)
+        monkeypatch.setattr(tombstone_module, "shutil", SimpleNamespace(rmtree=self.rmtree))
+
+    def rmtree(self, path: Path, *, onexc: _OnExc | None = None) -> None:
+        def remove(function: Callable[[str | Path], None], target: str | Path) -> None:
+            try:
+                function(target)
+            except OSError as error:
+                if onexc is None:
+                    raise
+                onexc(function, target, error)
+
+        # Bottom-up, as shutil walks it on Windows.
+        for dirpath, dirnames, filenames in os.walk(path, topdown=False):
+            for name in dirnames:
+                remove(os.rmdir, os.path.join(dirpath, name))
+            for name in filenames:
+                file_path = Path(dirpath, name)
+                if file_path == self._lease_path:
+                    self._pending = True
+                elif file_path not in self._kept:
+                    remove(os.unlink, str(file_path))
+        remove(os.rmdir, path)
+
+
+def _delete_intent(sessions_root: Path, session_dir: Path) -> Path:
+    graveyard = tombstones_dir(sessions_root)
+    ensure_owner_only_directory(graveyard)
+    intent = graveyard / f"{session_dir.name}{INTENT_SUFFIX}"
+    intent.write_text(session_dir.name, encoding="utf-8")
+    return intent
+
+
+def test_deletion_removes_the_directories_around_the_lease_file_once_the_lease_is_released(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions_root = tmp_path / "sessions"
+    session_dir = _session_dir(sessions_root)
+    lease_path = _stale_lease_file(session_dir)
+    removal = _DeletePendingRemoval(monkeypatch, lease_path)
+
+    result = delete_session_directory(session_dir, sessions_root=sessions_root)
+
+    assert result.outcome == DeleteOutcome.REMOVED
+    assert not session_dir.exists()
+    assert removal.gone_on_release == [lease_path]
+
+
+def test_the_sweep_removes_a_tombstone_around_its_lease_file_once_the_lease_is_released(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions_root = tmp_path / "sessions"
+    tombstone = tombstones_dir(sessions_root) / "sess-1-abandoned"
+    tombstone.mkdir(parents=True)
+    lease_path = _stale_lease_file(tombstone)
+    removal = _DeletePendingRemoval(monkeypatch, lease_path)
+
+    assert sweep_tombstones(sessions_root) == 1
+    assert not tombstone.exists()
+    assert removal.gone_on_release == [lease_path]
+
+
+def test_the_sweep_finishes_an_intent_around_its_lease_file_once_the_lease_is_released(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions_root = tmp_path / "sessions"
+    session_dir = _session_dir(sessions_root)
+    lease_path = _stale_lease_file(session_dir)
+    intent = _delete_intent(sessions_root, session_dir)
+    removal = _DeletePendingRemoval(monkeypatch, lease_path)
+
+    assert sweep_tombstones(sessions_root) == 1
+    assert not session_dir.exists()
+    assert not intent.exists()
+    assert removal.gone_on_release == [lease_path]
+
+
+@pytest.mark.parametrize("held_name", ["snapshots/held.bin", "trajectory/events.jsonl"])
+def test_a_directory_kept_full_by_another_file_fails_the_deletion_where_it_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held_name: str
+) -> None:
+    sessions_root = tmp_path / "sessions"
+    session_dir = _session_dir(sessions_root)
+    lease_path = _stale_lease_file(session_dir)
+    held = session_dir / held_name
+    held.parent.mkdir(exist_ok=True)
+    held.write_bytes(b"")
+    _DeletePendingRemoval(monkeypatch, lease_path, kept=(held,))
+
+    with pytest.raises(OSError) as raised:
+        delete_session_directory(session_dir, sessions_root=sessions_root)
+
+    # Only what the lease's own file pins waits for the release: the removal
+    # stops at that directory, before the session's own files go.
+    assert raised.value.errno == errno.ENOTEMPTY
+    assert Path(raised.value.filename) == held.parent
+    assert held.is_file()
+    assert (session_dir / "session.json").is_file()
+
+
+def test_a_writer_that_takes_the_lease_after_the_release_keeps_its_directory_and_the_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions_root = tmp_path / "sessions"
+    session_dir = _session_dir(sessions_root)
+    lease_path = _stale_lease_file(session_dir)
+    intent = _delete_intent(sessions_root, session_dir)
+    removal = _DeletePendingRemoval(monkeypatch, lease_path)
+    writers: list[WriterLease] = []
+
+    def a_writer_starts() -> None:
+        writer = WriterLease.try_acquire(lease_path)
+        assert writer is not None
+        writers.append(writer)
+
+    removal.after_release = a_writer_starts
+    try:
+        assert sweep_tombstones(sessions_root) == 0
+        assert len(writers) == 1
+        # Its new lock file keeps the directory; the intent still owns the deletion.
+        assert lease_path.is_file()
+        assert intent.exists()
+    finally:
+        for writer in writers:
+            writer.release()
+
+    assert sweep_tombstones(sessions_root) == 1
+    assert not session_dir.exists()
+    assert not intent.exists()
 
 
 @pytest.mark.asyncio

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Stream queues are intentionally unbounded so a slow consumer never causes event
 # loss: dropping here would silently truncate streamed LLM output on the
 # headless/ACP path (see ``session_host._HEADLESS_RUN_EVENT_TYPES``, which carries
-# ``InvocationMessage``/``AgentThinking``). This threshold only drives a one-shot
+# ``InvocationContentDelta``/``InvocationMessage``). This threshold only drives a one-shot
 # diagnostic warning so a badly-lagging consumer is observable in the wild —
 # delivery semantics never change (events are retained, never dropped).
 _STREAM_QUEUE_HIGH_WATER = 10_000

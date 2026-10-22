@@ -904,3 +904,36 @@ class TestSystemReminderRebuilds:
         assert list(message.contents) == [content]
         # The record lands on the shared dict, so the history message keeps it.
         assert HistoryMarkerKind.SYSTEM_REMINDERS_KEY in message.additional_properties
+
+
+# ---------------------------------------------------------------------------
+# History-manager trims: fresh wrapper/list/props, shared content objects
+# ---------------------------------------------------------------------------
+
+
+class TestHistoryTrimCopies:
+    def test_answer_tail_trim_replaces_the_wrapper_and_shares_kept_contents(self) -> None:
+        """Copy class: a bare Continue's exchange-tail trim
+        (``SessionHistoryManager.remove_trailing_answer``). The trimmed message
+        is a fresh wrapper with a fresh contents list and props dict, so a
+        holder of the landed message (a retry snapshot) still sees it whole;
+        the kept content objects stay shared, and so does the analytics id."""
+        kept = Content.from_function_call("c1", "read_file", arguments={})
+        dropped = Content.from_text("Partial")
+        message = Message("assistant", [kept, dropped])
+        message.additional_properties["meta"] = "value"
+        state: dict[str, Any] = {"messages": [Message("user", ["go"]), message]}
+        history = SessionHistoryManager()
+        history.bind(state)
+
+        history.remove_trailing_answer()
+
+        trimmed = state["messages"][-1]
+        assert trimmed is not message
+        assert type(trimmed.contents) is ContentList
+        assert trimmed.contents is not message.contents
+        assert list(trimmed.contents) == [kept]
+        assert trimmed.contents[0] is kept
+        assert trimmed.additional_properties == message.additional_properties
+        assert trimmed.additional_properties is not message.additional_properties
+        assert list(message.contents) == [kept, dropped]

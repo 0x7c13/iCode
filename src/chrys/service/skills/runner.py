@@ -12,12 +12,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from chrys.foundation.platform import windows_program_files_dirs
 from chrys.foundation.platform.output_capture import BoundedCapture, CapturedOutput, drain_process_pipes
 from chrys.foundation.platform.process import (
     MissingWorkingDirectoryError,
@@ -28,8 +26,8 @@ from chrys.foundation.platform.process import (
 from chrys.foundation.platform.runtime_paths import (
     reorder_path_demoting_runtime,
     strip_python_runtime_overrides,
-    which_excluding_runtime,
 )
+from chrys.foundation.platform.script_commands import build_script_command
 from chrys.foundation.platform.win_console import preserve_console_mode
 from chrys.foundation.text.tool_output import process_carriage_returns, strip_ansi
 from chrys.foundation.tool_result_metadata import PARTIAL_OUTPUT_LABEL
@@ -45,89 +43,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Interpreter resolution
-# ---------------------------------------------------------------------------
-
-_INTERPRETERS: dict[str, list[str]] = {
-    ".js": ["node"],
-    ".mjs": ["node"],
-    ".ts": ["npx", "tsx"],
-    ".rb": ["ruby"],
-    ".pl": ["perl"],
-}
-
-_SHELL_SCRIPT_EXTS = frozenset({".sh", ".bash", ".zsh"})
-
-
-def _find_python_runner() -> list[str]:
-    """Find a Python script runner: ``uv run`` first (supports PEP 723 inline script metadata), system python next, chrys' own as fallback."""
-    runner = _find_python_runner_on_path(fallback_to_runtime=False)
-    if runner is not None:
-        return runner
-    runner = _find_python_runner_on_path(fallback_to_runtime=True)
-    if runner is not None:
-        return runner
-    return [sys.executable]
-
-
-def _find_python_runner_on_path(*, fallback_to_runtime: bool) -> list[str] | None:
-    uv = which_excluding_runtime("uv", fallback_to_runtime=fallback_to_runtime)
-    if uv:
-        return [uv, "run"]
-    for name in ("python3", "python"):
-        path = which_excluding_runtime(name, fallback_to_runtime=fallback_to_runtime)
-        if path:
-            return [path]
-    return None
-
-
-def _find_powershell() -> str:
-    """Find PowerShell: ``pwsh`` (v7+) first, ``powershell`` (v5.1) as fallback."""
-    for name in ("pwsh", "powershell"):
-        path = shutil.which(name)
-        if path:
-            return path
-    return "pwsh"  # let it fail with a clear FileNotFoundError
-
-
-def _find_bash() -> str:
-    """Find a bash-compatible shell.
-
-    On Windows, ``sh``/``bash`` aren't on PATH by default.  Falls back to
-    Git Bash (``Git\\bin\\bash.exe``) if available, discovering the
-    Program Files directories from the environment (so non-``C:`` Windows
-    installs work too).
-    """
-    for name in ("bash", "sh"):
-        path = shutil.which(name)
-        if path:
-            return path
-    # Git Bash fallback (Windows) — honours the actual system install drive.
-    for base in windows_program_files_dirs():
-        git_bash = os.path.join(base, "Git", "bin", "bash.exe")
-        if os.path.isfile(git_bash):
-            return git_bash
-    return "bash"  # let it fail with a clear FileNotFoundError
-
-
-# ---------------------------------------------------------------------------
 # Command building
 # ---------------------------------------------------------------------------
 
 
-def _build_command(script_path: Path) -> list[str]:
-    """Build the command list for a script based on its file extension."""
-    suffix = script_path.suffix.lower()
-    if suffix == ".py":
-        return [*_find_python_runner(), str(script_path)]
-    if suffix == ".ps1":
-        return [_find_powershell(), "-NoProfile", "-File", str(script_path)]
-    if suffix in _SHELL_SCRIPT_EXTS:
-        return [_find_bash(), str(script_path)]
-    interpreter = _INTERPRETERS.get(suffix)
-    if interpreter is not None:
-        return [*interpreter, str(script_path)]
-    return [*_find_python_runner(), str(script_path)]
+def _interpreter_not_found(skill: Skill, script: SkillScript, *, reason: str | None = None) -> str:
+    """The tool error for a script with no program to run it; *reason*, when given, is Chrys' own text."""
+    message = f"Interpreter not found for script '{script.name}'."
+    return tool_error(
+        "interpreter_not_found",
+        f"{message} {reason}" if reason else message,
+        details={"skill_name": skill.name, "script_name": script.name},
+    )
 
 
 def _flag_name(key: str) -> str:
@@ -276,7 +203,10 @@ class SubprocessScriptRunner:
         if resolved_cwd.startswith("Error: "):
             return resolved_cwd
 
-        cmd = _build_command(script_path)
+        try:
+            cmd = build_script_command(script_path)
+        except FileNotFoundError as error:
+            return _interpreter_not_found(skill, script, reason=error.strerror)
         positional_args = [str(a) for a in arguments] if arguments else []
         flag_args: list[str] = []
         if isinstance(args, list):
@@ -354,11 +284,7 @@ class SubprocessScriptRunner:
                 return working_dir_missing_error(e.path)
             return tool_error("invalid_cwd", f"'cwd' is not an existing directory: {e.path}", details={"cwd": e.path})
         except FileNotFoundError:
-            return tool_error(
-                "interpreter_not_found",
-                f"Interpreter not found for script '{script.name}'.",
-                details={"skill_name": skill.name, "script_name": script.name},
-            )
+            return _interpreter_not_found(skill, script)
         except OSError as e:
             return tool_error(
                 "script_execution_failed",

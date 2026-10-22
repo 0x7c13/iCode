@@ -16,7 +16,9 @@ while the model writes it; the finished response is judged by a result
 hook before the kernel loop lands it. What a stream showed cannot be
 taken back, so only a response that showed nothing — empty, blank or
 reasoning-only — is marked ``blank_response``, which the kernel's wire caller
-resends once; every other rejection ends the turn.
+resends once; every other rejection ends the turn. The tool loop's
+exhaustion tail call is the exception: a response that showed nothing passes
+there, and the loop answers it with its fallback text.
 
 Beside the verdict it observes what the provider ran: every hosted tool
 call the response shows, as it arrives, is recorded for the retry owners'
@@ -42,6 +44,7 @@ from chrys.foundation.hosted_tools import (
 )
 from chrys.foundation.trajectory.event_types import ValidationReason
 from chrys.kernel import (
+    EXHAUSTION_TAIL_KWARG,
     ChatResponse,
     ChatResponseUpdate,
     ContextOverflowSink,
@@ -451,6 +454,9 @@ class ResponseValidationMiddleware(ChatMiddleware):
             await self._notify_attempt_accepted(response.messages or [])
             return
         verdict = self._validator.validate(response)
+        if not verdict.ok and verdict.code in _BLANK_VERDICTS and _is_exhaustion_tail(context):
+            # The loop answers a tail that showed nothing with its fallback text.
+            verdict = ValidationResult.valid()
         _note_output_truncated(context, verdict, response)
         if validation is not None:
             await validation.finished(accepted=verdict.ok, reason_code=None if verdict.ok else verdict.code)
@@ -462,6 +468,11 @@ class ResponseValidationMiddleware(ChatMiddleware):
         # that would otherwise land in persisted history.
         response.messages = [message for message in response.messages if not _is_empty_assistant_message(message)]
         await self._notify_attempt_accepted(response.messages)
+
+
+def _is_exhaustion_tail(context: ChatContext) -> bool:
+    nested = context.kwargs.get("client_kwargs")
+    return isinstance(nested, Mapping) and nested.get(EXHAUSTION_TAIL_KWARG) is True
 
 
 def _raise_terminal(verdict: ValidationResult) -> None:

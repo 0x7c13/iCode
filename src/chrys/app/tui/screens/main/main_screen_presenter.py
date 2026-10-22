@@ -143,8 +143,8 @@ class MainScreenPresenter:
     def clear_compressed_blocks(self) -> None:
         self._view.clear_compressed_blocks()
 
-    async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
-        await self._view.add_error(message, action_label=action_label, ends_turn=ends_turn)
+    async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        await self._view.add_error(message, action_label=action_label)
 
     async def add_system(self, text: str, *, key: str | None = None) -> None:
         await self._view.add_system(text, key=key)
@@ -163,6 +163,9 @@ class MainScreenPresenter:
 
     def finish_answer_segment(self, segment_id: str, *, completed: bool) -> None:
         self._view.finish_answer_segment(segment_id, completed=completed)
+
+    async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
+        await self._view.withdraw_answer(segment_ids)
 
     async def add_agent_message(self, *args: Any, **kwargs: Any) -> None:
         await self._view.add_agent_message(*args, **kwargs)
@@ -267,6 +270,9 @@ class MainScreenPresenter:
 
     def sub_agent_resumed_after_pause(self, invocation_id: str) -> None:
         self._view.sub_agent_resumed_after_pause(invocation_id)
+
+    def sub_agent_answer_withdrawn(self, invocation_id: str, segment_ids: tuple[str, ...]) -> None:
+        self._view.sub_agent_answer_withdrawn(invocation_id, segment_ids)
 
     def sub_agent_cascade_aborted(self, invocation_id: str) -> None:
         self._view.sub_agent_cascade_aborted(invocation_id)

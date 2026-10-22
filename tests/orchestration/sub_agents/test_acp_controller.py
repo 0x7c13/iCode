@@ -450,22 +450,18 @@ async def test_post_close_sweep_is_cancellation_safe(
     it. The sweep is shielded like force_close, so a call streamed at close time
     is still finalized even though the run is being cancelled a second time."""
     bus = EventBus()
-    results = await capture_events(bus, InvocationToolCallResult)
-
     run_task: asyncio.Task[Any] | None = None
-    late_starts = 0
 
-    async def cancel_during_sweep(event: InvocationToolCallStart) -> None:
-        nonlocal late_starts
-        # The first "late" start is the consumer's; the second is the sweep's
-        # ensure-start — cancel the run there, mid-sweep, to model a re-interrupt.
-        if event.call_id.endswith("late"):
-            late_starts += 1
-            if late_starts == 2 and run_task is not None:
-                run_task.cancel()
-                await asyncio.sleep(0)
+    async def cancel_during_sweep(event: InvocationToolCallResult) -> None:
+        # The late call's result is the sweep's to publish: cancel the run there,
+        # mid-sweep, to model a re-interrupt. Subscribed before the capture, so a
+        # torn publish never reaches it.
+        if event.call_id.endswith("late") and run_task is not None:
+            run_task.cancel()
+            await asyncio.sleep(0)
 
-    await bus.subscribe(InvocationToolCallStart, cancel_during_sweep)
+    await bus.subscribe(InvocationToolCallResult, cancel_during_sweep)
+    results = await capture_events(bus, InvocationToolCallResult)
 
     install_client(monkeypatch, LateCloseClient)
     controller = make_controller(bus, tmp_path)

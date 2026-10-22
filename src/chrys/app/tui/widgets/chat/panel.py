@@ -57,6 +57,7 @@ from chrys.app.tui.widgets.chat.messages import (
     RetryMessage,
     SystemMessage,
     UserMessage,
+    remove_withdrawn_answer,
 )
 from chrys.app.tui.widgets.chat.ports import ChatTranscriptPanelMarker, TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserInlineResized, AskUserToolCall
@@ -1478,6 +1479,10 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Dispatch a resume-after-pause transition to the correct card."""
         self._tool_registry.sub_agent_resumed_after_pause(invocation_id)
 
+    def sub_agent_answer_withdrawn(self, invocation_id: str, segment_ids: tuple[str, ...]) -> None:
+        """Dispatch the answer a sub-agent's retry dropped to its card."""
+        self._tool_registry.sub_agent_answer_withdrawn(invocation_id, segment_ids)
+
     def sub_agent_cascade_aborted(self, invocation_id: str) -> None:
         """Dispatch a cascade-abort transition (from global interrupt)."""
         self._tool_registry.sub_agent_cascade_aborted(invocation_id)
@@ -1579,9 +1584,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Display an interruption notice, replacing any trailing error/interrupted widget."""
         await self._live_renderer.add_interrupted(reason, source)
 
-    async def add_error(self, text: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
+    async def add_error(self, text: str, *, action_label: str | None = "Retry") -> None:
         """Display an error message, replacing any trailing error/interrupted widget."""
-        await self._live_renderer.add_error(text, action_label=action_label, ends_turn=ends_turn)
+        await self._live_renderer.add_error(text, action_label=action_label)
 
     async def add_retry(self, message: str, attempt: int, max_attempts: int, delay_seconds: int) -> None:
         """Display a retry notice, replacing any trailing status widget."""
@@ -1627,17 +1632,15 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         if isinstance(last, (ErrorMessage, InterruptedMessage)):
             last.hide_action()
 
-    async def remove_answer_before_failure(self) -> None:
-        """Remove the answer text a failed or interrupted pass showed right before its status.
+    async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
+        """Remove the answer text a bare Continue or Retry dropped from history: the messages these segments showed.
 
-        A bare Continue or Retry drops that text from history and asks for the
-        reply again, so the transcript drops it too; a tool exchange stays.
+        Tool cards stay, as they do for a retried attempt. Entries a replay has
+        yet to mount are mounted first, so none of them comes back.
         """
-        status = self._find_trailing_status()
-        if not (isinstance(status, InterruptedMessage) or (isinstance(status, ErrorMessage) and status.ends_turn)):
-            return
-        while isinstance(answer := self.preceding_content(status), AgentMessage):
-            await remove_shielded(answer)
+        if self.replay_in_progress:
+            await self.wait_replay_complete()
+        await remove_withdrawn_answer(self, segment_ids)
 
     def set_trailing_status_action_disabled(self, disabled: bool) -> None:
         """Keep the retry action visible but unavailable during admission."""

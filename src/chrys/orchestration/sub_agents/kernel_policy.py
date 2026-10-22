@@ -103,13 +103,6 @@ def _is_string_keyed_dict(value: object) -> TypeGuard[dict[str, Any]]:
 _DEFAULT_MAX_RETRIES = 5
 _DEFAULT_STREAM_ATTEMPT_TIMEOUT = 300.0
 
-# Decisions resolved into the ``pending_decision`` future. Kept as string
-# literals (not an Enum) because futures already pass values by identity —
-# the point here is a readable debug repr.
-_DECISION_RETRY = "retry"
-_DECISION_ABORT = "abort"
-_DECISION_CASCADE = "cascade_abort"
-
 
 def _is_last_words_error(exc: BaseException) -> bool:
     """Detect :class:`LastWordsGenerationError` directly or on the cause chain."""
@@ -608,9 +601,6 @@ class KernelSubAgentPolicy:
         partial_answer = self._projector.take_unlanded_answer() if self._projector is not None else ()
         self._history.repair_after_failure(self._active_run_input, self._pass_start_index, partial_answer)
 
-    def _prepare_retry_input(self) -> None:
-        self._next_run_input = self._history.retry_input(self._seed_input)
-
     def _seed_input(self) -> list[Any]:
         """Build the run input that starts (or restarts) the sub-agent from its prompt.
 
@@ -805,8 +795,9 @@ class KernelSubAgentPolicy:
         # Kernel keeps its existing writer/return arbitration; ACP rechecks.
         pass
 
-    def prepare_retry(self) -> None:
-        self._prepare_retry_input()
+    def prepare_retry(self) -> tuple[str, ...]:
+        self._next_run_input, withdrawn = self._history.retry_input(self._seed_input)
+        return withdrawn
 
     async def abort_result(self, *, by_user: bool) -> str:
         reason = self._failure_reason.value if self._failure_reason else ""

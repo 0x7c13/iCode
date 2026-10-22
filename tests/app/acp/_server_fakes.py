@@ -200,7 +200,7 @@ class _FakeSession:
     # time, and whether one is admitted cannot be read off the lock.
     _turns_reserved: int = 0
     closing: bool = False
-    trailing_answer_message_ids: tuple[str, ...] = ()
+    answer_message_ids: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def turns_reserved(self) -> bool:
@@ -245,7 +245,7 @@ class _LoadedSession:
     host: _FakeHost = field(default_factory=lambda: _FakeHost(event_bus=EventBus()))
     prompt_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _turns_reserved: int = 0
-    trailing_answer_message_ids: tuple[str, ...] = ()
+    answer_message_ids: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def turns_reserved(self) -> bool:

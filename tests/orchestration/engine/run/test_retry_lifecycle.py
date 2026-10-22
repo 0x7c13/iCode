@@ -145,7 +145,7 @@ class _Executor:
         self.reset_counter_calls.append(reset_batch_id)
 
     @asynccontextmanager
-    async def retry_request(self, additional_text: str = "", created_at: object = None):
+    async def retry_request(self, additional_text: str = "", created_at: object = None, *, withdraw: object = None):
         yield additional_text
 
     def record_outcome(self, outcome):

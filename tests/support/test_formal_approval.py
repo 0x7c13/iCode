@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 from contextlib import asynccontextmanager
 from functools import cached_property
 from types import ModuleType
+from typing import Any
 from unittest.mock import create_autospec
 
 import pytest
@@ -76,3 +78,24 @@ async def test_cold_setup_leaves_the_full_budget_for_real_review(monkeypatch, co
         assert len(calls) == 1
         assert replies == []
         assert verdict.audit["usage"]["total_token_count"] == 5
+
+
+async def test_a_full_collection_during_review_skips_what_earlier_tests_left_alive(monkeypatch):
+    earlier = [[] for _ in range(20_000)]
+    walked: list[int] = []
+
+    def on_gc(phase: str, info: dict[str, Any]) -> None:
+        if phase == "start" and info["generation"] == 2:
+            walked.append(len(gc.get_objects()))
+
+    async with judge_client(monkeypatch, [json.dumps(predicate_values())]) as (judge, _calls):
+        gc.callbacks.append(on_gc)
+        try:
+            gc.collect()
+        finally:
+            gc.callbacks.remove(on_gc)
+        verdict = await evaluate_judge(judge)
+
+    assert verdict.approved is True, verdict.failure_reason
+    assert len(walked) == 1
+    assert walked[0] < len(earlier)

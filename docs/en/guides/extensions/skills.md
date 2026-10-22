@@ -45,7 +45,7 @@ To check or adjust an agent's skill configuration:
    * For a path relative to the working directory, select "Workspace relative".
    * For an absolute path, clear "Workspace relative".
 
-4. If the skill includes scripts, confirm that their extensions are listed in "Allowed Script Extensions". The defaults are `.py`, `.sh`, and `.ps1`; other available extensions include `.ts`, `.js`, and `.rb`. The interpreters required to run the scripts must already be installed.
+4. If the skill includes scripts, confirm that their extensions are listed in "Allowed Script Extensions". The defaults are `.py`, `.sh`, and `.ps1`; other available extensions include `.ts`, `.js`, and `.rb`. The interpreters required to run the scripts must already be installed. On Windows, `.sh` scripts need a Windows `bash`, such as the one Git for Windows installs; WSL's `bash` is not used.
 5. To adjust the maximum runtime for skill scripts, enter a positive integer in "Script Execution Timeout (seconds)".
 6. Click "Save".
 

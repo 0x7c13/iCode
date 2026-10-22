@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY
 from chrys.kernel import Content, Message
 from chrys.service.llm.chat_completions.client import DEEPSEEK, GLM, OPENAI, ChatCompletionsVariant
 from chrys.service.llm.chat_completions.history import encode_content, encode_messages
@@ -192,10 +193,13 @@ def test_degraded_summary_marker_does_not_leak_in_mixed_content(variant: ChatCom
 
 
 @pytest.mark.parametrize("other_properties", [{}, {"custom": {"value": "keep"}}])
-def test_text_serializer_removes_only_request_local_summary_marker(other_properties: dict[str, Any]) -> None:
-    content = Content.from_text(
-        "summary", additional_properties={"_chrys_hosted_context_summary": True, **other_properties}
-    )
+@pytest.mark.parametrize(
+    "private", [{"_chrys_hosted_context_summary": True}, {ANSWER_SEGMENT_KEY: "segment-1"}], ids=["summary", "segment"]
+)
+def test_text_serializer_removes_only_chrys_private_markers(
+    private: dict[str, Any], other_properties: dict[str, Any]
+) -> None:
+    content = Content.from_text("summary", additional_properties={**private, **other_properties})
     original = content.to_dict()
 
     prepared = encode_content(content)

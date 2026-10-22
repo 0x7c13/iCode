@@ -52,6 +52,7 @@ from chrys.foundation.events.types import (
     Error,
     Event,
     InvocationAborted,
+    InvocationAnswerWithdrawn,
     InvocationCascadeAborted,
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
@@ -486,8 +487,8 @@ class ChrysAcpServer:
                     for warning in warnings:
                         await self._send_warning(session.session_id, warning)
                     await self._send_session_restored(session.session_id)
-                    # The client now shows the replayed ids, which a bare retry withdraws.
-                    session.trailing_answer_message_ids = await replay_session_history(
+                    # The client now shows the replayed ids, which a bare retry may withdraw.
+                    session.answer_message_ids = await replay_session_history(
                         self._client,
                         self._manager.state_store,
                         session.session_id,
@@ -615,8 +616,7 @@ class ChrysAcpServer:
                 raise RequestError.invalid_params({"details": f"Session {session_id} has no turn that can be retried."})
             return session.host.iter_retry_events(text)
 
-        # Without text the retry asks again for the answer the turn ended with.
-        turn = await self._run_turn(session_id, start, retracts_trailing_answer=not text)
+        turn = await self._run_turn(session_id, start)
         if turn.outcome is None:
             # Same rule as a prompt: a run that produced no outcome did not
             # complete, so it is not reported as a turn that ended normally.
@@ -650,8 +650,6 @@ class ChrysAcpServer:
         self,
         session_id: str,
         start: Callable[[ManagedSession], AsyncIterator[Event]],
-        *,
-        retracts_trailing_answer: bool = False,
     ) -> _TurnExecution:
         """Execute one turn for *session_id* and report what it produced.
 
@@ -667,9 +665,6 @@ class ChrysAcpServer:
         The lock alone cannot say that — it reads False in the window between a
         release and the next waiter's acquisition, and that waiter's turn then
         runs *after* this caller's, the other way round.
-
-        *retracts_trailing_answer* withdraws, once the turn starts, the answer
-        messages the session's last turn ended with.
         """
         bridge = AcpEventBridge()
         pending_approvals: dict[str, ApprovalRequest] = {}
@@ -699,18 +694,23 @@ class ChrysAcpServer:
                         # nothing, and its error must not report a spend.
                         execution_started = True
                         async for event in events:
-                            opens_turn = isinstance(event, TurnStarted) and turn_id is None
-                            if opens_turn:
+                            if isinstance(event, TurnStarted) and turn_id is None:
                                 turn_id, turn_number = event.turn_id, event.turn_number
+                                if not event.is_retry:
+                                    # A new turn: a bare retry never drops an earlier turn's answer.
+                                    session.answer_message_ids = {}
                             await self._handle_event(session_id, event, bridge, pending_approvals)
-                            if opens_turn and retracts_trailing_answer:
-                                # Before the retry streams anything of its own.
-                                await self._retract_trailing_answer(session_id, session, turn_id)
+                            if isinstance(event, InvocationAnswerWithdrawn) and event.origin.kind == "turn":
+                                await self._retract_answer(session_id, session, turn_id, event.segment_ids)
                         outcome = session.host.last_turn_outcome
                     finally:
                         if turn_id is not None:
-                            # What a later bare retry withdraws: the answer this turn ended with.
-                            session.trailing_answer_message_ids = bridge.trailing_answer_message_ids
+                            # What a later bare retry may withdraw: the answer segments this turn sent.
+                            for segment, message_id in bridge.answer_message_ids.items():
+                                session.answer_message_ids[segment] = (
+                                    *session.answer_message_ids.get(segment, ()),
+                                    message_id,
+                                )
                         # This snapshot stays under prompt_lock: a queued turn must
                         # not mutate cumulative session usage before this response
                         # (or error) captures the completed turn's total.
@@ -897,16 +897,16 @@ class ChrysAcpServer:
                 raise _request_error(exc) from exc
             payload = _rollback_result_payload(result)
             await self._client_or_error().ext_notification("chrys/rollback_result", payload)
-            trailing_answer_message_ids: tuple[str, ...] = ()
+            answer_message_ids: dict[str, tuple[str, ...]] = {}
             if target_turn > 0:
-                trailing_answer_message_ids = await replay_session_history(
+                answer_message_ids = await replay_session_history(
                     self._client_or_error(),
                     self._manager.state_store,
                     session_id,
                     tool_kind_resolver=self._manager.tool_kind_resolver(session_id),
                 )
                 await self._send_runtime_update(session_id)
-            self._manager.get(session_id).trailing_answer_message_ids = trailing_answer_message_ids
+            self._manager.get(session_id).answer_message_ids = answer_message_ids
             # Both branches: >0 re-seeds the rolled-back list, ==0 (reset
             # to welcome) clears the client plan.
             await self._send_plan_update(session_id)
@@ -1134,17 +1134,22 @@ class ChrysAcpServer:
         for update in bridge.updates_for_event(event):
             await self._client_or_error().session_update(session_id=session_id, update=update)
 
-    async def _retract_trailing_answer(self, session_id: str, session: ManagedSession, turn_id: str | None) -> None:
-        """Withdraw the answer messages the session's last turn ended with: a bare retry writes that answer again.
+    async def _retract_answer(
+        self, session_id: str, session: ManagedSession, turn_id: str | None, segment_ids: tuple[str, ...]
+    ) -> None:
+        """Withdraw the messages of the answer a bare retry dropped from history: it writes that answer again.
 
         ACP has no retraction primitive, so this is the Chrys extension
         notification a client acts on.
         """
-        if not session.trailing_answer_message_ids:
+        message_ids = dict.fromkeys(
+            message_id for segment in segment_ids for message_id in session.answer_message_ids.pop(segment, ())
+        )
+        if not message_ids:
             return
         await self._client_or_error().ext_notification(
             "chrys/messages_retracted",
-            {"sessionId": session_id, "turnId": turn_id, "messageIds": list(session.trailing_answer_message_ids)},
+            {"sessionId": session_id, "turnId": turn_id, "messageIds": list(message_ids)},
         )
 
     async def _handle_turn_event(self, session_id: str, event: Event, bridge: AcpEventBridge) -> bool:

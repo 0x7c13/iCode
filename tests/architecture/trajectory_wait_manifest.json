@@ -400,7 +400,7 @@
         ["wrapper", "await self._response_ready(response)", "unresolved", "chrys.kernel.loop._LoopRun._response_ready"],
         ["wrapper", "await self._run_tool_batch(response, function_calls)", "unresolved", "chrys.kernel.loop._LoopRun._run_tool_batch"],
         ["awaitable", "await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get('tools')))", "unresolved"],
-        ["awaitable", "await self._wire.blocking_response(self._prepped_messages, request_message_observer=self._wire_request_observer)", "unresolved"],
+        ["awaitable", "await self._wire.blocking_response(self._prepped_messages, request_message_observer=self._wire_request_observer, exhaustion_tail=True)", "unresolved"],
         ["wrapper", "await self._finish_cycle(response)", "unresolved", "chrys.kernel.loop._LoopRun._finish_cycle"],
         ["wrapper", "await self._response_ready(response)", "unresolved", "chrys.kernel.loop._LoopRun._response_ready"]
       ],
@@ -472,8 +472,8 @@
         ["awaitable", "await self._trajectory.retry_started(retry_mode=retry_mode)", "unresolved"]
       ],
       "_WireCaller.blocking_response": [
-        ["wrapper", "await _resolve_response(await self._call(prepped, as_stream=False, request_message_observer=request_message_observer))", "unresolved", "chrys.kernel.loop._resolve_response"],
-        ["wrapper", "await self._call(prepped, as_stream=False, request_message_observer=request_message_observer)", "unresolved", "chrys.kernel.loop._WireCaller._call"],
+        ["wrapper", "await _resolve_response(await self._call(prepped, as_stream=False, request_message_observer=request_message_observer, exhaustion_tail=exhaustion_tail))", "unresolved", "chrys.kernel.loop._resolve_response"],
+        ["wrapper", "await self._call(prepped, as_stream=False, request_message_observer=request_message_observer, exhaustion_tail=exhaustion_tail)", "unresolved", "chrys.kernel.loop._WireCaller._call"],
         ["wrapper", "await self._pause_between_continuation_polls()", "unresolved", "chrys.kernel.loop._WireCaller._pause_between_continuation_polls"],
         ["wrapper", "await self._schedule_resend(policy, exc, retry_mode=RetryMode.CONTEXT_OVERFLOW)", "unresolved", "chrys.kernel.loop._WireCaller._schedule_resend"],
         ["wrapper", "await self._schedule_resend(policy, exc, retry_mode=RetryMode.VALIDATION)", "unresolved", "chrys.kernel.loop._WireCaller._schedule_resend"],
@@ -483,7 +483,7 @@
         ["awaitable", "await inner_stream.aclose()", "unresolved"]
       ],
       "_WireCaller.streaming_response._updates": [
-        ["wrapper", "await self._call(prepped, as_stream=True, stream_update_filter=stream_update_filter, request_message_observer=request_message_observer)", "unresolved", "chrys.kernel.loop._WireCaller._call"],
+        ["wrapper", "await self._call(prepped, as_stream=True, stream_update_filter=stream_update_filter, request_message_observer=request_message_observer, exhaustion_tail=exhaustion_tail)", "unresolved", "chrys.kernel.loop._WireCaller._call"],
         ["wrapper", "await _watchdog_await(iterator.__anext__(), policy.stall_timeout_seconds if policy is not None else None, 'Streaming response')", "unresolved", "chrys.kernel.loop._watchdog_await"],
         ["wrapper", "await _watchdog_await(inner_stream.get_final_response(), policy.stall_timeout_seconds if policy is not None else None, 'Streaming response finalization')", "unresolved", "chrys.kernel.loop._watchdog_await"],
         ["wrapper", "await self._pause_between_continuation_polls()", "unresolved", "chrys.kernel.loop._WireCaller._pause_between_continuation_polls"],
@@ -492,7 +492,7 @@
         ["wrapper", "await self._schedule_resend(policy, exc, retry_mode=RetryMode.CONTEXT_OVERFLOW)", "unresolved", "chrys.kernel.loop._WireCaller._schedule_resend"],
         ["wrapper", "await self._schedule_resend(policy, exc, retry_mode=RetryMode.VALIDATION)", "unresolved", "chrys.kernel.loop._WireCaller._schedule_resend"],
         ["wrapper", "await self._schedule_retry(policy, exc, message='Stream stalled; retrying with a blocking response', attempt=stall_retry_attempt + 1, max_attempts=policy.stall_max_retries + 1, delay_seconds=0, fallback_to_blocking=True)", "unresolved", "chrys.kernel.loop._WireCaller._schedule_retry"],
-        ["wrapper", "await self.blocking_response(prepped, request_message_observer=request_message_observer, overflow_recovered=overflow_recovered, blank_resent=blank_resent)", "unresolved", "chrys.kernel.loop._WireCaller.blocking_response"],
+        ["wrapper", "await self.blocking_response(prepped, request_message_observer=request_message_observer, overflow_recovered=overflow_recovered, blank_resent=blank_resent, exhaustion_tail=exhaustion_tail)", "unresolved", "chrys.kernel.loop._WireCaller.blocking_response"],
         ["wrapper", "await self._schedule_retry(policy, exc, message='Stream stalled', attempt=stall_retry_attempt, max_attempts=policy.stall_max_retries)", "unresolved", "chrys.kernel.loop._WireCaller._schedule_retry"],
         ["wrapper", "await self._schedule_retry(policy, exc, message=clean_error_message(exc), attempt=retry_attempt, max_attempts=policy.max_retries)", "unresolved", "chrys.kernel.loop._WireCaller._schedule_retry"]
       ],
@@ -1214,6 +1214,11 @@
         ["wrapper", "await self.publish_history_vision_rejection(session_id=event_session_id, should_publish=should_publish)", "unresolved", "chrys.orchestration.engine.run.prompt_content.PromptContentPreparer.publish_history_vision_rejection"]
       ]
     },
+    "chrys.orchestration.engine.run.resume": {
+      "TurnResumePolicy.retry_request": [
+        ["awaitable", "await withdraw(withdrawn)", "unresolved"]
+      ]
+    },
     "chrys.orchestration.engine.run.retry": {
       "RetryCoordinator._commit_deferred_retry_note_side_effects": [
         ["wrapper", "await self._commit_retry_note_side_effects_to_target(side_effects, target)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._commit_retry_note_side_effects_to_target"]
@@ -1316,6 +1321,9 @@
       "TurnRunner._refresh_runtime_skills": [
         ["awaitable", "await self._skills.refresh(update_active_turn=update_active_turn)", "unresolved"]
       ],
+      "TurnRunner._withdraw_answer": [
+        ["wrapper", "await finish_close(asyncio.create_task(self._bus.publish(event)))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
       "TurnRunner.finalize_current_run": [
         ["awaitable", "await self._finalizer.finalize()", "unresolved"],
         ["awaitable", "await self._retry_factory().report_retry_dropped_for_missing_cwd(dropped_retry_cwd)", "unresolved"]
@@ -1345,7 +1353,7 @@
         ["wrapper", "await self._fire_before_turn(additional_text, is_retry=True, target_operation_id=preamble.operation_id if preamble is not None and preamble.start_committed else None)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._fire_before_turn"],
         ["wrapper", "await self._compute_workspace_notice(is_retry=True)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._compute_workspace_notice"],
         ["awaitable", "await preamble.finished(outcome=PreparationOutcome.HANDOFF)", "unresolved"],
-        ["async_context", "async with self._current.require_loaded().bindings.inputs.retry_request(additional_text=additional_text, created_at=created_at)", "unresolved"],
+        ["async_context", "async with self._current.require_loaded().bindings.inputs.retry_request(additional_text=additional_text, created_at=created_at, withdraw=self._withdraw_answer)", "unresolved"],
         ["awaitable", "await self._current.require_loaded().bindings.backend.run(request)", "unresolved"],
         ["wrapper", "await self.finalize_current_run()", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner.finalize_current_run"]
       ]
@@ -1892,6 +1900,7 @@
         ["wrapper", "await self._publish_terminal(record)", "unresolved", "chrys.orchestration.invoker.acp_protocol.AcpUpdateTranslator._publish_terminal"]
       ],
       "AcpUpdateTranslator._publish_start": [
+        ["awaitable", "await self._content.end_segment()", "unresolved"],
         ["awaitable", "await self._bus.publish(InvocationToolCallStart(origin=self.origin, agent_name=self.agent_name, tool_name=record.title, tool_kind=record.kind, args=dict(record.raw_input), call_id=record.local_call_id, provider_hosted=record.provider_hosted, hosted_family=record.hosted_family, provider=record.provider, provider_item_type=record.provider_item_type, provider_call_id=record.provider_call_id, provider_status=record.provider_status, session_id=self._session_id))", "unresolved"]
       ],
       "AcpUpdateTranslator._publish_terminal": [
@@ -1909,8 +1918,8 @@
         ["awaitable", "await self._content.finish(status)", "unresolved"]
       ],
       "AcpUpdateTranslator.flush_interrupted": [
-        ["wrapper", "await self._publish_terminal(record, interrupted=True)", "unresolved", "chrys.orchestration.invoker.acp_protocol.AcpUpdateTranslator._publish_terminal"],
-        ["awaitable", "await self._content.finish('interrupted')", "unresolved"]
+        ["awaitable", "await self._content.finish('interrupted')", "unresolved"],
+        ["wrapper", "await self._publish_terminal(record, interrupted=True)", "unresolved", "chrys.orchestration.invoker.acp_protocol.AcpUpdateTranslator._publish_terminal"]
       ],
       "AcpUpdateTranslator.on_update": [
         ["wrapper", "await self._seal_segment()", "unresolved", "chrys.orchestration.invoker.acp_protocol.AcpUpdateTranslator._seal_segment"],
@@ -2372,6 +2381,9 @@
       "SubAgentToolShell.publish_resumed": [
         ["awaitable", "await self._emitter.publish(InvocationResumed(origin=self.origin, agent_name=self._agent_name, session_id=self.origin.session_id or None))", "unresolved"]
       ],
+      "SubAgentToolShell.publish_withdrawn": [
+        ["wrapper", "await finish_close(asyncio.create_task(self._emitter.publish(event)))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
       "SubAgentToolShell.run": [
         ["awaitable", "await self.policy.backend.run(self.policy.request(ticket))", "unresolved"],
         ["awaitable", "await self.policy.project_result(self.outcome)", "unresolved"],
@@ -2379,6 +2391,7 @@
         ["wrapper", "await self._end_after_failure(by_user=False)", "unresolved", "chrys.orchestration.sub_agents.shell.SubAgentToolShell._end_after_failure"],
         ["wrapper", "await self.await_decision()", "unresolved", "chrys.orchestration.sub_agents.shell.SubAgentToolShell.await_decision"],
         ["wrapper", "await self.publish_resumed()", "unresolved", "chrys.orchestration.sub_agents.shell.SubAgentToolShell.publish_resumed"],
+        ["wrapper", "await self.publish_withdrawn(withdrawn)", "unresolved", "chrys.orchestration.sub_agents.shell.SubAgentToolShell.publish_withdrawn"],
         ["wrapper", "await self._end_after_failure(by_user=True)", "unresolved", "chrys.orchestration.sub_agents.shell.SubAgentToolShell._end_after_failure"],
         ["awaitable", "await self.policy.run_cancelled()", "unresolved"],
         ["awaitable", "await self.policy.finish_run()", "unresolved"]
@@ -2557,6 +2570,10 @@
         ["wrapper", "await self._open_backend()", "unresolved", "chrys.orchestration.workflows.agent_node.WorkflowAgentShell._open_backend"],
         ["wrapper", "await self._retire_backend()", "unresolved", "chrys.orchestration.workflows.agent_node.WorkflowAgentShell._retire_backend"]
       ],
+      "WorkflowAgentShell._resume_transcript": [
+        ["awaitable", "await self._emitter.publish(InvocationResumed(origin=origin, agent_name=self._display_name, session_id=self._session_id))", "unresolved"],
+        ["awaitable", "await self._emitter.publish(InvocationAnswerWithdrawn(origin=origin, agent_name=self._display_name, session_id=self._session_id, segment_ids=withdrawn))", "unresolved"]
+      ],
       "WorkflowAgentShell._retire_backend": [
         ["awaitable", "await self._prepared.aclose()", "unresolved"]
       ],
@@ -2577,7 +2594,7 @@
         ["awaitable", "await backend.abort(handle, cause)", "unresolved"]
       ],
       "WorkflowAgentShell.begin": [
-        ["awaitable", "await self._emitter.publish(InvocationResumed(origin=request.origin, agent_name=self._display_name, session_id=self._session_id))", "unresolved"],
+        ["wrapper", "await finish_close(asyncio.create_task(self._resume_transcript(request.origin, withdrawn)))", "unresolved", "chrys.foundation.util.once_close.finish_close"],
         ["wrapper", "await self._save_transcript()", "unresolved", "chrys.orchestration.workflows.agent_node.WorkflowAgentShell._save_transcript"]
       ],
       "WorkflowAgentShell.close": [

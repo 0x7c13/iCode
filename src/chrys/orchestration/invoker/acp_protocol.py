@@ -69,6 +69,7 @@ from chrys.service.acp_client.spec import PermissionDecision
 from chrys.service.approval.arbitration import ApprovalDecisionArbiter, ApprovalJudgeInput
 from chrys.service.approval.correlation import OneShotCorrelation
 from chrys.service.approval.policy import ApprovalMode
+from chrys.service.session.sub_agent_logs import ACP_ANSWER_WITHDRAWN_UPDATE
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalTrace
 from chrys.service.trajectory.waits import WaitOutcome, WaitTrace
 
@@ -262,7 +263,7 @@ class _CallRecord:
     started_at: float = field(default_factory=time.monotonic)
     start_published: bool = False
     terminal_published: bool = False
-    last_start_signature: str = ""
+    delivered_start_signature: str = ""
     provider_hosted: bool = False
     hosted_family: str = ""
     provider: str = ""
@@ -337,6 +338,8 @@ class AcpUpdateTranslator:
         self.latest_context_size: int | None = None
         self._segments: list[str] = []
         self._open_segment = ""
+        # Shown since the last tool card opened: a retry in a new session asks for this answer again.
+        self._final_answer_segments: list[str] = []
         # Streams the remote's message and thought chunks as they arrive.
         self._content = ContentProjector(BoundEmitter(event_bus, origin), agent_name=agent_name)
         self._text_finalized = False
@@ -548,18 +551,40 @@ class AcpUpdateTranslator:
             await self._publish_terminal(record)
 
     async def _publish_start(self, record: _CallRecord, *, ensure: bool = False) -> None:
-        # The record keeps a digest of what it published: a finished call's
-        # input can be replaced by a smaller one, and the record must then keep
-        # no more than its latest update is charged for.
+        # A start is published again whenever what it shows changes, and never
+        # otherwise; a hosted call's status rides its result. The record keeps
+        # a digest of what it published: a finished call's input can be
+        # replaced by a smaller one, and the record must then keep no more than
+        # its latest update is charged for.
         signature = hashlib.sha256(
-            json.dumps([record.title, record.kind, record.raw_input], sort_keys=True, separators=(",", ":")).encode()
+            json.dumps(
+                [
+                    record.title,
+                    record.kind,
+                    record.raw_input,
+                    record.provider_hosted,
+                    record.hosted_family,
+                    record.provider,
+                    record.provider_item_type,
+                    record.provider_call_id,
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
         ).hexdigest()
-        if not ensure and (
-            record.terminal_published or (record.start_published and signature == record.last_start_signature)
-        ):
+        if signature == record.delivered_start_signature:
             return
+        # Past its terminal, a call gets only the terminal's own start (*ensure*): its consumers lack it after a
+        # start that a cancel cut off mid-delivery, and for a call whose first update was already terminal.
+        if not ensure and record.terminal_published:
+            return
+        opens_card = not record.start_published
         record.start_published = True
-        record.last_start_signature = signature
+        if opens_card:
+            # A new card, from a start or an update for a call not seen yet, ends the shown segment: the
+            # answer before it shows, and stays, before it. The text a result returns is sealed apart.
+            self._final_answer_segments.clear()
+            await self._content.end_segment()
         if self._bus is not None:
             await self._bus.publish(
                 InvocationToolCallStart(
@@ -578,6 +603,7 @@ class AcpUpdateTranslator:
                     session_id=self._session_id,
                 )
             )
+        record.delivered_start_signature = signature
 
     async def _publish_terminal(self, record: _CallRecord, *, interrupted: bool = False) -> None:
         if record.terminal_published:
@@ -588,7 +614,7 @@ class AcpUpdateTranslator:
         # _publish_start / bus.publish points), both could pass the guard and
         # double-deliver a InvocationToolCallResult (and double-count). Claiming
         # up front serializes them — the loser returns at the guard. The
-        # ensure=True start below intentionally bypasses this same flag.
+        # ensure=True start below bypasses this same flag, never a delivered one.
         record.terminal_published = True
         self._completed_here += 1
         try:
@@ -635,10 +661,11 @@ class AcpUpdateTranslator:
         await self.publish_progress()
 
     async def flush_interrupted(self) -> None:
+        # The cut-off answer ends first: a card a dangling call opens here would end it completed.
+        await self._content.finish("interrupted")
         for record in list(self.calls.values()):
             if not record.terminal_published:
                 await self._publish_terminal(record, interrupted=True)
-        await self._content.finish("interrupted")
 
     async def finish_content(self, status: ContentStatus) -> None:
         """End the streamed text's open segment with *status*."""
@@ -653,7 +680,9 @@ class AcpUpdateTranslator:
         if text:
             self._charge(text)
             self._open_segment += text
-            await self._content.publish_text("answer", text)
+            segment_id = await self._content.publish_text("answer", text)
+            if segment_id is not None and segment_id not in self._final_answer_segments:
+                self._final_answer_segments.append(segment_id)
 
     def _take_open_segment(self) -> str:
         segment = self._open_segment
@@ -674,6 +703,17 @@ class AcpUpdateTranslator:
         if self.result_mode == "transcript":
             return "\n\n".join(segments)
         return segments[-1]
+
+    def withdraw_final_answer(self) -> tuple[str, ...]:
+        """Withdraw the answer segments shown after the last tool card opened, for a retry that asks for it again.
+
+        The audit ring records the withdrawal, so a replay of it drops that answer too.
+        """
+        withdrawn = tuple(self._final_answer_segments)
+        self._final_answer_segments.clear()
+        if withdrawn:
+            self._append_audit_item({"seq": None, "update": {"sessionUpdate": ACP_ANSWER_WITHDRAWN_UPDATE}})
+        return withdrawn
 
     def unpublished_final_text(self) -> str:
         """Return the final segment: the text after the last tool call start."""

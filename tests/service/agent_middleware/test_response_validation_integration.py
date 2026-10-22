@@ -159,6 +159,9 @@ class TestMainAgentTerminalVerdicts:
             assert ctx.mock_client.call_count == 2
             assert [(error.code, error.message) for error in errors] == [("executor_error", reason)]
             assert errors[0].session_id == ctx.session_id
+            # Shown in the user's language; the raw reason stays the error text.
+            display = errors[0].display_message
+            assert display is not None and display.definition.key == "error.kind.blank_response"
             assert extract_final_messages(ctx.events) == []
             assert ctx.engine.state is EngineState.FAILED
 

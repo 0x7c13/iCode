@@ -752,6 +752,7 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.sessions.column.workflow",
     "tui.sessions.count",
     "tui.sessions.delete.confirm_message",
+    "tui.sessions.delete.failed",
     "tui.sessions.delete.open_elsewhere",
     "tui.sessions.empty",
     "tui.sessions.empty.filtered",

@@ -330,6 +330,12 @@ msgstr "运行 {app} 的设备当前似乎没有网络连接，请先检查网�
 msgid "error.kind.auth_failed"
 msgstr "API 密钥无效或没有访问权限。请检查模型配置中的 API 密钥。"
 
+#. English: The model returned no answer.
+#. chrys-meta={"fingerprint":"57d84b9049c3aab01b03a27486af3f2fb3ba147bc5b54cb91d6d67f3f79492df","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/errors/display.py
+msgid "error.kind.blank_response"
+msgstr "模型未返回回答。"
+
 #. English: Connecting to {host} timed out. Check your network and firewall.
 #. chrys-meta={"fingerprint":"2095647ac8e4488d51d71298d5de8f48aa5891fcd6f1470bd706bdbbf777c43a","multiline":false,"placeholders":["host"]}
 #: src/chrys/foundation/errors/display.py
@@ -9555,6 +9561,13 @@ msgstr ""
 "“{session_id}”？\n"
 "\n"
 "此操作无法撤销。"
+
+#. English: The session could not be fully deleted. Close any program that may
+#. have its files open, then try again.
+#. chrys-meta={"fingerprint":"f4c7e3811e4ea8566725e79a4e1e76545d8fc7207fb0e1c94dafbb42509d25cd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/sessions/screen.py
+msgid "tui.sessions.delete.failed"
+msgstr "会话未能完全删除。请关闭可能正在使用其文件的程序后重试。"
 
 #. English: Session is open in another {app_name} instance.
 #. chrys-meta={"fingerprint":"eeace366bd185deaab6de2f3b091a62353947e5c0808a8b7be6e7a1d91f68c82","multiline":false,"placeholders":["app_name"]}

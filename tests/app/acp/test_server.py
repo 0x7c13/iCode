@@ -89,7 +89,10 @@ class _RecordingUsageEngine(_FakeEngine):
 
 
 def _stub_replay(
-    monkeypatch: pytest.MonkeyPatch, *, error: BaseException | None = None, trailing: tuple[str, ...] = ()
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    error: BaseException | None = None,
+    answers: dict[str, tuple[str, ...]] | None = None,
 ) -> list[tuple[Any, ...]]:
     """Replace the module-level history replay and return the calls it records.
 
@@ -98,11 +101,11 @@ def _stub_replay(
     """
     replays: list[tuple[Any, ...]] = []
 
-    async def _replay(*args: Any, **_kwargs: Any) -> tuple[str, ...]:
+    async def _replay(*args: Any, **_kwargs: Any) -> dict[str, tuple[str, ...]]:
         replays.append(args)
         if error is not None:
             raise error
-        return trailing
+        return dict(answers or {})
 
     monkeypatch.setattr(server_module, "replay_session_history", _replay)
     return replays
@@ -636,31 +639,31 @@ async def test_extension_rollback_to_turn_sends_plan_update_after_replay(monkeyp
 @pytest.mark.anyio
 async def test_load_session_keeps_the_replayed_answer_a_bare_retry_withdraws(monkeypatch) -> None:
     manager = _FakeLoadManager(reused_existing=True)
-    manager.session.trailing_answer_message_ids = ("before-the-reload",)
+    manager.session.answer_message_ids = {"before": ("before-the-reload",)}
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(_FakeClient())
-    _stub_replay(monkeypatch, trailing=("replayed-half-answer",))
+    _stub_replay(monkeypatch, answers={"seg": ("replayed-half-answer",)})
 
     await server.load_session(cwd="/workspace", session_id="s1")
 
-    assert manager.session.trailing_answer_message_ids == ("replayed-half-answer",)
+    assert manager.session.answer_message_ids == {"seg": ("replayed-half-answer",)}
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(("target_turn", "expected"), [(2, ("replayed-half-answer",)), (0, ())])
+@pytest.mark.parametrize(("target_turn", "expected"), [(2, {"seg": ("replayed-half-answer",)}), (0, {})])
 async def test_rollback_keeps_the_replayed_answer_a_bare_retry_withdraws(
-    monkeypatch, target_turn: int, expected: tuple[str, ...]
+    monkeypatch, target_turn: int, expected: dict[str, tuple[str, ...]]
 ) -> None:
     host = _FakeHost(event_bus=EventBus())
     manager = _FakeManager(host)
-    manager.get("s1").trailing_answer_message_ids = ("before-the-rollback",)
+    manager.get("s1").answer_message_ids = {"before": ("before-the-rollback",)}
     server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
     server.on_connect(_FakeClient())
-    _stub_replay(monkeypatch, trailing=("replayed-half-answer",))
+    _stub_replay(monkeypatch, answers={"seg": ("replayed-half-answer",)})
 
     await server.ext_method("session/rollback", {"sessionId": "s1", "targetTurn": target_turn})
 
-    assert manager.get("s1").trailing_answer_message_ids == expected
+    assert manager.get("s1").answer_message_ids == expected
 
 
 @pytest.mark.anyio

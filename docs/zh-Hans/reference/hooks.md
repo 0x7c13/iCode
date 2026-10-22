@@ -279,9 +279,11 @@ iCode 根据文件扩展名选择运行程序：
 | `.pl` | `perl` |
 | 其他 | 按 Python 脚本运行 |
 
-对于 `.py` 文件，iCode 会先在用户的 `PATH` 中依次查找 `uv`、`python3` 和 `python`。找到 `uv` 时，通过 `uv run` 运行脚本；找到 Python 时，直接使用该解释器。如果都未找到，则使用 iCode 自带运行环境中的 `uv` 或 Python。
+对于 `.py` 文件，iCode 会先在用户的 `PATH` 中依次查找 `uv`、`python3` 和 `python`。找到 `uv` 时，通过 `uv run` 运行脚本；找到 Python 时，直接使用该解释器。如果都未找到，则使用 iCode 自带运行环境中的 `uv` 或 Python。在 Windows 上，iCode 会跳过只提示从 Microsoft Store 获取 Python 的 `python` 和 `python3` 占位程序，继续查找。
 
 运行其他类型的脚本前，需安装表中对应的运行程序，并确保 iCode 可以通过 `PATH` 找到该程序。
+
+在 Windows 上，Shell 脚本需要 Windows 版的 `bash`，例如 Git for Windows 安装的 `bash`。iCode 不会使用 WSL 的 `bash`，因为它无法按 Windows 路径打开脚本。如果找不到其他 `bash` 或 `sh`，该钩子会运行失败，错误信息会说明缺少什么。
 
 ### 运行命令
 
@@ -302,6 +304,8 @@ iCode 不会通过 Shell 解释参数，因此重定向、管道、变量展开�
 | `args` | 字符串列表 | `[]` | 追加到 `argv` 末尾的参数。 |
 
 每个参数应作为一个独立的列表元素填写，不需要添加 Shell 转义。可以将全部参数写入 `argv`，也可以将末尾参数写入 `args`；两种写法的运行结果相同。不依赖 Shell 语法时，优先使用 `command`，可以避免不同 Shell 的引用和转义差异。
+
+> **注意**：在 Windows 上，`python` 和 `python3` 可能是只提示从 Microsoft Store 获取 Python 的占位程序：在 `PATH` 中有 Python 之前两者都是；用 python.org 的传统安装程序安装 Python 后，`python3` 仍然是，因为这种安装不提供 `python3`。`command` 和 `shell` 钩子由 Windows 自己选择要运行的程序，iCode 无法在这里跳过占位程序：这类钩子可能以退出码 9009 失败，`command` 钩子也可能改为运行 iCode 自身使用的 Python，其中没有你安装的软件包。请填写已安装 Python 的完整路径，或在 Windows 设置的“应用执行别名”中关闭“应用安装程序”的 `python.exe` 和 `python3.exe`。
 
 ### 运行 Shell 片段
 
@@ -687,7 +691,7 @@ FAIL 1 file · 2 hooks: 1 error, 1 warning
 | `broad_before_tool_call` | `before_tool_call` 钩子没有匹配条件，会在每次工具调用时运行 |
 | `duplicate_id_across_files` | 项目和全局配置文件都定义了该 `id`，两个钩子都会运行 |
 | `shadowed_file` | 文件夹中有多个钩子配置文件，只读取第一个（参见[配置文件位置](#配置文件位置)） |
-| `program_not_found` | 在 `PATH` 中找不到运行已启用钩子的命令或脚本所需的程序 |
+| `program_not_found` | 在 `PATH` 中找不到运行已启用钩子的命令或脚本所需的程序，或者在 Windows 上找到的只是提示从 Microsoft Store 获取 Python 的占位程序 |
 | `unknown_template_var` | `run.cwd` 或 `run.env` 使用了 iCode 不会替换的 `${...}` 变量，或者 `run.argv` 或 `run.args` 使用了任何 `${...}` 变量（iCode 只替换 `cwd` 和 `env` 值中的变量），该变量会按原样传递 |
 
 只对已启用的钩子检查脚本和程序是否存在。`run.env` 中设置了 `PATH` 的钩子不检查程序是否存在。

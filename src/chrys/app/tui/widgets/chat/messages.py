@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC
 from typing import TYPE_CHECKING, Any
@@ -25,6 +25,7 @@ from textual.widgets import Button, Static
 from chrys.app.tui.clipboard import copy_text_to_clipboards
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.util.removal import remove_shielded
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets.chat.image_preview import ChatImagePreview, ImagePreviewGrid, extract_image_previews
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
@@ -463,7 +464,10 @@ class AgentMessage(Widget):
         is_structured_completion: bool = False,
         timestamp: str = "",
         duration_ms: int | None = None,
+        segment_ids: Iterable[str] = (),
     ) -> None:
+        self.segment_ids = frozenset(segment_ids)
+        """The content segments whose answer text this message shows, for a bare Continue to withdraw."""
         self._source_text = text
         self._body_stale = False
         """The markdown body has not been handed the latest streamed text."""
@@ -713,6 +717,14 @@ class AgentMessage(Widget):
         return super()._size_updated(size, virtual_size, container_size, layout=False)
 
 
+async def remove_withdrawn_answer(container: Widget, segment_ids: Iterable[str]) -> None:
+    """Remove *container*'s agent messages that show any of *segment_ids*: an answer a retry asks for again."""
+    withdrawn = frozenset(segment_ids)
+    for child in list(container.children):
+        if isinstance(child, AgentMessage) and child.segment_ids & withdrawn:
+            await remove_shielded(child)
+
+
 class SystemMessage(Static):
     """System notification — dim, unobtrusive."""
 
@@ -775,11 +787,9 @@ class ErrorMessage(Widget):
     }
     """
 
-    def __init__(self, text: str, *, action_label: str | None = None, ends_turn: bool = True) -> None:
+    def __init__(self, text: str, *, action_label: str | None = None) -> None:
         self._text = text
         self._action_label = action_label
-        self.ends_turn = ends_turn
-        """Whether this error ended a running turn, rather than refusing a request outside one."""
         super().__init__()
 
     def _render_text(self) -> Text:

@@ -353,7 +353,7 @@ def test_session_clear_error_toasts_and_keeps_session_without_retry_mode() -> No
             unlocked.append(None)
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, ends_turn: bool = True) -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
             errors_added.append(message)
 
     input_bar = _FakeInputBar()

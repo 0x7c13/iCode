@@ -10,7 +10,7 @@ import pytest
 from acp import schema as acp_schema
 
 from chrys.app.acp.history import replay_session_history
-from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY, HistoryMarkerKind
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE, KIND_MCP, KIND_SHELL
 from chrys.foundation.tool_result_metadata import (
     SHELL_EXIT_CODE_METADATA_KEY,
@@ -1140,9 +1140,13 @@ def _answer_chunk_ids(client: _FakeClient) -> dict[str, str]:
     return texts
 
 
+def _shown(text: str, segment: str) -> Content:
+    return Content.from_text(text, additional_properties={ANSWER_SEGMENT_KEY: segment})
+
+
 @pytest.mark.asyncio
-async def test_replay_returns_the_answer_history_ends_with(tmp_path) -> None:
-    """What a bare retry drops: the answer messages after the last tool exchange, past the trailing markers."""
+async def test_replay_returns_the_messages_each_answer_segment_replayed_as(tmp_path) -> None:
+    """What a bare retry that drops a segment withdraws: the messages it replayed as, wherever it was kept."""
     store = JsonFileStateStore(tmp_path / "sessions")
     call = Content.from_function_call("c1", "read_file", arguments={})
     await store.save_session(
@@ -1151,10 +1155,15 @@ async def test_replay_returns_the_answer_history_ends_with(tmp_path) -> None:
             "messages": [
                 Message("user", ["go"]),
                 # Narration may be a message of its own, as the provider sent it, before its call's.
-                Message("assistant", ["Let me look."]),
+                Message("assistant", [_shown("Let me look.", "intro")]),
                 Message("assistant", [call]),
                 Message("tool", [Content.from_function_result("c1", result="42")]),
-                Message("assistant", [Content.from_text_reasoning(text="hmm"), "The result ", "is"]),
+                Message(
+                    "assistant",
+                    [Content.from_text_reasoning(text="hmm"), _shown("The result ", "answer"), _shown("is", "answer")],
+                ),
+                # The rest of the segment kept after it, as a cut-off stream's text is.
+                Message("assistant", [_shown(" 42.", "answer"), _shown("Next.", "next")]),
                 _marker(HistoryMarkerKind.INTERRUPTED),
                 _marker(HistoryMarkerKind.TURN),
             ]
@@ -1164,29 +1173,20 @@ async def test_replay_returns_the_answer_history_ends_with(tmp_path) -> None:
     )
     client = _FakeClient()
 
-    trailing = await replay_session_history(client, store, "s1")
+    segments = await replay_session_history(client, store, "s1")
 
     texts = _answer_chunk_ids(client)
-    assert [texts[message_id] for message_id in trailing] == ["The result \n\nis"]
-    assert set(texts) - set(trailing) == {next(i for i, t in texts.items() if t == "Let me look.")}
+    assert {segment: [texts[message_id] for message_id in ids] for segment, ids in segments.items()} == {
+        "intro": ["Let me look."],
+        "answer": ["The result \n\nis", " 42."],
+        "next": ["Next."],
+    }
+    assert set(texts) == {message_id for ids in segments.values() for message_id in ids}
 
 
 @pytest.mark.asyncio
-async def test_replay_returns_no_answer_once_a_user_message_follows_it(tmp_path) -> None:
-    store = JsonFileStateStore(tmp_path / "sessions")
-    await store.save_session(
-        "s1",
-        {"messages": [Message("user", ["go"]), Message("assistant", ["done"]), Message("user", ["next"])]},
-        agent_profile="Code",
-        primary_cwd=str(tmp_path),
-    )
-
-    assert await replay_session_history(_FakeClient(), store, "s1") == ()
-
-
-@pytest.mark.asyncio
-async def test_replay_returns_no_answer_when_the_failed_turn_ends_in_a_hosted_exchange_message(tmp_path) -> None:
-    """One message holding a hosted call, its result and narration is a tool exchange: a bare retry keeps it."""
+async def test_replay_starts_a_message_at_each_segment_one_persisted_message_holds(tmp_path) -> None:
+    """One message holding narration, a hosted call, its result and an answer replays each text as its own message."""
     store = JsonFileStateStore(tmp_path / "sessions")
     call = Content.from_hosted_tool_call(
         "provider-search",
@@ -1206,16 +1206,12 @@ async def test_replay_returns_no_answer_when_the_failed_turn_ends_in_a_hosted_ex
         hosted_provider="openai",
         provider_phase="terminal",
     )
-    failed = _marker(HistoryMarkerKind.INTERRUPTED)
-    failed.additional_properties[HistoryMarkerKind.STATUS_CODE_KEY] = HistoryMarkerKind.STATUS_EXECUTION_FAILED
     await store.save_session(
         "s1",
         {
             "messages": [
                 Message("user", ["search"]),
-                Message("assistant", [call, result, Content.from_text("The search found Chrys.")]),
-                failed,
-                _marker(HistoryMarkerKind.TURN),
+                Message("assistant", [_shown("Searching.", "intro"), call, result, _shown("Found Chrys.", "answer")]),
             ]
         },
         agent_profile="Code",
@@ -1223,8 +1219,26 @@ async def test_replay_returns_no_answer_when_the_failed_turn_ends_in_a_hosted_ex
     )
     client = _FakeClient()
 
-    trailing = await replay_session_history(client, store, "s1")
+    segments = await replay_session_history(client, store, "s1")
 
-    # The narration did replay as an answer message; it is just not one a retry withdraws.
-    assert list(_answer_chunk_ids(client).values()) == ["The search found Chrys."]
-    assert trailing == ()
+    texts = _answer_chunk_ids(client)
+    assert {segment: [texts[message_id] for message_id in ids] for segment, ids in segments.items()} == {
+        "intro": ["Searching."],
+        "answer": ["Found Chrys."],
+    }
+
+
+@pytest.mark.asyncio
+async def test_replay_returns_no_message_for_an_answer_history_kept_without_its_segment(tmp_path) -> None:
+    """Sessions saved before answers were stamped still replay their text; a retry withdraws none of it."""
+    store = JsonFileStateStore(tmp_path / "sessions")
+    await store.save_session(
+        "s1",
+        {"messages": [Message("user", ["go"]), Message("assistant", ["The result is"]), _marker("interrupted")]},
+        agent_profile="Code",
+        primary_cwd=str(tmp_path),
+    )
+    client = _FakeClient()
+
+    assert await replay_session_history(client, store, "s1") == {}
+    assert list(_answer_chunk_ids(client).values()) == ["The result is"]

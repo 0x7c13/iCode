@@ -27,10 +27,11 @@ Callers never block on the stuck worker.
 from __future__ import annotations
 
 import contextlib
+import errno
 import logging
 import os
 import shutil
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -112,6 +113,40 @@ def _writer_lease_taken(session_dir: Path) -> Generator[bool]:
         lease.release()
 
 
+def _remove_holding_lease(directory: Path) -> bool:
+    """Remove *directory* while holding its writer lease; ``False`` when the lease cannot be taken.
+
+    The lease's own file is open while it goes, and Windows without POSIX
+    delete semantics keeps a file deleted under an open handle in its
+    directory until that handle closes: the two directories around it, once
+    they hold nothing else, are removed after the release, when that file is
+    gone. A file pending deletion cannot be opened, so no writer takes the
+    lease while the rest goes; one that makes a new lock file after the
+    release keeps those directories non-empty, and their removal fails
+    instead of deleting what it writes.
+    """
+    lease_path = session_lease_path(directory)
+    # What each directory around the lease file holds when only that file is left.
+    pinned = {lease_path.parent: [lease_path.name], directory: [lease_path.parent.name]}
+    deferred: list[Path] = []
+
+    def defer_pinned(function: Callable[..., object], path: str, error: BaseException) -> None:
+        not_empty = isinstance(error, OSError) and error.errno == errno.ENOTEMPTY
+        # Anything else still there (a file another program holds open) fails the removal here.
+        if function is not os.rmdir or not not_empty or pinned.get(Path(path)) != os.listdir(path):
+            raise error
+        deferred.append(Path(path))
+
+    with _writer_lease_taken(directory) as taken:
+        if not taken:
+            return False
+        shutil.rmtree(directory, onexc=defer_pinned)
+    # Bottom-up, as the removal reported them.
+    for path in deferred:
+        os.rmdir(path)
+    return True
+
+
 def delete_session_directory(session_dir: Path, *, sessions_root: Path, path_reused: bool = False) -> DeleteResult:
     """Delete *session_dir* physically, or logically when its writer is still alive.
 
@@ -125,10 +160,8 @@ def delete_session_directory(session_dir: Path, *, sessions_root: Path, path_reu
     """
     if not session_dir.is_dir():
         return DeleteResult(DeleteOutcome.MISSING)
-    with _writer_lease_taken(session_dir) as taken:
-        if taken:
-            shutil.rmtree(session_dir)
-            return DeleteResult(DeleteOutcome.REMOVED)
+    if _remove_holding_lease(session_dir):
+        return DeleteResult(DeleteOutcome.REMOVED)
     graveyard = tombstones_dir(sessions_root)
     ensure_owner_only_directory(graveyard)
     target = graveyard / f"{session_dir.name}-{new_analytics_id()}"
@@ -202,21 +235,14 @@ def pending_delete_intents(sessions_root: Path) -> frozenset[str]:
 
 
 def _sweep_tombstone(tombstone: Path) -> int:
-    with _writer_lease_taken(tombstone) as taken:
-        if not taken:
-            return 0
-        shutil.rmtree(tombstone)
-    return 1
+    return 1 if _remove_holding_lease(tombstone) else 0
 
 
 def _sweep_intent(intent: Path, sessions_root: Path) -> int:
     name = intent.name[: -len(INTENT_SUFFIX)]
     target = sessions_root / name
-    if target.is_dir():
-        with _writer_lease_taken(target) as taken:
-            if not taken:
-                return 0
-            shutil.rmtree(target)
+    if target.is_dir() and not _remove_holding_lease(target):
+        return 0
     intent.unlink()
     return 1
 

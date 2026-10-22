@@ -182,7 +182,9 @@ class LiveTranscriptRenderer:
         if self._tools.current_tool_group is not None:
             self._tools.current_tool_group.collapsed = True
         self._tools.end_group()
-        message = AgentMessage(self._blank_segment_text, is_final=False, profile_name=self._profile_name)
+        message = AgentMessage(
+            self._blank_segment_text, is_final=False, profile_name=self._profile_name, segment_ids=(segment_id,)
+        )
         self._blank_segment_text = ""
         self._current_agent_msg = message
         await self._mount.mount_transcript_widget(message)
@@ -356,7 +358,7 @@ class LiveTranscriptRenderer:
         self, reason: str = "Execution interrupted", source: str = "user", *, show_action: bool = True
     ) -> None:
         """Display an interruption notice, replacing any trailing status widget."""
-        self._finalize_current_agent_message()
+        self.stop_answer()
         await self.cancel_running_tools()
         await self._status.remove_trailing_status()
 
@@ -366,18 +368,13 @@ class LiveTranscriptRenderer:
         await self._mount.mount_transcript_widget(msg)
         self._ui.on_status_message_mounted()
 
-    async def add_error(self, text: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
+    async def add_error(self, text: str, *, action_label: str | None = "Retry") -> None:
         """Display an error message, replacing any trailing status widget."""
-        self._finalize_current_agent_message()
+        self.stop_answer()
         await self.cancel_running_tools()
-        # An error outside a turn that replaces a failed turn's card leaves
-        # that turn to retry: the new card still ends it.
-        replaced = self._status.failed_turn_status()
-        if isinstance(replaced, InterruptedMessage) or (isinstance(replaced, ErrorMessage) and replaced.ends_turn):
-            ends_turn = True
         await self._status.remove_trailing_status()
 
-        msg = ErrorMessage(text, action_label=action_label, ends_turn=ends_turn)
+        msg = ErrorMessage(text, action_label=action_label)
         await self._mount.mount_transcript_widget(msg)
         self._ui.on_status_message_mounted()
 
