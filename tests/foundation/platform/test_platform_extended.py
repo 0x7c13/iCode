@@ -308,6 +308,7 @@ def test_clipboard_paste_decodes_subprocess_bytes(monkeypatch: pytest.MonkeyPatc
     from pathlib import Path
 
     import chrys.foundation.platform as platform_mod
+    import chrys.foundation.platform.process as process_mod
 
     platform = PlatformInfo(
         os_name="macos",
@@ -319,6 +320,8 @@ def test_clipboard_paste_decodes_subprocess_bytes(monkeypatch: pytest.MonkeyPatc
     )
 
     monkeypatch.setattr(platform_mod, "get_platform", lambda: platform)
+    # The decoder reads sys.platform, and on Windows tries the console code page first (cp437 reads 0xFF as U+00A0).
+    monkeypatch.setattr(process_mod.sys, "platform", "darwin")
     monkeypatch.setattr(
         subprocess,
         "run",
