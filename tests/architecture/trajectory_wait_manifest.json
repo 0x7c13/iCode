@@ -3986,10 +3986,6 @@
       "HookManager._notify_change": [
         ["awaitable", "await self.on_change(self)", "unresolved"]
       ],
-      "HookManager._register_spawned": [
-        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"],
-        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"]
-      ],
       "HookManager._run_async_tracked": [
         ["wrapper", "await self._run_async_tracked_inner(hook, payload, job, trace, execution_key)", "unresolved", "chrys.service.hooks.manager.HookManager._run_async_tracked_inner"],
         ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"]
@@ -4010,11 +4006,11 @@
       ],
       "HookManager._spawn_nonblocking": [
         ["awaitable", "await trace.started(hook_id=hook.id, hook_event=str(hook.event), execution_mode=hook.execution.mode, detach=hook.execution.detach, delivery=hook.execution.delivery, scope=scope, drain_scope=drain_scope)", "unresolved"],
-        ["wrapper", "await self._register_spawned(hook, waited_at, trace)", "unresolved", "chrys.service.hooks.manager.HookManager._register_spawned"],
+        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"],
         ["awaitable", "await self._runner.spawn_detached(hook, payload, job=job)", "unresolved"],
         ["awaitable", "await trace.finished(outcome=HookOutcome.SPAWN_FAILED)", "unresolved"],
         ["awaitable", "await trace.finished(outcome=HookOutcome.DETACHED)", "unresolved"],
-        ["wrapper", "await self._register_spawned(hook, 'none', trace)", "unresolved", "chrys.service.hooks.manager.HookManager._register_spawned"]
+        ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"]
       ],
       "HookManager.drain_session": [
         ["wrapper", "await self._drain(scopes={'turn', 'session'}, timeout=self._file.settings.shutdown_grace_seconds)", "unresolved", "chrys.service.hooks.manager.HookManager._drain"],

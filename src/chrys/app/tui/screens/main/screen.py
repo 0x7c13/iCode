@@ -1073,7 +1073,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         # hook indicator; Ctrl+Q keeps quitting through its hidden binding.
         footer.show_command_palette = False
         # A sibling, not a Footer child: the Footer recomposes on binding
-        # changes, and the indicator repaints every second while hooks run.
+        # changes, and the indicator's spinner repaints ten times a second
+        # while a hook it shows runs.
         with Horizontal(id="footer-row"):
             yield footer
             yield HookIndicator(locale_controller=self._locale_controller)

@@ -55,11 +55,12 @@ class _Tracked:
     ``scope`` lets :meth:`HookManager.drain_turn` filter to just turn-
     scoped tasks without touching background or session-scoped ones.
     ``execution_key`` is the run's snapshot entry, registered before the task
-    exists: a drain drops it for a task cancelled before its first step, whose
-    own ``finally`` never ran.
+    exists, and ``trace`` its span, opened before: for a task cancelled before
+    its first step, whose own handlers never ran, the drain or the reap
+    callback drops the one and closes the other.
     """
 
-    __slots__ = ("execution_key", "hook", "job", "operation_id", "scope", "task")
+    __slots__ = ("execution_key", "hook", "job", "operation_id", "scope", "task", "trace")
 
     def __init__(
         self,
@@ -70,6 +71,7 @@ class _Tracked:
         job: OutboxJob | None,
         operation_id: str | None,
         execution_key: int | None,
+        trace: HookOperationTrace | None = None,
     ) -> None:
         self.hook = hook
         self.task = task
@@ -77,6 +79,7 @@ class _Tracked:
         self.job = job
         self.operation_id = operation_id
         self.execution_key = execution_key
+        self.trace = trace
 
 
 # ---------------------------------------------------------------------------
@@ -126,8 +129,9 @@ class HookManager:
         # installs its recorder's resolver.
         self.trajectory_context_provider: TrajectoryContextProvider | None = None
         # Runs in flight, for the TUI. Each change is reported through
-        # ``on_change`` right after it is made, on the run's own task, so the
-        # last snapshot a subscriber stores is the current one.
+        # ``on_change`` right after it is made, on the task that made it (the
+        # firing task registers a run, the run's own task does the rest), so
+        # the last snapshot a subscriber stores is the current one.
         self._executions: dict[int, HookExecutionView] = {}
         self._execution_keys = itertools.count()
         # Whether the last snapshot handed to ``on_change`` listed runs:
@@ -307,25 +311,6 @@ class HookManager:
         )
         return key
 
-    async def _register_spawned(
-        self,
-        hook: HookConfig,
-        waited_at: HookWaitPoint,
-        trace: HookOperationTrace | None,
-    ) -> int:
-        """Register a run about to be spawned as a task, and report it."""
-        key = self._add_execution(hook, waited_at=waited_at)
-        try:
-            await self._notify_change()
-        except asyncio.CancelledError:
-            if trace is not None:
-                trace.finished_soon(outcome=HookOutcome.CANCELLED)
-            # The cancelled report may have been stored already.
-            if self._executions.pop(key, None) is not None:
-                await self._notify_change()
-            raise
-        return key
-
     def _mark_running(self, key: int) -> bool:
         """Mark run *key* as holding a slot; False when the manager closed and cleared it."""
         view = self._executions.get(key)
@@ -412,47 +397,48 @@ class HookManager:
     async def _drain(self, *, scopes: set[str], timeout: float | None) -> None:
         tracked = [t for t in self._inflight if t.scope in scopes]
         targets = [t for t in tracked if not t.task.done()]
-        if targets:
-            tasks = [t.task for t in targets]
-            try:
-                if timeout is None:
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                else:
-                    await asyncio.wait_for(
-                        asyncio.gather(*tasks, return_exceptions=True),
-                        timeout=timeout,
+        try:
+            if targets:
+                tasks = [t.task for t in targets]
+                try:
+                    if timeout is None:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+                    else:
+                        await asyncio.wait_for(
+                            asyncio.gather(*tasks, return_exceptions=True),
+                            timeout=timeout,
+                        )
+                except TimeoutError:
+                    logger.warning(
+                        "Hook drain timed out after %.1fs; cancelling %d task(s)",
+                        timeout,
+                        sum(1 for t in tasks if not t.done()),
                     )
-            except TimeoutError:
-                logger.warning(
-                    "Hook drain timed out after %.1fs; cancelling %d task(s)",
-                    timeout,
-                    sum(1 for t in tasks if not t.done()),
-                )
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                # Best-effort await of cancellation so subprocess cleanup runs.
-                with contextlib.suppress(asyncio.CancelledError):
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    # Best-effort await of cancellation so subprocess cleanup runs.
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            # Also when this drain is cancelled (an interrupt during
+            # ``drain_turn``): ``gather`` passes the cancel on to the runs and
+            # raises only once every one of them is done.
+            dropped = False
+            for tracked_task in tracked:
+                dropped |= self._settle_unstarted(tracked_task)
+            if dropped:
+                await self._notify_change()
 
-        dropped = False
         for tracked_task in tracked:
             if not tracked_task.task.done():
                 continue
-            # A task cancelled before its first step (by this drain under
-            # ``shutdown_grace_seconds: 0``, or before it) never ran the body
-            # whose ``finally`` drops its snapshot entry: dropped here. A no-op
-            # for a task whose body ran.
-            if tracked_task.task.cancelled() and tracked_task.execution_key is not None:
-                dropped |= self._executions.pop(tracked_task.execution_key, None) is not None
             try:
                 tracked_task.task.result()
             except asyncio.CancelledError:
                 pass
             except Exception:
                 logger.exception("Hook task %r failed outside normal result handling", tracked_task.hook.id)
-        if dropped:
-            await self._notify_change()
 
         # Reap done tasks of these scopes, including hooks that completed
         # before this drain call started.
@@ -645,14 +631,8 @@ class HookManager:
         if hook.execution.mode == "async":
             # The drain of the run's scope waits on it; nobody waits on an interrupt observer.
             waited_at: HookWaitPoint = "turn" if scope == "turn" else "session" if scope == "session" else "none"
-            key = await self._register_spawned(hook, waited_at, trace)
-            coro = self._run_async_tracked(hook, payload, job, trace, execution_key=key)
-            task = asyncio.create_task(coro)
-            operation_id = trace.operation_id if trace is not None and trace.start_committed else None
-            tracked = _Tracked(hook=hook, task=task, scope=scope, job=job, operation_id=operation_id, execution_key=key)
-            self._inflight.append(tracked)
-            if scope == "detached":
-                task.add_done_callback(lambda _task, tracked=tracked: self._reap_background(tracked))
+            self._start_tracked(hook, payload, job, trace, scope=scope, waited_at=waited_at)
+            await self._notify_change()
             return
 
         # fire_and_forget
@@ -680,19 +660,57 @@ class HookManager:
             return
 
         # Observed to its end like any other run, though nobody waits on it.
-        key = await self._register_spawned(hook, "none", trace)
-        coro = self._run_async_tracked(hook, payload, job, trace, execution_key=key)
-        task = asyncio.create_task(coro)
+        self._start_tracked(hook, payload, job, trace, scope="background", waited_at="none")
+        await self._notify_change()
+
+    def _start_tracked(
+        self,
+        hook: HookConfig,
+        payload: dict[str, Any],
+        job: OutboxJob | None,
+        trace: HookOperationTrace | None,
+        *,
+        scope: str,
+        waited_at: HookWaitPoint,
+    ) -> None:
+        """Register a non-blocking run, start its task and track it, all without suspending.
+
+        The caller checked that the manager is open and reports the run only
+        after this: a drain or close that runs during the report already sees
+        the task, which owns the run's span and snapshot entry from here on.
+        """
+        key = self._add_execution(hook, waited_at=waited_at)
+        task = asyncio.create_task(self._run_async_tracked(hook, payload, job, trace, execution_key=key))
         operation_id = trace.operation_id if trace is not None and trace.start_committed else None
         tracked = _Tracked(
-            hook=hook, task=task, scope="background", job=job, operation_id=operation_id, execution_key=key
+            hook=hook, task=task, scope=scope, job=job, operation_id=operation_id, execution_key=key, trace=trace
         )
         self._inflight.append(tracked)
-        task.add_done_callback(lambda _task, tracked=tracked: self._reap_background(tracked))
+        if scope in ("detached", "background"):
+            task.add_done_callback(lambda _task, tracked=tracked: self._reap_background(tracked))
+
+    def _settle_unstarted(self, tracked: _Tracked) -> bool:
+        """Settle a run cancelled before its first step; return whether its snapshot entry was dropped.
+
+        Such a task never ran the body that closes the run's span and drops
+        its entry. A no-op for a run that has not ended, or whose body ran:
+        that body closed the span (closing twice keeps the first) and dropped
+        the entry.
+        """
+        if not tracked.task.cancelled():
+            return False
+        if tracked.trace is not None:
+            tracked.trace.finished_soon(outcome=HookOutcome.CANCELLED)
+        if tracked.execution_key is None:
+            return False
+        return self._executions.pop(tracked.execution_key, None) is not None
 
     def _reap_background(self, tracked: _Tracked) -> None:
         with contextlib.suppress(ValueError):
             self._inflight.remove(tracked)
+        # Nothing here cancels these runs (loop teardown does), so a dropped
+        # entry goes unreported: the next report leaves it out.
+        self._settle_unstarted(tracked)
         try:
             tracked.task.result()
         except asyncio.CancelledError:
@@ -730,8 +748,8 @@ class HookManager:
         try:
             # The slot is taken inside the ``try``: a hook cancelled while it
             # queues behind ``max_parallel_hooks`` others never ran, but its
-            # span was opened before the task was created and only this
-            # handler ever closes it.
+            # span was opened before the task was created, and once the task
+            # took a step only this handler closes it.
             async with self._sem:
                 if execution_key is not None and self._mark_running(execution_key):
                     await self._notify_change()

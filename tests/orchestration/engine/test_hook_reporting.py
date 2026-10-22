@@ -103,7 +103,7 @@ async def test_snapshots_carry_the_session_and_the_managers_state(tmp_path: Path
 
 
 async def test_the_last_snapshot_received_matches_the_manager_under_parallel_runs(tmp_path: Path) -> None:
-    """3.5: no sequence numbers needed; the last one a synchronous subscriber keeps is current."""
+    """No sequence numbers needed: the last snapshot a synchronous subscriber keeps is the current one."""
     releases = [tmp_path / f"release-{i}" for i in range(3)]
     manager = _manager(
         tmp_path,
@@ -149,7 +149,7 @@ async def test_the_last_snapshot_received_matches_the_manager_under_parallel_run
 
 
 async def test_failing_blocking_hooks_publish_no_warning(tmp_path: Path) -> None:
-    """Section 7: PR 1 tells no failure; a failed, timed-out or unstartable hook still only logs."""
+    """No failure is told: a failed, timed-out or unstartable hook still only logs."""
     hooks = (
         _hook("exits", HookEvent.BEFORE_TOOL_CALL, script="import sys; sys.exit(3)", tool_name="exit"),
         _hook("slow", HookEvent.AFTER_TOOL_CALL, script="import time; time.sleep(30)", timeout=0.5),

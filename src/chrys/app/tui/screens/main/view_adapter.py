@@ -636,6 +636,9 @@ class MainScreenViewAdapter:
         self._screen.query_one(InputBar).display = chat
         # The footer row: the Footer and the hook indicator hide together.
         self._screen.query_one("#footer-row").display = not shell
+        # It shows the chat session's hook runs only: a workflow's hooks run on
+        # the workflow's own manager, which reports nothing.
+        self._screen.query_one(HookIndicator).display = not workflow
         self._screen._sync_workflow_timer()
 
     def open_confirm_dialog(

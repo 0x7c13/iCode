@@ -138,7 +138,7 @@ async def test_hook_runs_and_failures_print_nothing(
         assert set(json.loads(captured.out)) == {"session_id", "result", "duration"}
     else:
         assert captured.out == "final answer\n"
-    # Section 7: no failure is told; the manager only logs it (as on main).
+    # No failure is told: the manager only logs it.
     assert "Warning" not in captured.err, captured.err
     everything = captured.out + captured.err
     # HookExecutionsChanged has no headless output: neither hook's runs are shown.
@@ -149,7 +149,7 @@ async def test_hook_runs_and_failures_print_nothing(
 
 
 def test_snapshots_are_not_a_headless_or_acp_run_event() -> None:
-    """4.3: headless and ACP streams forward only these types; the TUI-only snapshot is not one."""
+    """Headless and ACP streams forward only these types; the TUI-only snapshot is not one."""
     from chrys.orchestration import session_host
 
     assert HookExecutionsChanged not in session_host._HEADLESS_RUN_EVENT_TYPES

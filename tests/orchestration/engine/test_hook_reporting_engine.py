@@ -131,7 +131,7 @@ async def test_a_main_tool_hook_is_reported_before_its_tool_card_exists(
         )
         view = recorder.running("gate-explore")[0]
         assert (view.hook_id, view.waited_at) == ("gate-explore", "call")
-        # 4.4: before_tool_call runs before the tool card's start event.
+        # before_tool_call runs before the tool card's start event.
         assert not any(
             isinstance(event, InvocationToolCallStart) and event.tool_name == "Explore" for event in recorder.events
         )
@@ -218,7 +218,7 @@ async def test_a_sub_agents_hooks_reach_the_snapshot_and_its_failures_tell_nothi
     ]
     assert child_starts, "the child's read_file calls reached their card"
     # Only the child calls read_file and waits on approvals here, so these runs were fired from inside it;
-    # through the shared manager they land in the same snapshots as the main agent's (3.4).
+    # through the shared manager they land in the same snapshots as the main agent's.
     assert {view.waited_at for view in recorder.running("child-gate")} == {"call"}
     # Two calls, each re-checked after its edited approval: four distinct runs.
     assert len({view.started_at for view in recorder.running("child-gate")}) == 4

@@ -110,12 +110,11 @@ class RuntimeState:
     # still reference the old profile object.
     pending_active_switch: str | None = None
 
-    def keep_hook_snapshot_of(self, session_id: str) -> bool:
-        """Forget every session's hook snapshot but *session_id*'s; return whether one was dropped."""
+    def keep_hook_snapshot_of(self, session_id: str) -> None:
+        """Forget every session's hook snapshot but *session_id*'s."""
         stale = [key for key in self.hook_snapshots if key != session_id]
         for key in stale:
             del self.hook_snapshots[key]
-        return bool(stale)
 
 
 @dataclass

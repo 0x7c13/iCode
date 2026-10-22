@@ -26,7 +26,7 @@ from chrys.app.tui.widgets.chat.messages import UserMessage as UserMessageWidget
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
-from chrys.app.tui.widgets.chrome.hook_indicator import HookIndicator
+from chrys.app.tui.widgets.chrome.hook_indicator import HOOK_INDICATOR_WIDTH, HookIndicator
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.events.bus import EventBus
@@ -52,8 +52,10 @@ from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for, wait_until, wait_until_quiet
+
+from ._workflow_support import WorkflowEngine
 
 _SESSION = "test-session"
 _PROFILE = AgentProfile(name="Code", display_name="Code", description="Test profile")
@@ -90,14 +92,20 @@ class _Engine(SessionGenerationEngine):
             )
 
 
-def _make_app(tmp_path: Path, bus: EventBus, *, start_session: bool = True) -> ChrysApp:
+class _WorkflowModeEngine(_Engine, WorkflowEngine):
+    """The scripted session, and the idle execution the app mode switch asks for."""
+
+
+def _make_app(
+    tmp_path: Path, bus: EventBus, *, start_session: bool = True, engine_type: type[_Engine] = _Engine
+) -> ChrysApp:
     workspace = tmp_path / "work"
     workspace.mkdir(exist_ok=True)
     models = ModelProfileRegistry()
     models.register(ModelProfile(id="model-profile", name="Configured Model", model_id="test-model"))
     return make_chrys_app(
         tmp_path / "state",
-        engine=_Engine(bus, workspace, start_session=start_session),
+        engine=engine_type(bus, workspace, start_session=start_session),
         event_bus=bus,
         agent_registry=_Registry(),
         model_registry=models,
@@ -291,7 +299,7 @@ async def test_runs_nobody_waits_for_never_show(tmp_path: Path) -> None:
         await _keeps(pilot, "Hooks", seconds=1.5)
 
 
-async def test_a_long_id_is_cut_in_the_middle_inside_the_fixed_width(tmp_path: Path) -> None:
+async def test_a_long_id_is_cut_in_the_middle_to_the_indicators_cap(tmp_path: Path) -> None:
     bus = EventBus()
     app = _make_app(tmp_path, bus)
     async with app.run_test(size=(80, 40)) as pilot:
@@ -321,7 +329,7 @@ async def test_the_indicator_has_no_tooltip(tmp_path: Path) -> None:
         assert indicator.tooltip is None
 
 
-# --- Per-session snapshots (5.4) ------------------------------------------------
+# --- Per-session snapshots ------------------------------------------------------
 
 
 async def test_a_snapshot_before_the_first_session_shows_once_it_is_current(tmp_path: Path) -> None:
@@ -402,12 +410,35 @@ async def test_a_late_snapshot_from_the_old_session_leaves_the_new_sessions_alon
         await _keeps(pilot, "new-bg")
 
 
-# --- Fallback cleanup (5.4) -----------------------------------------------------
+async def test_a_restore_after_its_ready_keeps_showing_the_restored_sessions_runs(tmp_path: Path) -> None:
+    """The engine publishes SessionReady before SessionRestored: the restored session's runs, stored by then, stay."""
+    bus = EventBus()
+    app = _make_app(tmp_path, bus)
+    async with app.run_test(size=(160, 40)) as pilot:
+        await _ready(pilot)
+        await _snapshot(bus, _view("old-running", age=5))
+        await _shows(pilot, "old-running")
+        await bus.publish(
+            SessionReady(agent_profile=_PROFILE.name, display_name=_PROFILE.display_name, session_id="s2")
+        )
+        await _snapshot(bus, _view("recovered", waited_at="session", age=5), session_id="s2")
+        await _shows(pilot, "recovered")
+        # The old manager's closing report lands between the two events.
+        await _snapshot(bus)
+        await bus.publish(
+            SessionRestored(session_id="s2", agent_profile=_PROFILE.name, display_name=_PROFILE.display_name)
+        )
+        await _keeps(pilot, "recovered")
+        await _snapshot(bus, session_id="s2")
+        await _shows(pilot, "Hooks")
+
+
+# --- Fallback cleanup -----------------------------------------------------------
 
 
 @pytest.mark.parametrize("how", ["interrupt-button", "bus"])
 async def test_after_an_interrupt_the_managers_report_removes_the_cancelled_run(tmp_path: Path, how: str) -> None:
-    """5.4: no fence on UserInterrupt; the last snapshot is the truth, and the manager reports the removal."""
+    """No fence on UserInterrupt: the last snapshot is the truth, and the manager reports the removal."""
     bus = EventBus()
     app = _make_app(tmp_path, bus)
     interrupts: list[UserInterrupt] = []
@@ -543,7 +574,7 @@ async def test_a_sub_agent_abort_clears_no_hook_and_still_ends_its_card(tmp_path
 
 
 async def test_a_blocking_run_still_running_after_the_turn_goes_idle_keeps_showing(tmp_path: Path) -> None:
-    """5.4: no fence on idle. E.g. a user_prompt_submit hook for a mid-run injection outlives the turn."""
+    """No fence on idle. E.g. a user_prompt_submit hook for a mid-run injection outlives the turn."""
     bus = EventBus()
     app = _make_app(tmp_path, bus)
     async with app.run_test(size=(160, 40)) as pilot:
@@ -637,6 +668,26 @@ async def test_shell_mode_hides_the_indicator_with_the_footer(tmp_path: Path, mo
         await _shows(pilot, "Hooks", what="back after shell mode")
 
 
+async def test_workflow_mode_hides_the_indicator_until_the_chat_is_back(tmp_path: Path) -> None:
+    """A workflow's hooks are not reported here: the chat's runs must not show over a workflow."""
+    bus = EventBus()
+    app = _make_app(tmp_path, bus, engine_type=_WorkflowModeEngine)
+    async with app.run_test(size=(160, 40)) as pilot:
+        main = await _ready(pilot)
+        indicator = main.query_one(HookIndicator)
+        await _snapshot(bus, _view("chat-hook", age=2))
+        await _shows(pilot, "chat-hook")
+        main._set_workflow_mode(True)
+        await wait_for(
+            lambda: main._workflow.workflow_mode and not indicator.display and _indicator(app) == "",
+            pilot=pilot,
+            description="the indicator hidden in workflow mode",
+        )
+        assert "chat-hook" not in _frame(app)
+        main._set_workflow_mode(False)
+        await _shows(pilot, "chat-hook", what="back with the chat")
+
+
 # --- Performance ----------------------------------------------------------------
 
 
@@ -721,7 +772,7 @@ async def test_interactive_mode_keeps_the_indicator_hidden_until_shell_mode_ends
         await _shows(pilot, "guard", what="back with the footer")
 
 
-# --- Running first (5.3) and the hidden timer (5.4) -----------------------------
+# --- Running first, and the hidden timer ----------------------------------------
 
 
 async def test_a_running_run_outranks_a_later_queued_one(tmp_path: Path) -> None:
@@ -782,7 +833,7 @@ async def test_while_hidden_a_snapshot_does_not_repaint_and_the_run_shows_once_b
         assert len(repaints) > hidden
 
 
-# --- Styling (5.2) --------------------------------------------------------------
+# --- Styling --------------------------------------------------------------------
 
 
 def _cells(app: ChrysApp) -> list[tuple[str, object]]:
@@ -899,7 +950,7 @@ async def test_the_indicator_stays_whole_when_footer_keys_overflow(tmp_path: Pat
         main = await _ready(pilot)
         await _shows(pilot, "Hooks")
         indicator = main.query_one(HookIndicator)
-        assert indicator.region.width == 30
+        assert indicator.region.width == len(" ⠿ Hooks ")
         assert indicator.region.right == app.size.width
         assert _body(app) == "⠿ Hooks"
         long_id = "x" * 40
@@ -908,10 +959,77 @@ async def test_the_indicator_stays_whole_when_footer_keys_overflow(tmp_path: Pat
         name = _shown_name(_indicator(app))
         assert cell_len(name) <= 26, name
         assert "x…x" in name, "cut in the middle"
+        assert indicator.region.width == HOOK_INDICATOR_WIDTH
         assert indicator.region.right == app.size.width
 
 
-# --- Idle theme, timer gating, hover (5.2) -------------------------------------
+async def test_the_footer_keys_keep_every_cell_the_label_does_not_take(tmp_path: Path) -> None:
+    """At 120 columns the keys and the idle label fit side by side; a long id takes room only while it shows."""
+    from textual.widgets._footer import FooterKey
+
+    bus = EventBus()
+    app = _make_app(tmp_path, bus)
+    async with app.run_test(size=(120, 40)) as pilot:
+        main = await _ready(pilot)
+        await _shows(pilot, "Hooks")
+        indicator = main.query_one(HookIndicator)
+        footer = main.query_one(ChrysFooter)
+        await wait_for(lambda: footer.query(FooterKey), pilot=pilot, description="the footer keys")
+        keys = list(footer.query(FooterKey))
+
+        def keys_whole() -> bool:
+            return footer.region.right == indicator.region.x and all(
+                key.region.width and key.region.right <= footer.region.right for key in keys
+            )
+
+        await wait_for(keys_whole, pilot=pilot, description="every key whole beside the idle label")
+        # A box of the indicator's full width would leave the keys too little room.
+        assert sum(key.region.width for key in keys) > app.size.width - HOOK_INDICATOR_WIDTH
+        assert indicator.region.width == len(" ⠿ Hooks ")
+        assert indicator.region.right == app.size.width
+
+        await _snapshot(bus, _view("a-hook-whose-id-is-long-enough", age=2))
+        await wait_for(lambda: "…" in _indicator(app), pilot=pilot, description="the long id shown")
+        assert indicator.region.width == HOOK_INDICATOR_WIDTH
+        assert footer.region.right == indicator.region.x
+        await _snapshot(bus)
+        await _shows(pilot, "Hooks")
+        await wait_for(keys_whole, pilot=pilot, description="the keys whole again")
+
+        # The whole box is the label: its first cell opens the hooks too.
+        await click_when_settled(pilot, indicator, offset=(0, 0))
+        await wait_for(
+            lambda: isinstance(app.screen, RuntimeDetailsDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="the runtime details dialog",
+        )
+
+
+async def test_the_label_fits_the_row_again_after_the_terminal_widens(tmp_path: Path) -> None:
+    """The id cut to a narrow row gets its full width back once the terminal widens."""
+    bus = EventBus()
+    app = _make_app(tmp_path, bus)
+    async with app.run_test(size=(20, 40)) as pilot:
+        main = await _ready(pilot)
+        indicator = main.query_one(HookIndicator)
+        long_id = "left-part-of-the-hook-name-right-part"
+        await _snapshot(bus, _view(long_id, age=2))
+        await wait_for(lambda: "…" in _indicator(app), pilot=pilot, description="the id cut to the narrow row")
+        assert indicator.region.width == 20
+        await resize_when_settled(pilot, 160, 40)
+        await wait_for(
+            lambda: indicator.region.width == HOOK_INDICATOR_WIDTH,
+            pilot=pilot,
+            description="the label at its full width again",
+        )
+        name = _shown_name(_indicator(app))
+        head, tail = name.split("…")
+        assert cell_len(name) == HOOK_INDICATOR_WIDTH - 4, name
+        assert long_id.startswith(head) and long_id.endswith(tail), name
+        assert indicator.region.right == app.size.width
+
+
+# --- Idle theme, timer gating, hover --------------------------------------------
 
 
 def _glyph(app: ChrysApp) -> tuple[str, object]:
@@ -980,7 +1098,7 @@ async def test_only_unwaited_runs_keep_the_timer_off_and_a_waited_one_starts_it(
 
 
 def _label_span(app: ChrysApp) -> tuple[int, int]:
-    """Screen columns ``[start, end)`` of the label: the text plus one cell on each side (5.2)."""
+    """Screen columns ``[start, end)`` of the label: the text plus one cell on each side."""
     indicator = app.screen.query_one(HookIndicator)
     region = indicator.region
     cells = "".join(char for char, _style in _cells(app))
@@ -1048,29 +1166,6 @@ async def test_hover_paints_only_the_label_with_the_footer_key_color_and_a_point
         # No fade: the highlight is complete at once and stays put.
         await wait_until_quiet(lambda: tuple(_highlighted(app, hover)), description="steady highlight", pilot=pilot)
         assert _highlighted(app, hover) == list(range(start, end))
-
-
-async def test_the_empty_cells_left_of_the_label_do_not_respond(tmp_path: Path) -> None:
-    bus = EventBus()
-    app = _make_app(tmp_path, bus)
-    async with app.run_test(size=(160, 40)) as pilot:
-        main = await _ready(pilot)
-        await _shows(pilot, "Hooks")
-        indicator = main.query_one(HookIndicator)
-        hover = await _footer_key_hover(pilot, app)
-        start, _end = _label_span(app)
-        assert start > indicator.region.x, "the label leaves empty cells on its left"
-
-        await pilot.hover(indicator, offset=(0, 0))
-        await wait_for(lambda: indicator.mouse_hover, pilot=pilot, description="the mouse over the empty cells")
-        assert not await wait_until(lambda: _highlighted(app, hover), timeout=0.5, pilot=pilot), _highlighted(
-            app, hover
-        )
-        assert app.screen._pointer_shape == "default"
-        await pilot.click(indicator, offset=(0, 0))
-        assert not await wait_until(lambda: isinstance(app.screen, RuntimeDetailsDialog), timeout=0.5, pilot=pilot), (
-            "a click on the empty cells opens nothing"
-        )
 
 
 async def test_the_highlight_follows_the_label_while_the_mouse_stays(tmp_path: Path) -> None:
@@ -1141,53 +1236,45 @@ async def test_hovering_and_relabelling_do_not_restyle_relayout_or_recompose(
         await wait_for(lambda: _highlighted(app, hover), pilot=pilot, description="label hovered")
         await _snapshot(bus, _view("relabelled-while-hovered", age=2))
         await _shows(pilot, "relabelled-while-hovered")
-        await pilot.hover(indicator, offset=(0, 0))
+        await pilot.hover(main.query_one(ChatPanel))
         await wait_for(lambda: not _highlighted(app, hover), pilot=pilot, description="off the label")
         await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled after")
         assert seen == {"styles": [], "layout": [], "footer": []}
 
 
-async def test_the_text_is_right_aligned_in_the_fixed_box(tmp_path: Path) -> None:
-    """5.2: content hugs the right edge of the 30-cell box, glyph right before the text; idle and running."""
+async def test_the_box_hugs_its_label_in_the_corner(tmp_path: Path) -> None:
+    """The box is the label, padding included, in the screen's corner; idle and running, ids up to 26 cells."""
     bus = EventBus()
     app = _make_app(tmp_path, bus)
     async with app.run_test(size=(160, 40)) as pilot:
         main = await _ready(pilot)
         indicator = main.query_one(HookIndicator)
 
-        def layout() -> tuple[int, int, str]:
-            cells = "".join(char for char, _style in _cells(app))
-            body = cells.strip()
-            return len(cells) - len(cells.lstrip()), len(cells) - len(cells.rstrip()), body
+        def box() -> str:
+            return "".join(char for char, _style in _cells(app))
 
         await _shows(pilot, "Hooks")
-        assert indicator.region.width == 30
-        lead, trail, body = layout()
-        assert body == "⠿ Hooks"
-        assert lead > 0 and lead >= trail, (lead, trail)
-        idle_trail = trail
-        idle_end = indicator.region.right - trail
+        assert box() == " ⠿ Hooks "
+        assert indicator.region.right == app.size.width
 
         for hook_id in ("x", "guard", "slow-shell-blocking", "n" * 26):
             await _snapshot(bus, _view(hook_id, age=2))
             await _shows(pilot, hook_id)
-            lead, trail, body = layout()
-            assert re.fullmatch(rf"\S {re.escape(hook_id)}", body), body
-            # The text ends where the idle text ended: the right edge does not move; the start does.
-            assert trail == idle_trail, (hook_id, trail, idle_trail)
-            assert indicator.region.right - trail == idle_end
-            assert lead == 30 - trail - len(body), (hook_id, lead)
-        # 5.2: names get up to 26 cells; one more and the middle is cut.
+            assert re.fullmatch(rf" \S {re.escape(hook_id)} ", box()), box()
+            assert indicator.region.right == app.size.width
+        # One cell more and the middle is cut.
         too_long = "m" * 13 + "-" + "n" * 13
         await _snapshot(bus, _view(too_long, age=2))
         await wait_for(lambda: "…" in _indicator(app), pilot=pilot, description="a 27-cell id cut")
         name = _shown_name(_indicator(app))
-        assert cell_len(name) <= 26 and name.startswith("m") and name.endswith("n"), name
+        assert cell_len(name) == 26 and name.startswith("m") and name.endswith("n"), name
+        assert indicator.region.width == HOOK_INDICATOR_WIDTH
         await _snapshot(bus)
         await _shows(pilot, "Hooks")
+        assert box() == " ⠿ Hooks "
 
 
-# --- Real hooks behind an unwaited slot holder (5.3) ----------------------------
+# --- Real hooks behind an unwaited slot holder ----------------------------------
 
 
 async def test_a_blocking_hook_queued_behind_a_fire_and_forget_shows_itself_not_the_holder(tmp_path: Path) -> None:
@@ -1286,16 +1373,14 @@ async def test_a_blocking_hook_queued_behind_a_fire_and_forget_shows_itself_not_
 async def test_on_a_terminal_narrower_than_the_box_the_indicator_fits_and_cuts_to_its_width(
     tmp_path: Path, columns: int
 ) -> None:
-    """5.2: below 30 columns the indicator takes the whole row and the id is cut in the middle to what is left."""
+    """Below 30 columns the id is cut in the middle to what the row leaves, the box never past the row."""
     bus = EventBus()
     app = _make_app(tmp_path, bus)
     async with app.run_test(size=(columns, 40)) as pilot:
         main = await _ready(pilot)
         indicator = main.query_one(HookIndicator)
         await _shows(pilot, "Hooks")
-        cells = "".join(char for char, _style in _cells(app))
-        assert cells.strip() == "⠿ Hooks"
-        assert len(cells) - len(cells.rstrip()) <= len(cells) - len(cells.lstrip()), "right-aligned"
+        assert "".join(char for char, _style in _cells(app)) == " ⠿ Hooks "
 
         long_id = "left-part-of-the-hook-name-right-part"
         await _snapshot(bus, _view(long_id, age=2))
@@ -1310,7 +1395,7 @@ async def test_on_a_terminal_narrower_than_the_box_the_indicator_fits_and_cuts_t
         assert indicator.region.x >= 0 and indicator.region.right <= columns, indicator.region
 
 
-# --- The timer after a modal (5.4) ----------------------------------------------
+# --- The timer under and after a modal -----------------------------------------
 
 
 async def _open_runtime_details(pilot: Pilot, app: ChrysApp) -> None:
@@ -1380,7 +1465,32 @@ async def test_a_spinner_showing_before_a_modal_does_not_freeze_after_it(tmp_pat
         await _spinner_turns(pilot, app)
 
 
-# --- Hover across a dialog or a hidden footer row (5.2) -------------------------
+async def test_the_spinner_stops_turning_while_a_modal_covers_it(tmp_path: Path) -> None:
+    bus = EventBus()
+    app = _make_app(tmp_path, bus)
+    async with app.run_test(size=(160, 40)) as pilot:
+        main = await _ready(pilot)
+        app.animation_level = "full"
+        indicator = main.query_one(HookIndicator)
+        timer = indicator._timer
+        assert timer is not None
+        await _snapshot(bus, _view("covered", age=2))
+        await _shows(pilot, "covered")
+        await _spinner_turns(pilot, app)
+        assert timer._active.is_set()
+        await _open_runtime_details(pilot, app)
+        # Nothing sends the covered widget a Hide: its own tick parks the timer.
+        await wait_for(lambda: not timer._active.is_set(), pilot=pilot, description="the timer parked under the modal")
+        frame = indicator._frame
+        assert not await wait_until(lambda: indicator._frame != frame, timeout=0.3, pilot=pilot), (
+            "the spinner kept turning under the modal"
+        )
+        await _close_modal(pilot, app)
+        assert timer._active.is_set()
+        await _spinner_turns(pilot, app)
+
+
+# --- Hover across a dialog or a hidden footer row -------------------------------
 
 
 async def _hover_label(pilot: Pilot, app: ChrysApp) -> tuple[object, list[int]]:

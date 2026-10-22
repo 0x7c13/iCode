@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""The hook runs a :class:`HookManager` reports in its snapshots, and who waits for each (3.4).
+"""The hook runs a :class:`HookManager` reports in its snapshots, and who waits for each.
 
 Every hook here is a real ``python -c`` subprocess. A held hook polls for a
 release file the test creates, so the test decides when it ends.
@@ -136,7 +136,7 @@ async def test_a_blocking_tool_hook_is_queued_then_running_then_removed(hooks_di
     decision = await fire
     assert decision.blocked is False
     assert manager.executions() == ()
-    # 4.1: always added as queued first, replaced by running once it has a slot, removed at the end.
+    # Always added as queued first, replaced by running once it has a slot, removed at the end.
     assert [[view.queued for view in snapshot] for snapshot in snapshots] == [[True], [False], []]
 
 
@@ -171,7 +171,7 @@ async def test_an_event_with_no_matching_hook_sends_no_snapshot(hooks_dir: Path)
     assert snapshots == []
 
 
-# --- Which runs are waited on (3.4) ---------------------------------------------
+# --- Which runs are waited on --------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -345,7 +345,7 @@ async def test_the_hook_running_when_a_blocking_one_queues_is_any_waited_run(hoo
 
 
 async def test_a_cancelled_running_blocking_run_is_reported_removed(hooks_dir: Path, release: Path) -> None:
-    """4.1: a cancelled run (an interrupt) publishes a snapshot without it, from its own task."""
+    """A cancelled run (an interrupt) publishes a snapshot without it, from its own task."""
     manager = _manager(
         hooks_dir,
         _hook("held", HookEvent.BEFORE_TOOL_CALL, script=_held(release), tool_name="slow"),
@@ -460,7 +460,7 @@ async def test_a_non_closing_drain_reports_runs_its_grace_timeout_cancels_and_st
 async def test_a_zero_grace_drain_reports_runs_it_cancels_before_their_first_step(
     hooks_dir: Path, release: Path, runs: int
 ) -> None:
-    """4.1: with no grace the drain cancels the run's task before its body runs; the drain reports the removal."""
+    """With no grace the drain cancels the run's task before its body runs; the drain reports the removal."""
     hooks = [_hook(f"end-{index}", HookEvent.SESSION_END, mode="async", script=_held(release)) for index in range(runs)]
     manager = _manager(hooks_dir, *hooks, _hook("later", HookEvent.AFTER_TURN, script="pass"), shutdown_grace_seconds=0)
     snapshots = _record_snapshots(manager)
@@ -485,7 +485,7 @@ async def test_a_zero_grace_drain_reports_runs_it_cancels_before_their_first_ste
 
 
 async def test_a_drain_reports_a_session_run_cancelled_before_it_ever_ran(hooks_dir: Path, release: Path) -> None:
-    """4.1: the drain sweeps tasks in its scopes that ended cancelled, even when someone else cancelled them."""
+    """The drain sweeps tasks in its scopes that ended cancelled, even when someone else cancelled them."""
     manager = _manager(
         hooks_dir,
         _hook("never-ran", HookEvent.SESSION_END, mode="async", script=_held(release)),
@@ -531,6 +531,116 @@ async def test_a_drain_adds_no_report_for_a_run_cancelled_after_its_body_ran(hoo
     await manager.drain_session()
 
 
+async def test_a_turn_drain_during_an_async_runs_first_report_waits_for_the_run(hooks_dir: Path, release: Path) -> None:
+    """The run's task is tracked before it is reported: a drain the report lets in still waits for it."""
+    manager = _manager(hooks_dir, _hook("bg", HookEvent.AFTER_TURN, mode="async", script=_held(release)))
+    snapshots: Snapshots = []
+    first_report = asyncio.Event()
+    hold_first = asyncio.Event()
+
+    async def on_change(changed: HookManager) -> None:
+        snapshots.append(changed.executions())
+        if len(snapshots) == 1:
+            first_report.set()
+            await hold_first.wait()
+
+    manager.on_change = on_change
+    fire = asyncio.create_task(manager.fire(HookEvent.AFTER_TURN, {}, scope="turn"))
+    drain: asyncio.Task[tuple[str, ...]] | None = None
+    try:
+        await wait_for(lambda: first_report.is_set() or fire.done(), description="the first report in progress")
+        assert not fire.done()
+        drain = asyncio.create_task(manager.drain_turn())
+        assert not await wait_until(drain.done, timeout=0.5), "the drain returned while the run was going on"
+        hold_first.set()
+        await asyncio.wait_for(fire, ENGINE_TURN_TIMEOUT)
+        assert not drain.done()
+        release.touch()
+        await asyncio.wait_for(drain, ENGINE_TURN_TIMEOUT)
+        assert manager.executions() == ()
+        assert snapshots[-1] == ()
+    finally:
+        hold_first.set()
+        release.touch()
+        if drain is not None and not drain.done():
+            drain.cancel()
+        await asyncio.gather(fire, *([drain] if drain is not None else []), return_exceptions=True)
+    await manager.drain_session()
+
+
+async def test_a_cancelled_turn_drain_reports_runs_it_cancelled_before_their_first_step(
+    hooks_dir: Path, release: Path
+) -> None:
+    """An interrupt during ``drain_turn``: the drain's cancel reaches runs that never took a step.
+
+    Their entries go, and their spans close as cancelled.
+    """
+    manager = _manager(hooks_dir, _hook("bg", HookEvent.AFTER_TURN, mode="async", script=_held(release)))
+    snapshots = _record_snapshots(manager)
+    sink = FakeSink()
+    current = asyncio.current_task()
+    assert current is not None
+    try:
+        with trajectory_scope(make_context(sink)):
+            # Queued ahead of the run's first step, which ``fire`` queues without suspending.
+            asyncio.get_running_loop().call_soon(current.cancel)
+            await manager.fire(HookEvent.AFTER_TURN, {}, scope="turn")
+        assert [view.hook_id for view in manager.executions()] == ["bg"]
+        (tracked,) = manager._inflight
+        with pytest.raises(asyncio.CancelledError):
+            await manager.drain_turn()
+        current.uncancel()
+        assert tracked.task.cancelled()
+        assert manager.executions() == ()
+        assert snapshots[-1] == ()
+        assert sink.only(EventType.HOOK_OPERATION_FINISHED).payload["outcome"] == "cancelled"
+        sink.assert_operations_settled()
+    finally:
+        release.touch()
+    await manager.drain_session()
+
+
+@pytest.mark.parametrize(
+    ("mode", "scope", "event"),
+    [("fire_and_forget", "turn", HookEvent.AFTER_TOOL_CALL), ("async", "detached", HookEvent.USER_INTERRUPT)],
+    ids=["fire-and-forget", "detached-async"],
+)
+async def test_an_undrained_run_cancelled_before_its_first_step_leaves_no_entry(
+    hooks_dir: Path, release: Path, mode: str, scope: str, event: HookEvent
+) -> None:
+    """No drain sweeps these runs: the task's own end drops the entry and closes the span as cancelled.
+
+    The dropped entry goes unreported; the next report leaves it out.
+    """
+    manager = _manager(
+        hooks_dir,
+        _hook("observer", event, mode=mode, script=_held(release)),
+        _hook("later", HookEvent.AFTER_TURN, script="pass"),
+    )
+    snapshots = _record_snapshots(manager)
+    sink = FakeSink()
+    try:
+        with trajectory_scope(make_context(sink)):
+            await manager.fire(event, _tool_payload(), scope=scope)
+        assert [view.hook_id for view in manager.executions()] == ["observer"]
+        # No await between the fire and this cancel: the task never took a step.
+        (tracked,) = manager._inflight
+        tracked.task.cancel()
+        await wait_for(lambda: manager.executions() == (), description="the entry dropped")
+        assert tracked.task.cancelled()
+        assert tracked not in manager._inflight
+        assert sink.only(EventType.HOOK_OPERATION_FINISHED).payload["outcome"] == "cancelled"
+        sink.assert_operations_settled()
+    finally:
+        release.touch()
+    after = len(snapshots)
+    await manager.fire(HookEvent.AFTER_TURN, {"turn": 1})
+    assert any(view.hook_id == "later" for snapshot in snapshots[after:] for view in snapshot)
+    assert all(view.hook_id != "observer" for snapshot in snapshots[after:] for view in snapshot)
+    assert snapshots[-1] == ()
+    await manager.drain_session()
+
+
 async def test_a_closing_session_drain_ends_with_an_empty_snapshot(hooks_dir: Path, release: Path) -> None:
     """A run the grace period cancels at close: what the UI shows ends empty."""
     manager = _manager(
@@ -568,7 +678,7 @@ async def _alive_child(pid_file: Path) -> psutil.Process:
 
 
 async def test_a_fire_and_forget_run_ending_after_close_publishes_nothing(hooks_dir: Path, tmp_path: Path) -> None:
-    """4.1: once closed and cleared, a late background run's end must not overwrite a newer manager's snapshot."""
+    """Once closed and cleared, a late background run's end must not overwrite a newer manager's snapshot."""
     release, pid_file = tmp_path / "release-ff", tmp_path / "ff.pid"
     manager = _manager(
         hooks_dir,
@@ -628,7 +738,7 @@ async def test_a_detached_blocking_interrupt_hook_ending_after_close_publishes_n
 async def test_a_queued_background_run_that_takes_its_slot_after_close_publishes_nothing(
     hooks_dir: Path, release: Path
 ) -> None:
-    """4.1: after the close cleared and reported the set, neither taking a slot nor ending reports again."""
+    """After the close cleared and reported the set, neither taking a slot nor ending reports again."""
     ran = hooks_dir.parent / "queued-ran"
     manager = _manager(
         hooks_dir,
@@ -701,11 +811,11 @@ async def test_a_queued_interrupt_observer_that_takes_its_slot_after_close_publi
     assert snapshots[-1] == ()
 
 
-# --- The view itself (3.2) -----------------------------------------------------
+# --- The view itself -----------------------------------------------------------
 
 
 def test_the_view_carries_only_what_the_indicator_uses() -> None:
-    """3.2: trigger point and sub-agent attribution come back with the PR 2 panel, not now."""
+    """Only what the indicator reads: no trigger point and no sub-agent attribution."""
     assert [field.name for field in dataclasses.fields(HookExecutionView)] == [
         "hook_id",
         "waited_at",

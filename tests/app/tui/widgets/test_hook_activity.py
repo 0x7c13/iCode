@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Which run the bottom-right hook indicator shows (5.3), and how its id is fitted (5.2)."""
+"""Which run the bottom-right hook indicator shows, and how its id is fitted."""
 
 from __future__ import annotations
 
@@ -147,7 +147,7 @@ def test_control_characters_are_not_shown() -> None:
 
 
 def test_a_running_run_outranks_a_later_queued_one() -> None:
-    """5.3: a queued run shows only when none is running; the slot holder is what blocks."""
+    """A queued run shows only when none is running; the slot holder is what blocks."""
     assert _id(_view("a", age=6), _view("b", queued=True, age=2)) == "a"
     assert _id(_view("a", age=6), _view("b", queued=True, age=2), _view("c", age=4)) == "c"
 
@@ -163,7 +163,7 @@ def test_a_running_run_under_a_second_does_not_hide_a_queued_one_that_has_waited
 
 
 def test_a_slot_holder_nobody_waits_for_never_shows_the_queued_waited_run_does() -> None:
-    """5.3: F (fire_and_forget) fills the slot and B (blocking) queues: B shows, never F."""
+    """F (fire_and_forget) fills the slot and B (blocking) queues: B shows, never F."""
     f = _view("f", waited_at="none", age=6)
     b = _view("b", queued=True, age=2)
     assert _id(f, b) == "b"

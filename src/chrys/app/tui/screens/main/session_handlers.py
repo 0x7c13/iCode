@@ -743,10 +743,13 @@ class SessionHandler:
         ui.set_input_paste_cwd(cwd)
         ui.set_input_clipboard_dir(event.session_id)
         display = event.display_name or event.agent_profile
-        if self._state.runtime.keep_hook_snapshot_of(event.session_id):
-            # The previous session's hook runs ended with its manager; the
-            # restored session's own show from its SessionReady on.
-            ui.set_hook_executions(())
+        # The previous session's hook runs ended with its manager. The restored
+        # session's own may already be stored: its SessionReady, and the runs
+        # its build started, usually come before this event.
+        if self._state.runtime.hook_snapshots:
+            self._state.runtime.keep_hook_snapshot_of(event.session_id)
+            restored_hooks = self._state.runtime.hook_snapshots.get(event.session_id)
+            ui.set_hook_executions(restored_hooks.executions if restored_hooks is not None else ())
         s.main_usage_source_id = event.session_id
         await ui.clear_chat()
         ui.set_chat_workspace_cwd(cwd)
