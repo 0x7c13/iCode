@@ -10,10 +10,11 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from chrys.foundation.events.types import TurnStarted
+from chrys.foundation.events.types import InvocationAnswerWithdrawn, TurnStarted
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.turns import current_turn_start, is_continuation_message
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine import trajectory as trajectory_recorder
 from chrys.orchestration.engine.rollback import capture_snapshot_writer
 from chrys.orchestration.engine.run.finalizer import PostRunOutcome, TurnFinalizer, _expire_current_run_scope
@@ -324,12 +325,15 @@ class TurnRunner:
                     )
             else:
                 async with self._current.require_loaded().bindings.inputs.retry_request(
-                    additional_text=additional_text, created_at=created_at
+                    additional_text=additional_text, created_at=created_at, withdraw=self._withdraw_answer
                 ) as request:
                     if request is not None:
                         try:
                             if binding_failure is not None:
                                 self._record_admission_failure(binding_failure)
+                            elif self._turn_state.lease.consume_pre_executor_interrupt():
+                                # Stopped while frontends heard the dropped answer's withdrawal.
+                                self._current.require_loaded().bindings.record_pre_run_interrupt()
                             else:
                                 self._current.require_loaded().bindings.record_outcome(
                                     await self._current.require_loaded().bindings.backend.run(request)
@@ -439,6 +443,18 @@ class TurnRunner:
                 user_message_id=event_user_message_id,
             )
         )
+
+    async def _withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
+        """History dropped the answer these segments showed: every frontend withdraws it.
+
+        Delivered whole even when the turn is cancelled meanwhile, since the drop is already done.
+        """
+        event = InvocationAnswerWithdrawn(
+            origin=self._current.require_loaded().bindings.inputs.origin,
+            session_id=self._session.session_id,
+            segment_ids=segment_ids,
+        )
+        await finish_close(asyncio.create_task(self._bus.publish(event)))
 
     async def _record_trajectory_turn_started(
         self,

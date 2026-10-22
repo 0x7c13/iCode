@@ -349,9 +349,7 @@ class SetModelProfile(Event):
 
 @dataclass
 class AgentThinking(Event):
-    """Agent is thinking (optional thinking content)."""
-
-    text: str | None = None
+    """The agent is thinking: a pass began and its model request is on its way."""
 
 
 @dataclass
@@ -457,6 +455,19 @@ class InvocationContentAbandoned(InvocationEvent):
     Published at the retry boundary, before the open segment's
     ``InvocationContentFinished``; segments of a response that landed never
     appear here.
+    """
+
+    agent_name: str = ""
+    segment_ids: tuple[str, ...] = ()
+
+
+@dataclass
+class InvocationAnswerWithdrawn(InvocationEvent):
+    """A bare Continue or Retry dropped the answer text these segments showed from history, to ask for it again.
+
+    Published when history drops it, before the request that asks again
+    runs; frontends withdraw exactly these segments. Text saved before
+    segments were stamped is dropped without being named here.
     """
 
     agent_name: str = ""

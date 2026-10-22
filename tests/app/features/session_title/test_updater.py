@@ -959,13 +959,5 @@ async def test_the_title_call_is_traced_against_the_session_it_summarizes(tmp_pa
     assert traced == ["sess1-recorder"]
 
 
-async def test_sanitize_title_strips_think_blocks() -> None:
-    assert _sanitize_title("<think>我要输出一个标题</think> 标题正文") == "标题正文"
-    assert _sanitize_title("<think>\nmultiline\nreasoning\n</think>Fix login bug") == "Fix login bug"
-    assert _sanitize_title("<THINKING>loud</THINKING>Quiet title") == "Quiet title"
-    # Unmatched closing tag: everything before it was reasoning.
-    assert _sanitize_title("leaked reasoning</think> Real title") == "Real title"
-    # Unmatched opening tag: everything after it is reasoning.
-    assert _sanitize_title("Real title <think>trailing reasoning") == "Real title"
-    # Pure reasoning yields an empty title (caller skips persisting it).
-    assert _sanitize_title("<think>only reasoning</think>") == ""
+async def test_sanitize_title_keeps_think_tags_as_written() -> None:
+    assert _sanitize_title("<think>plan</think> Fix login bug") == "<think>plan</think> Fix login bug"

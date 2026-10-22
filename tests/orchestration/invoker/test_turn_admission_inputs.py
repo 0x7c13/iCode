@@ -39,8 +39,10 @@ async def test_successful_guidance_retry_keeps_only_provider_persisted_note(
         persisted_notes = []
 
         @asynccontextmanager
-        async def observe_retry(additional_text="", created_at=None):
-            async with retry_request(additional_text=additional_text, created_at=created_at) as request:
+        async def observe_retry(additional_text="", created_at=None, *, withdraw=None):
+            async with retry_request(
+                additional_text=additional_text, created_at=created_at, withdraw=withdraw
+            ) as request:
                 yield request
                 persisted_notes.extend(
                     m for m in engine_services(engine).history.messages if m.role == "user" and m.text == guidance
@@ -114,8 +116,10 @@ async def test_entrance_validate_rejection_keeps_retry_input(
         retry_inputs = []
 
         @asynccontextmanager
-        async def observe_retry(additional_text="", created_at=None):
-            async with retry_request(additional_text=additional_text, created_at=created_at) as request:
+        async def observe_retry(additional_text="", created_at=None, *, withdraw=None):
+            async with retry_request(
+                additional_text=additional_text, created_at=created_at, withdraw=withdraw
+            ) as request:
                 retry_inputs.append(request)
                 yield request
 

@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 from chrys.foundation.errors import ErrorKind, classify_error, clean_error_message, is_retryable
 from chrys.foundation.errors.display import display_fields
 from chrys.foundation.events.types import (
+    InvocationAnswerWithdrawn,
     InvocationMessage,
     InvocationResumed,
     InvocationRetryAttempt,
@@ -163,6 +164,8 @@ class WorkflowAgentShell:
         self._ticket: ContinuationTicket | None = None
         self._resume = False
         """Whether the last pass left kernel history for the next attempt to continue."""
+        self._withdrawn: tuple[str, ...] = ()
+        """The segments of the answer the next attempt's retry input dropped, for its views to withdraw."""
         self._evidence = InvocationEvidence(invocation_id)
         self._passes = 0
         self._usage_total = 0
@@ -364,7 +367,8 @@ class WorkflowAgentShell:
                 **self._parts.run_kwargs.get("client_kwargs", {}),
                 TRAJECTORY_CONTEXT_KWARG: trajectory_context,
             }
-        request = self._next_request(backend)
+        # The pass's begin() withdraws what the retry input dropped, once its views carry the transcript on.
+        request, self._withdrawn = self._next_request(backend)
         self._passes += 1
         run_task = asyncio.create_task(self._pass(backend, request))
         self._run_task = run_task
@@ -463,13 +467,14 @@ class WorkflowAgentShell:
 
     async def begin(self, request: RunRequest, resources: PassResources) -> None:
         parts = self._require_kernel_parts()
+        withdrawn, self._withdrawn = self._withdrawn, ()
         if request.intent is not RunIntent.FRESH and (not request.messages or self._has_live_continuation_token()):
             # An admitted pass that continues retained work, or polls the response an earlier pass left
             # running, carries the previous attempt's transcript on; the first fact of the attempt, so a
-            # presentation starts from that transcript.
-            await self._emitter.publish(
-                InvocationResumed(origin=request.origin, agent_name=self._display_name, session_id=self._session_id)
-            )
+            # presentation starts from that transcript. Delivered whole with the withdrawal of the answer
+            # its retry input dropped: a timeout may cancel this pass, and a later attempt carries on
+            # from what the views hold by then. Any other pass starts its views anew, with nothing to withdraw.
+            await finish_close(asyncio.create_task(self._resume_transcript(request.origin, withdrawn)))
         # Bound before the start hooks, which open the pass's hosted presentation under this origin.
         parts.approval.bind_publisher(self._emitter)
         parts.events.bind_origin(request.origin)
@@ -599,26 +604,41 @@ class WorkflowAgentShell:
             authoritative_total=total_usage_tokens,
         )
 
+    async def _resume_transcript(self, origin: InvocationOrigin, withdrawn: tuple[str, ...]) -> None:
+        await self._emitter.publish(
+            InvocationResumed(origin=origin, agent_name=self._display_name, session_id=self._session_id)
+        )
+        if withdrawn:
+            await self._emitter.publish(
+                InvocationAnswerWithdrawn(
+                    origin=origin, agent_name=self._display_name, session_id=self._session_id, segment_ids=withdrawn
+                )
+            )
+
     # ------------------------------------------------------------------ passes
 
-    def _next_request(self, backend: KernelConversation | AcpConversation) -> RunRequest:
-        """Resume what the last pass left: its live ticket, its repaired history, or nothing after a success."""
+    def _next_request(self, backend: KernelConversation | AcpConversation) -> tuple[RunRequest, tuple[str, ...]]:
+        """Resume what the last pass left: its live ticket, its repaired history, or nothing after a success.
+
+        Also names the segments of the answer the retry input dropped from history to ask for it again.
+        """
         ticket, self._ticket = self._ticket, None
         if isinstance(backend, AcpConversation):
             # Every ACP pass runs a new session from the prompt; a ticket only names the failed one.
-            return RunRequest(
-                self._seed_input(), RunIntent.RETRY if ticket is not None else RunIntent.FRESH, self.origin, ticket
-            )
+            intent = RunIntent.RETRY if ticket is not None else RunIntent.FRESH
+            return RunRequest(self._seed_input(), intent, self.origin, ticket), ()
         history = self._require_kernel_parts().history
         if ticket is not None and backend.continuation_is_live(ticket, self.origin):
-            return RunRequest(history.retry_input(self._seed_input), RunIntent.RETRY, self.origin, ticket)
+            messages, withdrawn = history.retry_input(self._seed_input)
+            return RunRequest(messages, RunIntent.RETRY, self.origin, ticket), withdrawn
         if self._resume:
-            return RunRequest(history.retry_input(self._seed_input), RunIntent.CONTINUE, self.origin, None)
+            messages, withdrawn = history.retry_input(self._seed_input)
+            return RunRequest(messages, RunIntent.CONTINUE, self.origin, None), withdrawn
         # A completed body is run again from the prompt when a later phase of its attempt failed.
         self._drop_continuation_token()
         if self._passes:
             backend.history_state = {}  # a fresh pass starts from the prompt, not from a stale transcript
-        return RunRequest(self._seed_input(), RunIntent.FRESH, self.origin, None)
+        return RunRequest(self._seed_input(), RunIntent.FRESH, self.origin, None), ()
 
     async def _project(self, outcome: InvocationOutcome, *, timeout: float | None) -> AgentAttemptResult:
         self._evidence = self._evidence.add(outcome.effects)

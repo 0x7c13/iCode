@@ -20,6 +20,7 @@ from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.replay_mount import REPLAY_MOUNT_BATCH_SIZE
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.welcome import WelcomeWidget
+from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY
 from tests.app.tui.widgets._scroll_gc import install_fake_chat_panel_gc
 from tests.support.tui_helpers import (
     ChatPanelApp,
@@ -842,3 +843,28 @@ async def test_fold_all_while_the_last_batch_mounts_outlasts_the_choice_before_i
 
         assert folds == [True]
         assert [group.collapsed for group in cp.query(ToolGroup)] == [True] * _TOOL_TURNS
+
+
+async def test_a_withdrawal_mid_prepend_waits_for_the_replay_then_removes_each_answer_it_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The answers a bare Continue drops leave the view whichever replay batch mounted them."""
+    messages = _turns()
+    for index, segment in ((1, "oldest"), (-1, "newest")):
+        contents = messages[index]["contents"]
+        assert isinstance(contents, list)
+        contents[0]["additional_properties"] = {ANSWER_SEGMENT_KEY: segment}
+    async with ChatPanelApp().run_test(size=_SIZE) as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        gate = _PrependGate(cp, monkeypatch)
+        await cp.replay_history(messages)
+        await gate.wait_held(pilot)
+
+        withdrawal = asyncio.create_task(cp.withdraw_answer(("oldest", "newest")))
+        await asyncio.sleep(0)
+        assert not withdrawal.done()
+        gate.release.set()
+        await asyncio.wait_for(withdrawal, timeout=DEFAULT_WAIT_TIMEOUT)
+
+        withdrawn = {"answer 0\n\nmore about 0", f"answer {_TURNS - 1}\n\nmore about {_TURNS - 1}"}
+        assert _message_texts(cp) == [text for _, text in _expected_messages() if text not in withdrawn]

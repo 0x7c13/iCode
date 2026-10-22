@@ -39,7 +39,7 @@ The terminal tab shows your latest message, or the session title once iCode upda
 
 A task you stop shows no mark, and the mark clears when you start the next task. Some terminals do not show tab titles.
 
-When you stop a task or it fails, the part of the reply that already appeared stays in the conversation and in the saved session, and the agent reads it when you send your next message. If you click **Retry** or **Continue** without typing anything instead, that part is removed and the agent writes the reply again.
+When you stop a task or it fails, the part of the reply that already appeared stays in the conversation and in the saved session, and the agent reads it when you send your next message. If you click **Retry** or **Continue** without typing anything instead, the agent writes the reply again: when it starts, the text it writes again is removed, and tool calls stay.
 
 ## Resume an existing session
 
@@ -63,7 +63,7 @@ Open the "Chat Sessions" window and first check the session ID, directory, and l
 
 Once you confirm deletion, the session's conversation history, rollback snapshots, diagnostic data, and other session contents are permanently deleted and cannot be recovered. Deleting a session does not undo changes the agent has already made to working directory files.
 
-Deleting the current session also starts a new session, like `/clear`. A session open in another iCode instance cannot be deleted; close that instance first.
+Deleting the current session also starts a new session, like `/clear`. A session open in another iCode instance cannot be deleted; close that instance first. If iCode cannot remove all of a session's files, it shows an error; close any program that may have those files open, then try again.
 
 ## Find the session ID and storage location
 

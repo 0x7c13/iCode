@@ -199,6 +199,11 @@ def _windows_console_encoding() -> str | None:
 
 
 _CREATE_NEW_CONSOLE = 0x00000010
+_CREATE_SUSPENDED = 0x00000004
+_ERROR_ACCESS_DENIED = 5
+_RESUME_THREAD_FAILED = 0xFFFFFFFF
+_PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D
+_PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
 _WINDOWS_BATCH_SUFFIXES = {".bat", ".cmd"}
 _WINDOWS_BATCH_FORBIDDEN = {'"', "%", "!", "^", "\r", "\n"}
 
@@ -527,6 +532,8 @@ def _windows_process_api() -> _WindowsProcessAPI:
                     ctypes.POINTER(_ProcessInformation),
                 ],
             ),
+            "AssignProcessToJobObject": (wintypes.BOOL, [wintypes.HANDLE, wintypes.HANDLE]),
+            "ResumeThread": (wintypes.DWORD, [wintypes.HANDLE]),
             "SetHandleInformation": (wintypes.BOOL, [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD]),
             "QueryInformationJobObject": (
                 wintypes.BOOL,
@@ -690,6 +697,76 @@ async def _wrap_windows_parent_pipes(
         raise
 
 
+type _WindowsAttribute = tuple[int, ctypes.Array[Any], str]
+"""A process/thread attribute: its id, the array it points into, and the message if Windows rejects it."""
+
+
+def _windows_create_process(
+    api: _WindowsProcessAPI,
+    application: str,
+    command_line_text: str,
+    *,
+    flags: int,
+    environment: object,
+    cwd: str,
+    stdio: tuple[int, int, int],
+    attributes: tuple[_WindowsAttribute, ...],
+    process_info: _ProcessInformation,
+) -> int | None:
+    """Create the process with *attributes* into *process_info*; return the error ``CreateProcessW`` failed with, if any.
+
+    The attribute list points into the attributes' arrays, which the caller keeps referenced.
+    """
+    size = ctypes.c_size_t()
+    api.kernel32.InitializeProcThreadAttributeList(None, len(attributes), 0, ctypes.byref(size))
+    attribute_buffer = ctypes.create_string_buffer(size.value)
+    attribute_list = ctypes.cast(attribute_buffer, wintypes.LPVOID)
+    if not api.kernel32.InitializeProcThreadAttributeList(attribute_list, len(attributes), 0, ctypes.byref(size)):
+        _raise_windows_process_error(api, "Unable to initialize Windows process attributes.")
+    try:
+        for attribute, value, failure in attributes:
+            if not api.kernel32.UpdateProcThreadAttribute(
+                attribute_list,
+                0,
+                attribute,
+                ctypes.cast(value, wintypes.LPVOID),
+                ctypes.sizeof(value),
+                None,
+                None,
+            ):
+                _raise_windows_process_error(api, failure)
+        stdin, stdout, stderr = stdio
+        startup = _StartupInfoExW(
+            _StartupInfoW(
+                cb=ctypes.sizeof(_StartupInfoExW),
+                dwFlags=0x00000101,  # STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES
+                wShowWindow=0,  # SW_HIDE
+                hStdInput=stdin,
+                hStdOutput=stdout,
+                hStdError=stderr,
+            ),
+            attribute_list,
+        )
+        # CreateProcessW may write to the command line, so every call gets a buffer of its own.
+        command_line = ctypes.create_unicode_buffer(command_line_text)
+        if api.kernel32.CreateProcessW(
+            application,
+            command_line,
+            None,
+            None,
+            True,
+            flags,
+            environment,
+            cwd,
+            ctypes.byref(startup),
+            ctypes.byref(process_info),
+        ):
+            return None
+        return int(cast(Any, ctypes).get_last_error())
+    finally:
+        api.kernel32.DeleteProcThreadAttributeList(attribute_list)
+
+
 async def _spawn_windows_managed_stdio_process(
     command: str,
     args: tuple[str, ...],
@@ -702,9 +779,9 @@ async def _spawn_windows_managed_stdio_process(
     api = _windows_process_api()
     job_handle = _windows_create_job(api)
     pipe_pairs: tuple[tuple[int, int], tuple[int, int], tuple[int, int]] | None = None
-    attribute_buffer = None
-    attribute_list = None
     process_handle: int | None = None
+    thread_handle: int | None = None
+    in_job = False
     try:
         pipe_pairs = _make_windows_pipe_pairs()
         (stdin_parent, stdin_child), (stdout_parent, stdout_child), (stderr_parent, stderr_child) = pipe_pairs
@@ -715,37 +792,6 @@ async def _spawn_windows_managed_stdio_process(
         for parent_handle in (stdin_parent, stdout_parent, stderr_parent):
             if not api.kernel32.SetHandleInformation(parent_handle, HANDLE_FLAG_INHERIT, 0):
                 _raise_windows_process_error(api, "Unable to protect a parent stdio handle.")
-
-        # The child joins the job as it is created and inherits only its three stdio handles.
-        # The attribute list points into these arrays, so they stay referenced until
-        # DeleteProcThreadAttributeList in the finally below.
-        PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
-        job_array = (wintypes.HANDLE * 1)(job_handle)
-        handle_array = (wintypes.HANDLE * 3)(stdin_child, stdout_child, stderr_child)
-        attributes = (
-            (PROC_THREAD_ATTRIBUTE_JOB_LIST, job_array, "Unable to attach the Windows Job Object atomically."),
-            (PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handle_array, "Unable to restrict inherited Windows handles."),
-        )
-        size = ctypes.c_size_t()
-        api.kernel32.InitializeProcThreadAttributeList(None, len(attributes), 0, ctypes.byref(size))
-        attribute_buffer = ctypes.create_string_buffer(size.value)
-        candidate = ctypes.cast(attribute_buffer, wintypes.LPVOID)
-        if not api.kernel32.InitializeProcThreadAttributeList(candidate, len(attributes), 0, ctypes.byref(size)):
-            _raise_windows_process_error(api, "Unable to initialize Windows process attributes.")
-        # Named only once initialized: the finally below deletes whatever attribute_list names.
-        attribute_list = candidate
-        for attribute, value, failure in attributes:
-            if not api.kernel32.UpdateProcThreadAttribute(
-                attribute_list,
-                0,
-                attribute,
-                ctypes.cast(value, wintypes.LPVOID),
-                ctypes.sizeof(value),
-                None,
-                None,
-            ):
-                _raise_windows_process_error(api, failure)
 
         application = _windows_resolve_application(command, env, cwd)
         if not ntpath.isabs(application):
@@ -765,38 +811,52 @@ async def _spawn_windows_managed_stdio_process(
         else:
             argv = [application, *args]
             command_line_text = subprocess.list2cmdline(argv)
-        command_line = ctypes.create_unicode_buffer(command_line_text)
         environment = _windows_environment_block(env)
 
-        startup = _StartupInfoExW(
-            _StartupInfoW(
-                cb=ctypes.sizeof(_StartupInfoExW),
-                dwFlags=0x00000101,  # STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES
-                wShowWindow=0,  # SW_HIDE
-                hStdInput=stdin_child,
-                hStdOutput=stdout_child,
-                hStdError=stderr_child,
-            ),
-            attribute_list,
+        # The child joins the job before it runs and inherits only its three stdio handles.
+        stdio = (stdin_child, stdout_child, stderr_child)
+        job_attribute: _WindowsAttribute = (
+            _PROC_THREAD_ATTRIBUTE_JOB_LIST,
+            (wintypes.HANDLE * 1)(job_handle),
+            "Unable to attach the Windows Job Object atomically.",
         )
-        process_info = _ProcessInformation()
+        handle_attribute: _WindowsAttribute = (
+            _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            (wintypes.HANDLE * 3)(*stdio),
+            "Unable to restrict inherited Windows handles.",
+        )
         creation_flags = _CREATE_NEW_CONSOLE | 0x00000400 | 0x00080000
-        if not api.kernel32.CreateProcessW(
+        process_info = _ProcessInformation()
+        create = functools.partial(
+            _windows_create_process,
+            api,
             application,
-            command_line,
-            None,
-            None,
-            True,
-            creation_flags,
-            environment,
-            cwd,
-            ctypes.byref(startup),
-            ctypes.byref(process_info),
-        ):
-            _raise_windows_process_error(api, "Unable to create the Windows subprocess.")
+            command_line_text,
+            environment=environment,
+            cwd=cwd,
+            stdio=stdio,
+            process_info=process_info,
+        )
+        error = create(flags=creation_flags, attributes=(job_attribute, handle_attribute))
+        suspended = error == _ERROR_ACCESS_DENIED
+        if suspended:
+            # Windows refuses the job attribute for a packaged (MSIX) executable, such as PowerShell
+            # installed from the Store: that child is created suspended and runs once the job holds it.
+            error = create(flags=creation_flags | _CREATE_SUSPENDED, attributes=(handle_attribute,))
+        if error is not None:
+            raise OSError(error, "Unable to create the Windows subprocess.", None, error)
         process_handle = int(process_info.hProcess)
-        api.kernel32.CloseHandle(process_info.hThread)
-        for child_handle in (stdin_child, stdout_child, stderr_child):
+        thread_handle = int(process_info.hThread)
+        in_job = not suspended
+        if suspended:
+            if not api.kernel32.AssignProcessToJobObject(job_handle, process_handle):
+                _raise_windows_process_error(api, "Unable to assign the Windows subprocess to its Job Object.")
+            in_job = True
+            if api.kernel32.ResumeThread(thread_handle) == _RESUME_THREAD_FAILED:
+                _raise_windows_process_error(api, "Unable to start the Windows subprocess.")
+        api.kernel32.CloseHandle(thread_handle)
+        thread_handle = None
+        for child_handle in stdio:
             api.kernel32.CloseHandle(child_handle)
         # _wrap_windows_parent_pipes owns the parent handles from here, including on failure.
         pipe_pairs = None
@@ -817,7 +877,9 @@ async def _spawn_windows_managed_stdio_process(
             _windows_stderr_transport=stderr_transport,
         )
     except BaseException:
-        _terminate_windows_retained_process(job_handle, process_handle, exit_code=1)
+        # Ending the job ends nothing the job has not taken yet: a suspended child is terminated itself.
+        _terminate_windows_retained_process(job_handle if in_job else None, process_handle, exit_code=1)
+        _close_windows_handle(thread_handle)
         _close_windows_handle(process_handle)
         _close_windows_handle(job_handle)
         if pipe_pairs is not None:
@@ -825,9 +887,6 @@ async def _spawn_windows_managed_stdio_process(
                 for handle in pair:
                     _close_windows_handle(handle)
         raise
-    finally:
-        if attribute_list is not None:
-            api.kernel32.DeleteProcThreadAttributeList(attribute_list)
 
 
 async def _windows_process_exit(process_handle: int) -> int:

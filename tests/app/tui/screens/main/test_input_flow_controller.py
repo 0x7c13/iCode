@@ -73,9 +73,6 @@ class _FakeInputFlowView:
     def hide_trailing_status_action(self) -> None:
         self.calls.append("hide_status_action")
 
-    async def remove_answer_before_failure(self) -> None:
-        self.calls.append("remove_answer")
-
     def set_retry_pending(self, pending: bool) -> None:
         self.calls.append(("retry_pending", pending))
 
@@ -298,19 +295,6 @@ async def test_retry_reserves_before_worker_start_and_releases_after_admission(o
         assert published == ["first note", "try again"]
 
 
-@pytest.mark.parametrize("text", ["", "a note"], ids=["bare", "with-note"])
-async def test_only_a_bare_retry_removes_the_answer_the_failed_pass_showed(text: str) -> None:
-    """The backend drops that answer and asks for it again only when the retry carries no note."""
-    scheduled: list[Callable[[], Awaitable[object]]] = []
-    controller, state, view = _make_input_flow_controller(EventBus(), start_worker=scheduled.append)
-
-    controller.request_retry(text)
-    await _run_started(scheduled)
-
-    assert state.run.agent_running
-    assert ("remove_answer" in view.calls) is (not text)
-
-
 @pytest.mark.parametrize(
     "error_code",
     [
@@ -359,7 +343,7 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
             order.append("unlock")
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
             order.append(f"error:{message}:{action_label}")
 
     def query_one(cls: object) -> object:
@@ -807,7 +791,7 @@ def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> 
             order.append("unlock")
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
             order.append(f"error:{message}:{action_label}")
 
     def query_one(cls: object) -> object:

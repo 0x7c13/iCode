@@ -178,9 +178,7 @@ class _Harness:
                 pass
 
         class _ChatPanel:
-            async def add_error(
-                self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True
-            ) -> None:
+            async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
                 harness.chat_errors.append(message)
 
             async def add_user_message(

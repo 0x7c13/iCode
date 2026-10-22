@@ -11,6 +11,8 @@ a failure or an interrupt after it ends the turn without sending the request
 again, and the saved history keeps the partial answer ahead of the turn's
 status marker. ``icode run`` shows none of it while it streams, so there the
 request is sent again and the text the retry gave up is neither shown nor kept.
+A bare Continue later drops the kept answer to ask for it again, and names its
+segments in an ``InvocationAnswerWithdrawn`` before it sends that request.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from chrys.foundation.errors import ProviderResponseError, is_retryable
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
+    InvocationAnswerWithdrawn,
     InvocationContentAbandoned,
     InvocationContentDelta,
     InvocationContentFinished,
@@ -35,6 +38,7 @@ from chrys.foundation.events.types import (
     InvocationToolCallStart,
     UserInterrupt,
     UserMessage,
+    UserRetry,
 )
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.session_surface import SessionSurface
@@ -61,6 +65,7 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.engine import AgentEngine
 
 _EVENT_TYPES: tuple[type, ...] = (
+    InvocationAnswerWithdrawn,
     InvocationContentAbandoned,
     InvocationContentDelta,
     InvocationContentFinished,
@@ -612,3 +617,113 @@ async def test_a_turn_that_ends_well_leaves_no_answer_for_a_later_failed_turn(
     state = started.engine.current.require_loaded().bindings.state
     assert not state.run_failed and not state.was_interrupted
     assert state.partial_answer == ()
+
+
+def _search_call() -> Content:
+    return Content.from_hosted_tool_call(
+        "search-1",
+        tool_name="web_search",
+        arguments={"query": "Chrys"},
+        status="running",
+        hosted_family="search",
+        hosted_provider="openai",
+        provider_phase="start",
+    )
+
+
+async def _interrupt_after_narration_a_hosted_call_and_an_answer(
+    agent_engine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *retry: MockResponse
+) -> tuple[_Started, _HeldStreamClient, list[str]]:
+    """Interrupt a stream that showed narration, a provider-hosted call and answer text; return its segments."""
+    client = _HeldStreamClient(
+        [MockResponse(text="Searching."), *retry], then=(_search_call(), Content.from_text("Found "))
+    )
+    started = await _start(agent_engine, tmp_path, monkeypatch, client)
+    try:
+        await started.bus.publish(UserMessage(text="go"))
+        await _wait_shown(started, client)
+        await started.bus.publish(UserInterrupt())
+        await await_run_task_chain(started.engine, turn_state=started.engine.turns.turn_state)
+    finally:
+        client.release.set()
+    segments = list(dict.fromkeys(delta.segment_id for delta in _turn_events(started.events, InvocationContentDelta)))
+    assert [delta.text for delta in _turn_events(started.events, InvocationContentDelta)] == ["Searching.", "Found "]
+    return started, client, segments
+
+
+async def test_a_bare_continue_withdraws_every_segment_it_drops_before_asking_again(
+    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cut-off response never reached history, so its narration before the hosted call goes with the answer."""
+    started, client, segments = await _interrupt_after_narration_a_hosted_call_and_an_answer(
+        agent_engine, tmp_path, monkeypatch, MockResponse(text="Found Chrys.")
+    )
+    assert len(segments) == 2
+    requests_at_withdrawal: list[int] = []
+
+    async def count_requests(_event: InvocationAnswerWithdrawn) -> None:
+        requests_at_withdrawal.append(client.call_count)
+
+    await started.bus.subscribe(InvocationAnswerWithdrawn, count_requests)
+
+    await started.bus.publish(UserRetry())
+    await await_run_task_chain(started.engine, turn_state=started.engine.turns.turn_state)
+
+    (withdrawn,) = _turn_events(started.events, InvocationAnswerWithdrawn)
+    assert withdrawn.segment_ids == tuple(segments)
+    assert requests_at_withdrawal == [1]
+    sent, _options = client.call_history[-1]
+    assert [message.text for message in sent if message.role == "assistant"] == []
+    answers = [_texts(message) for message in await _saved_assistant_messages(started) if _marker(message) is None]
+    assert answers == [["Found Chrys."]]
+
+
+async def test_a_continue_with_a_note_goes_on_from_the_kept_answer_and_withdraws_nothing(
+    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started, _client, _segments = await _interrupt_after_narration_a_hosted_call_and_an_answer(
+        agent_engine, tmp_path, monkeypatch, MockResponse(text="Going on.")
+    )
+
+    await started.bus.publish(UserRetry(text="go on"))
+    await await_run_task_chain(started.engine, turn_state=started.engine.turns.turn_state)
+
+    assert _turn_events(started.events, InvocationAnswerWithdrawn) == []
+
+
+@pytest.mark.parametrize("stop", ["interrupt", "cancel"])
+async def test_a_continue_stopped_while_its_withdrawal_is_delivered_still_delivers_it_and_asks_nothing(
+    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch, stop: str
+) -> None:
+    """History dropped the answer already: a frontend that missed the withdrawal would keep showing it."""
+    started, client, segments = await _interrupt_after_narration_a_hosted_call_and_an_answer(
+        agent_engine, tmp_path, monkeypatch, MockResponse(text="never")
+    )
+    delivering, release = asyncio.Event(), asyncio.Event()
+    delivered: list[tuple[str, ...]] = []
+
+    async def slow_frontend(_event: InvocationAnswerWithdrawn) -> None:
+        delivering.set()
+        await release.wait()
+
+    async def later_frontend(event: InvocationAnswerWithdrawn) -> None:
+        delivered.append(event.segment_ids)
+
+    await started.bus.subscribe(InvocationAnswerWithdrawn, slow_frontend)
+    await started.bus.subscribe(InvocationAnswerWithdrawn, later_frontend)
+
+    await started.bus.publish(UserRetry())
+    run = started.engine.turns.turn_state.lease.run_task
+    assert run is not None
+    await wait_for(lambda: delivering.is_set() or run.done(), description="the withdrawal sent")
+    assert delivering.is_set()
+    if stop == "interrupt":
+        await started.bus.publish(UserInterrupt())
+    else:
+        run.cancel()
+    assert not run.done()
+    release.set()
+    await await_run_task_chain(started.engine, turn_state=started.engine.turns.turn_state)
+
+    assert delivered == [tuple(segments)]
+    assert client.call_count == 1

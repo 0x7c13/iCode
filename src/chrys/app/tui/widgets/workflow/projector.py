@@ -17,6 +17,7 @@ from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     AgentTranscriptJournal,
     AgentTranscriptOp,
     AnswerSegments,
+    TranscriptAnswerWithdrawnOp,
     TranscriptAssistantOp,
     TranscriptCompactionFinishedOp,
     TranscriptCompactionStartOp,
@@ -56,6 +57,7 @@ INVOCATION_EVENTS = (
     events.InvocationRetryAttempt,
     events.InvocationPaused,
     events.InvocationResumed,
+    events.InvocationAnswerWithdrawn,
     events.InvocationCascadeAborted,
     events.InvocationAborted,
     events.InvocationContextPressure,
@@ -319,6 +321,8 @@ def transcript_operation(event: events.InvocationEvent) -> AgentTranscriptOp | N
         return TranscriptErrorOp(event.last_error or text.AWAITING_RETRY.bind())
     if isinstance(event, events.InvocationResumed):
         return TranscriptResumedOp()
+    if isinstance(event, events.InvocationAnswerWithdrawn):
+        return TranscriptAnswerWithdrawnOp(event.segment_ids)
     if isinstance(event, (events.InvocationAborted, events.InvocationCascadeAborted)):
         return TranscriptInterruptedOp(text.CANCELLED.bind())
     if isinstance(event, events.InvocationContextPressure):

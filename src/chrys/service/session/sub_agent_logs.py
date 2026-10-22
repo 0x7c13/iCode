@@ -44,6 +44,8 @@ SUB_AGENT_LOG_TMP_PREFIX = "."
 SUB_AGENT_LOG_TMP_SUFFIX = ".tmp"
 SUB_AGENT_PENDING_SOURCE_PATH_KEY = "_chrys_source_path"
 SUB_AGENT_RESTORE_CONSUMED_KEY = "_chrys_restore_consumed"
+ACP_ANSWER_WITHDRAWN_UPDATE = "answer_withdrawn"
+"""The ``sessionUpdate`` of a local ACP audit entry: a retry withdrew the answer its attempt showed after its last card."""
 _INVOCATION_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 _ACP_HMAC_KEY_FILE = "acp-audit-hmac.key"
 _ACP_HMAC_KEY_BYTES = 32

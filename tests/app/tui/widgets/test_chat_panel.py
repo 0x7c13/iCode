@@ -30,15 +30,17 @@ from chrys.app.tui.widgets.chat.panel import ChatPanel, _ScrollToBottomButton
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserToolCall
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chat.tool_call import (
+    ToolCall,
     ToolGroup,
 )
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n import Localizer
-from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY, HistoryMarkerKind
 from chrys.foundation.tool_kinds import (
     KIND_ASK_USER,
 )
 from chrys.foundation.trajectory_timing import TRAJECTORY_TIMING_KEY
+from chrys.kernel import Content
 from chrys.service.session.message_metadata import MESSAGE_CREATED_AT_KEY
 from tests.support.tui_helpers import (
     ChatPanelApp,
@@ -481,6 +483,33 @@ async def test_chat_panel_replay_omits_intermediate_agent_timestamps() -> None:
         agent_messages = list(panel.query(AgentMessage))
         assert [message._is_intermediate for message in agent_messages] == [True, False]
         assert [message._ts for message in agent_messages] == ["", expected]
+
+
+async def test_chat_panel_replay_settles_an_answer_segment_a_later_one_followed() -> None:
+    """Live, a later segment settles the earlier one as intermediate text; replay shows them the same way."""
+    created_at = datetime(2026, 5, 15, 12, 1, 0, tzinfo=UTC)
+    contents = [
+        Content.from_text("A first look.", additional_properties={ANSWER_SEGMENT_KEY: "seg-1"}),
+        Content.from_text_reasoning(text="thinking again"),
+        Content.from_text("The answer.", additional_properties={ANSWER_SEGMENT_KEY: "seg-2"}),
+    ]
+    raw_messages = [
+        {"role": "user", "contents": [{"type": "text", "text": "ask"}]},
+        {
+            "role": "assistant",
+            "contents": [content.to_dict() for content in contents],
+            "additional_properties": {MESSAGE_CREATED_AT_KEY: created_at.isoformat()},
+        },
+    ]
+
+    async with ChatPanelApp().run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.replay_history(raw_messages)
+
+        agent_messages = list(panel.query(AgentMessage))
+        assert [message.text for message in agent_messages] == ["A first look.", "The answer."]
+        assert [message._is_intermediate for message in agent_messages] == [True, False]
+        assert [message._ts for message in agent_messages] == ["", format_message_created_at(created_at)]
 
 
 @pytest.mark.parametrize(
@@ -947,7 +976,7 @@ async def test_chat_panel_final_message_does_not_remount_an_answer_a_tool_call_s
 
 
 @pytest.mark.parametrize("status_type", [ErrorMessage, InterruptedMessage])
-async def test_chat_panel_removes_the_answer_a_bare_continue_asks_for_again(status_type) -> None:
+async def test_chat_panel_withdraws_the_answer_segments_a_bare_continue_asks_for_again(status_type) -> None:
     """A bare Continue or Retry drops the failed pass's trailing answer from history, so the transcript drops it too."""
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
@@ -965,46 +994,69 @@ async def test_chat_panel_removes_the_answer_a_bare_continue_asks_for_again(stat
             await cp.add_interrupted()
         status = cp.query_one(status_type)
 
-        await cp.remove_answer_before_failure()
+        await cp.withdraw_answer(("seg-2", "seg-3"))
 
         assert [message.text for message in cp.query(AgentMessage)] == ["Checking the tools."]
         assert cp.query_one(ToolGroup).is_mounted
         assert cp.query_one(status_type) is status
 
 
-async def test_chat_panel_keeps_the_answer_before_an_error_that_ended_no_turn() -> None:
-    """A request refused outside a turn left the completed answer before it in history."""
+async def test_a_start_reusing_a_finished_call_id_leaves_that_card_showing_the_call_its_result_answered() -> None:
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
-        await cp.add_answer_delta("seg-1", "The final answer")
+        await cp.add_tool_start("c1", "alpha", "", '{"x": 1}', args={"x": 1})
+        await cp.add_tool_result("c1", "alpha", "alpha result")
+        await cp.add_tool_start("c1", "beta", "", '{"y": 2}', args={"y": 2})
+
+        [card] = cp.query(ToolCall)
+        assert (card.tool_name, card.args, card.status) == ("alpha", {"x": 1}, "complete")
+
+
+async def test_chat_panel_keeps_every_answer_a_withdrawal_does_not_name() -> None:
+    async with ChatPanelApp().run_test() as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await cp.add_user_message("prompt")
+        await cp.add_answer_delta("seg-1", "An earlier answer")
         cp.finish_answer_segment("seg-1", completed=True)
-        await cp.add_agent_message("The final answer")
-        await cp.add_error("The prompt hook blocked this message.", ends_turn=False)
+        await cp.add_answer_delta("seg-2", "The dropped answer")
+        cp.finish_answer_segment("seg-2", completed=False)
 
-        await cp.remove_answer_before_failure()
+        await cp.withdraw_answer(("seg-2", "another-turn-segment"))
 
-        assert [message.text for message in cp.query(AgentMessage)] == ["The final answer"]
+        assert [message.text for message in cp.query(AgentMessage)] == ["An earlier answer"]
 
 
-@pytest.mark.parametrize("status_type", [ErrorMessage, InterruptedMessage])
-async def test_chat_panel_removes_the_answer_when_a_later_error_replaced_the_failed_turn_card(status_type) -> None:
-    """An error outside a turn replaces the failed turn's card; a bare Retry still asks that turn's answer again."""
+async def test_chat_panel_replays_each_answer_segment_as_its_own_message_so_a_withdrawal_takes_only_its_own() -> None:
+    """Text on either side of a hosted result is two segments: a bare Continue drops the trailing one only."""
+    call = Content.from_hosted_tool_call(
+        "search-1", tool_name="web_search", status="running", hosted_family="search", hosted_provider="openai"
+    )
+    result = Content.from_hosted_tool_result(
+        "search-1", tool_name="web_search", result="found", status="completed", hosted_family="search"
+    )
+    contents = [
+        call,
+        Content.from_text("Searching", additional_properties={ANSWER_SEGMENT_KEY: "intro"}),
+        # An empty fragment shows nothing, so it splits no segment.
+        Content.from_text(""),
+        Content.from_text(" the web.", additional_properties={ANSWER_SEGMENT_KEY: "intro"}),
+        result,
+        Content.from_text("Found Chrys.", additional_properties={ANSWER_SEGMENT_KEY: "answer"}),
+    ]
+    raw_messages = [
+        {"role": "user", "contents": [{"type": "text", "text": "search"}]},
+        {"role": "assistant", "contents": [content.to_dict() for content in contents]},
+    ]
+
     async with ChatPanelApp().run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
-        await cp.add_user_message("prompt")
-        await cp.add_answer_delta("seg-1", "half of the answer")
-        cp.finish_answer_segment("seg-1", completed=False)
-        if status_type is ErrorMessage:
-            await cp.add_error("failed")
-        else:
-            await cp.add_interrupted()
-        await cp.add_error("Settings could not be reloaded.", ends_turn=False)
+        await cp.replay_history(raw_messages)
+        assert [message.text for message in cp.query(AgentMessage)] == ["Searching the web.", "Found Chrys."]
 
-        await cp.remove_answer_before_failure()
+        await cp.withdraw_answer(("answer",))
 
-        assert not list(cp.query(AgentMessage))
-        assert cp.query_one(ErrorMessage).ends_turn is True
+        assert [message.text for message in cp.query(AgentMessage)] == ["Searching the web."]
 
 
 async def test_chat_panel_retry_output_removes_error_across_system_message() -> None:

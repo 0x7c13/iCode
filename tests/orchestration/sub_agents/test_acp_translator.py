@@ -40,6 +40,7 @@ from chrys.service.acp_client import client as acp_client_module
 from chrys.service.acp_client.errors import AcpTransportError
 from tests.orchestration.sub_agents._acp_fakes import session_notification
 from tests.support.event_capture import capture_events
+from tests.support.waiting import wait_for
 
 
 async def test_translator_synthesizes_progress_before_start_and_prefixes_attempt() -> None:
@@ -617,15 +618,17 @@ async def test_terminal_publish_is_single_delivery_under_concurrent_flush() -> N
     )
 
     async def slow_dup_start(event: InvocationToolCallStart) -> None:
-        # Yield inside the terminal's ensure-start so a second terminalizer can
-        # reach the guard while the first is mid-publish — the exact race window.
+        # Yield inside a start publish so a second terminalizer can reach the
+        # guard while the first is mid-publish — the exact race window.
         if event.call_id.endswith("dup"):
             await asyncio.sleep(0)
 
     await bus.subscribe(InvocationToolCallStart, slow_dup_start)
 
     # The consumer processing a completed update and the cancel-path flush race
-    # to terminalize the same record.
+    # to terminalize the same record. The update renames the call, so it first
+    # suspends publishing the changed start; the flush then reaches the guard
+    # and its own start.
     await asyncio.gather(
         translator.put(
             2,
@@ -633,7 +636,7 @@ async def test_terminal_publish_is_single_delivery_under_concurrent_flush() -> N
                 ToolCallProgress(
                     sessionUpdate="tool_call_update",
                     toolCallId="dup",
-                    title="Dup",
+                    title="Dup done",
                     status="completed",
                 )
             ),
@@ -778,3 +781,101 @@ async def test_transcript_mode_reports_no_unpublished_final_after_terminal_tool(
     assert translator.result_text() == "already published"
     assert translator.unpublished_final_text() == ""
     assert [delta.text for delta in deltas] == ["already published"]
+
+
+async def _start_and_result_log(bus: EventBus) -> list[tuple[str, str, str]]:
+    """Log each start and result in order: its kind, its call's name, and the provider status it shows."""
+    log: list[tuple[str, str, str]] = []
+
+    async def on_start(event: InvocationToolCallStart) -> None:
+        log.append(("start", event.tool_name, event.provider_status))
+
+    async def on_result(event: InvocationToolCallResult) -> None:
+        log.append(("result", event.tool_name, event.provider_status))
+
+    await bus.subscribe(InvocationToolCallStart, on_start)
+    await bus.subscribe(InvocationToolCallResult, on_result)
+    return log
+
+
+def _call_translator(bus: EventBus) -> AcpUpdateTranslator:
+    return AcpUpdateTranslator(
+        event_bus=bus,
+        session_id="parent",
+        agent_name="External",
+        invocation_id="inv",
+        attempt=1,
+        origin=InvocationOrigin("sub_agent", "parent", "inv", None),
+    )
+
+
+def _read_update(*, status: str, title: str = "Read", provider_status: str | None = None) -> SessionNotification:
+    meta = None
+    if provider_status is not None:
+        meta = {"chrys": {"provider_hosted": True, "hosted_family": "search", "provider_status": provider_status}}
+    return session_notification(
+        ToolCallProgress(
+            sessionUpdate="tool_call_update",
+            toolCallId="call",
+            title=title,
+            kind="read",
+            rawInput={"path": "a"},
+            status=status,
+            _meta=meta,
+        )
+    )
+
+
+async def test_a_call_starts_again_only_when_what_its_start_shows_changes() -> None:
+    bus = EventBus()
+    log = await _start_and_result_log(bus)
+    translator = _call_translator(bus)
+
+    await translator.put(1, _read_update(status="in_progress"))
+    await translator.put(2, _read_update(status="in_progress"))
+    await translator.put(3, _read_update(status="in_progress", title="Read a"))
+    await translator.put(4, _read_update(status="completed", title="Read a"))
+
+    assert log == [("start", "Read", ""), ("start", "Read a", ""), ("result", "Read a", "")]
+
+
+async def test_a_hosted_call_starts_again_when_it_turns_out_hosted_and_its_status_rides_the_result() -> None:
+    bus = EventBus()
+    log = await _start_and_result_log(bus)
+    translator = _call_translator(bus)
+
+    await translator.put(1, _read_update(status="in_progress"))
+    await translator.put(2, _read_update(status="in_progress", provider_status="searching"))
+    await translator.put(3, _read_update(status="in_progress", provider_status="reading"))
+    await translator.put(4, _read_update(status="completed", provider_status="completed"))
+
+    assert log == [
+        ("start", "Read", ""),
+        ("start", "Read", "searching"),
+        ("result", "Read", "completed"),
+    ]
+
+
+async def test_a_start_a_cancel_cut_off_is_delivered_again_before_the_interrupted_result() -> None:
+    bus = EventBus()
+    held = asyncio.Event()
+
+    async def hold_the_first_start(_event: InvocationToolCallStart) -> None:
+        if not held.is_set():
+            held.set()
+            await asyncio.Event().wait()
+
+    await bus.subscribe(InvocationToolCallStart, hold_the_first_start)
+    # Subscribed after the holder: it misses the start the cancel cuts off.
+    log = await _start_and_result_log(bus)
+    translator = _call_translator(bus)
+
+    consumer = asyncio.create_task(translator.put(1, _read_update(status="in_progress")))
+    await wait_for(lambda: held.is_set() or consumer.done(), description="the start's delivery")
+    assert not consumer.done()
+    consumer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+    await translator.flush_interrupted()
+
+    assert log == [("start", "Read", ""), ("result", "Read", "interrupted")]

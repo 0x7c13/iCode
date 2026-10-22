@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from functools import partial
 
+import pytest
 from acp.schema import (
     AgentMessageChunk,
     AgentThoughtChunk,
@@ -15,9 +16,12 @@ from acp.schema import (
 )
 
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import InvocationContentDelta, InvocationContentFinished
+from chrys.foundation.events.types import InvocationContentDelta, InvocationContentFinished, InvocationToolCallStart
 from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.orchestration.invoker import acp_protocol
 from chrys.orchestration.invoker.acp_protocol import AcpUpdateTranslator
+from chrys.service.acp_client.errors import AcpTransportError
+from chrys.service.session.sub_agent_logs import ACP_ANSWER_WITHDRAWN_UPDATE
 from tests.orchestration.sub_agents._acp_fakes import session_notification
 from tests.support.event_capture import collect_events
 
@@ -93,6 +97,14 @@ async def test_a_tool_call_start_or_a_new_message_ends_the_open_segment() -> Non
     events = await _content_events(bus)
     translator = _translator(bus)
 
+    await translator.put(
+        0,
+        session_notification(
+            ToolCallStart(
+                sessionUpdate="tool_call", toolCallId="early", title="Read", kind="read", status="in_progress"
+            )
+        ),
+    )
     await translator.put(1, session_notification(_message("Reading. ")))
     # Progress of a running call merges tool state and leaves the segment open.
     await translator.put(
@@ -124,6 +136,47 @@ async def test_a_tool_call_start_or_a_new_message_ends_the_open_segment() -> Non
     assert len({segments[0], segments[3], segments[5]}) == 3
 
 
+@pytest.mark.parametrize("opens_card", ["start", "update"])
+async def test_the_final_answer_is_every_answer_segment_shown_after_the_last_tool_card_opened(opens_card: str) -> None:
+    """What a retry in a new session asks for again; a later update of an open card opens none, ending nothing."""
+    bus = EventBus()
+    events = await _content_events(bus)
+    translator = _translator(bus)
+    if opens_card == "start":
+        opened: ToolCallStart | ToolCallProgress = ToolCallStart(
+            sessionUpdate="tool_call", toolCallId="call", title="Read", kind="read", status="in_progress"
+        )
+    else:
+        # An update for a call not seen yet opens its card too.
+        opened = ToolCallProgress(
+            sessionUpdate="tool_call_update", toolCallId="call", title="Read", status="in_progress"
+        )
+
+    await translator.put(1, session_notification(_message("Reading. ")))
+    await translator.put(2, session_notification(opened))
+    # The card ends the segment, though the message goes on.
+    await translator.put(3, session_notification(_message("Found it. ")))
+    await translator.put(
+        4,
+        session_notification(
+            ToolCallProgress(sessionUpdate="tool_call_update", toolCallId="call", title="Read", rawInput={"path": "a"})
+        ),
+    )
+    await translator.put(5, session_notification(_message("Done.", message_id="m3")))
+
+    answers = list(dict.fromkeys(event.segment_id for event in events if isinstance(event, InvocationContentDelta)))
+    assert len(answers) == 3
+    assert translator.withdraw_final_answer() == (answers[1], answers[2])
+    # The audit records the withdrawal once, so a replay drops that answer too.
+    assert translator.withdraw_final_answer() == ()
+    withdrawals = [
+        item
+        for item in translator.translated_updates
+        if item["update"] == {"sessionUpdate": ACP_ANSWER_WITHDRAWN_UPDATE}
+    ]
+    assert withdrawals == [{"seq": None, "update": {"sessionUpdate": ACP_ANSWER_WITHDRAWN_UPDATE}, "attempt": 1}]
+
+
 async def test_flush_interrupted_finishes_the_open_segment_as_interrupted() -> None:
     bus = EventBus()
     events = await _content_events(bus)
@@ -136,3 +189,27 @@ async def test_flush_interrupted_finishes_the_open_segment_as_interrupted() -> N
 
     assert _shape(events) == [("delta", "answer", "partial"), ("finished", "answer", "interrupted")]
     assert events[1].segment_id == events[0].segment_id
+
+
+async def test_a_card_the_interrupt_flush_opens_leaves_the_cut_off_answer_interrupted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A call cut off before its card opened gets one as the pass ends; that card ends no segment completed."""
+    monkeypatch.setattr(acp_protocol, "_MAX_ASSEMBLED_BYTES", 1_000)
+    bus = EventBus()
+    events = await _content_events(bus)
+    starts: list[InvocationToolCallStart] = []
+    await bus.subscribe(InvocationToolCallStart, partial(collect_events, starts))
+    translator = _translator(bus)
+    over_budget = ToolCallProgress(
+        sessionUpdate="tool_call_update", toolCallId="call", title="Read", rawInput={"path": "x" * 2_000}
+    )
+
+    await translator.put(1, session_notification(_message("Half an")))
+    # The update records the call, then fails over budget before its card opens.
+    with pytest.raises(AcpTransportError):
+        await translator.put(2, session_notification(over_budget))
+    await translator.flush_interrupted()
+
+    assert [start.call_id for start in starts] == ["a1:call"]
+    assert _shape(events) == [("delta", "answer", "Half an"), ("finished", "answer", "interrupted")]

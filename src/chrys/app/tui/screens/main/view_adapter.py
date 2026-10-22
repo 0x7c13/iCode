@@ -303,8 +303,8 @@ class MainScreenViewAdapter:
     def hide_trailing_status_action(self) -> None:
         self._screen.query_one(ChatPanel).hide_trailing_status_action()
 
-    async def remove_answer_before_failure(self) -> None:
-        await self._screen.query_one(ChatPanel).remove_answer_before_failure()
+    async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
+        await self._screen.query_one(ChatPanel).withdraw_answer(segment_ids)
 
     def set_retry_pending(self, pending: bool) -> None:
         self._screen.query_one(InputBar).retry_pending = pending
@@ -766,8 +766,8 @@ class MainScreenViewAdapter:
     # Chat transcript rendering
     # -------------------------------------------------------------- #
 
-    async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
-        await self._screen.query_one(ChatPanel).add_error(message, action_label=action_label, ends_turn=ends_turn)
+    async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
+        await self._screen.query_one(ChatPanel).add_error(message, action_label=action_label)
 
     async def add_system(self, text: str, *, key: str | None = None) -> None:
         await self._screen.query_one(ChatPanel).add_system(text, key=key)
@@ -1162,6 +1162,9 @@ class MainScreenViewAdapter:
 
     def sub_agent_resumed_after_pause(self, invocation_id: str) -> None:
         self._screen.query_one(ChatPanel).sub_agent_resumed_after_pause(invocation_id)
+
+    def sub_agent_answer_withdrawn(self, invocation_id: str, segment_ids: tuple[str, ...]) -> None:
+        self._screen.query_one(ChatPanel).sub_agent_answer_withdrawn(invocation_id, segment_ids)
 
     def sub_agent_cascade_aborted(self, invocation_id: str) -> None:
         self._screen.query_one(ChatPanel).sub_agent_cascade_aborted(invocation_id)

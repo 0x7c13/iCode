@@ -86,7 +86,7 @@ def _answers(journal: AgentTranscriptJournal) -> list[str]:
     return [operation.text for operation in journal.operations if isinstance(operation, TranscriptAssistantOp)]
 
 
-def test_a_resumed_attempt_leaves_out_the_answer_it_writes_again() -> None:
+def test_a_resumed_attempt_leaves_out_the_answer_it_withdraws() -> None:
     projector = WorkflowProjector()
     projector.record(events.WorkflowRunStarted(run_id="run", manifest={"nodes": []}))
     projector.record(_state(1, "running"))
@@ -108,10 +108,12 @@ def test_a_resumed_attempt_leaves_out_the_answer_it_writes_again() -> None:
     projector.record(_state(1, "retrying", error="connection reset"))
     projector.record(_state(2, "running"))
     projector.record_invocation(events.InvocationResumed(origin=_origin(2)))
+    projector.record_invocation(events.InvocationAnswerWithdrawn(origin=_origin(2), segment_ids=("s1",)))
     for event in (_delta(2, "s3", "The change "), _delta(2, "s3", "is fine."), _end(2, "s3")):
         projector.record_invocation(event)
 
-    # The answer shown before the failure is asked for again too.
+    # The answer shown before the failure is asked for again too; the first attempt's details keep it.
+    assert _answers(first) == ["The change looks"]
     operations = run.journals["review", 2].operations
     assert _kinds(operations) == [
         TranscriptUserOp,

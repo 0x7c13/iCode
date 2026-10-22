@@ -80,7 +80,12 @@ from ._types import (
     Message,
     ResponseStream,
 )
-from .client import _wire_message_view, resolve_storage_mode_and_handles, start_with_wire_progress
+from .client import (
+    EXHAUSTION_TAIL_KWARG,
+    _wire_message_view,
+    resolve_storage_mode_and_handles,
+    start_with_wire_progress,
+)
 from .compaction import ContextOverflowSink
 from .exchanges import TOOL_CALL_CONTENT_TYPES
 from .identity import WeakIdentityRegistry
@@ -293,23 +298,24 @@ def _response_has_visible_content(response: ChatResponse) -> bool:
     return False
 
 
-def _ensure_exhaustion_fallback_response(response: ChatResponse, fallback_text: str) -> bool:
-    """Synthesize *fallback_text* when the final response has nothing visible.
+def _ensure_exhaustion_fallback_response(response: ChatResponse, fallback_text: str) -> Content | None:
+    """Synthesize *fallback_text* when the final response has nothing visible; return the content added.
 
     Runs unconditionally after the tail strip (and, in streaming, after echo
-    shell cleanup): a blank or reasoning-only final response would otherwise
-    return as an empty success — the exact shape response validation exists to
-    prevent — regardless of whether the strip removed anything.
+    shell cleanup): a blank or reasoning-only final response, which response
+    validation lets through on the tail call for this text to answer, would
+    otherwise return as an empty success, whether or not the strip removed
+    anything.
     """
     if _response_has_visible_content(response):
-        return False
+        return None
     fallback_content = Content.from_text(fallback_text)
     if response.messages and not response.messages[-1].contents:
         response.messages[-1].role = "assistant"
         response.messages[-1].contents = [fallback_content]
     else:
         response.messages.append(Message(role="assistant", contents=[fallback_content]))
-    return True
+    return fallback_content
 
 
 def _invalidate_service_continuation_state(
@@ -1184,6 +1190,7 @@ class _WireCaller:
         as_stream: bool,
         stream_update_filter: Callable[[ChatResponseUpdate], ChatResponseUpdate] | None = None,
         request_message_observer: Callable[[Sequence[Message]], None],
+        exhaustion_tail: bool,
     ) -> Any:
         # The recorder keeps the loop's canonical objects (its identity
         # dedup depends on re-recorded history being the SAME objects).
@@ -1196,6 +1203,10 @@ class _WireCaller:
         # views share the wrapper's additional_properties dict, which is
         # how compaction exclusion flags reach stored history.
         wire_view = [_wire_message_view(m) for m in prepped]
+        client_kwargs = self._trajectory.begin_exchange(self._client_kwargs)
+        if exhaustion_tail:
+            # Every request of the tail's logical call carries it: its polls, retries and stall fallback too.
+            client_kwargs = {**client_kwargs, EXHAUSTION_TAIL_KWARG: True}
         return self._inner.get_response(
             wire_view,
             stream=as_stream,
@@ -1205,7 +1216,7 @@ class _WireCaller:
             middleware=self._chat_middleware,
             compaction_strategy=self._compaction_strategy,
             tokenizer=self._tokenizer,
-            client_kwargs=self._trajectory.begin_exchange(self._client_kwargs),
+            client_kwargs=client_kwargs,
         )
 
     async def _schedule_retry(
@@ -1327,6 +1338,7 @@ class _WireCaller:
         request_message_observer: Callable[[Sequence[Message]], None],
         overflow_recovered: bool = False,
         blank_resent: bool = False,
+        exhaustion_tail: bool = False,
     ) -> ChatResponse:
         retry_attempt = 0
         while True:
@@ -1340,6 +1352,7 @@ class _WireCaller:
                             prepped,
                             as_stream=False,
                             request_message_observer=request_message_observer,
+                            exhaustion_tail=exhaustion_tail,
                         )
                     )
                     self._trajectory.close_exchange(ExchangeOutcome.SUCCESS)
@@ -1396,6 +1409,7 @@ class _WireCaller:
         *,
         stream_update_filter: Callable[[ChatResponseUpdate], ChatResponseUpdate],
         request_message_observer: Callable[[Sequence[Message]], None],
+        exhaustion_tail: bool = False,
     ) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
         final_response: ChatResponse | None = None
         # The provider stream of the attempt being read; None once it was
@@ -1425,6 +1439,7 @@ class _WireCaller:
                             as_stream=True,
                             stream_update_filter=stream_update_filter,
                             request_message_observer=request_message_observer,
+                            exhaustion_tail=exhaustion_tail,
                         )
                         if not isinstance(raw_stream, ResponseStream):
                             raise TypeError("Streaming wire call did not return a ResponseStream.")
@@ -1538,6 +1553,7 @@ class _WireCaller:
                                 request_message_observer=request_message_observer,
                                 overflow_recovered=overflow_recovered,
                                 blank_resent=blank_resent,
+                                exhaustion_tail=exhaustion_tail,
                             )
                             return
                         stall_retry_attempt += 1
@@ -1894,9 +1910,11 @@ class _LoopRun:
         # orphaned function calls.
         self._options["tool_choice"] = "none"
         await self._trajectory.cycle_started(tail_cycle_index, tools_offered=bool(self._options.get("tools")))
+        # A tail that shows nothing gets the fallback text below, so validation lets it through.
         response = await self._wire.blocking_response(
             self._prepped_messages,
             request_message_observer=self._wire_request_observer,
+            exhaustion_tail=True,
         )
         self._land(response)
         # Counted before the strip below: a provider that ignored
@@ -2060,6 +2078,7 @@ class _LoopRun:
                 self._prepped_messages,
                 stream_update_filter=echo_filter,
                 request_message_observer=self._wire_request_observer,
+                exhaustion_tail=True,
             )
             tail_stripped_call = False
             self._reading = final_logical_stream
@@ -2091,7 +2110,7 @@ class _LoopRun:
             await self._finish_cycle(final_response)
             _record_stream_fragment_identities(final_logical_stream, self._echo_registry)
             stripped = _strip_unexecutable_calls_from_response(final_response)
-            fallback_added = _ensure_exhaustion_fallback_response(final_response, fallback_text)
+            fallback_content = _ensure_exhaustion_fallback_response(final_response, fallback_text)
             # Invalidate BEFORE the fallback yield: a yield suspends the
             # generator, and a consumer that stops right after the fallback
             # would otherwise leave the session pointing at the stale service
@@ -2103,19 +2122,16 @@ class _LoopRun:
             if stripped and self._service_side:
                 self._service_state_invalidated = True
                 _invalidate_service_continuation_state(final_response, self._session)
-            if fallback_added:
+            if fallback_content is not None:
                 # Streamed consumers saw no visible content either (the yield
                 # loop strips the same calls); surface the fallback text there
                 # too, not only on the assembled response. The stripped tail
                 # updates carry no terminal reason (the update strip clears
                 # it), so this update supplies the stream's sole terminal
                 # "stop" — the fallback ends the run, there is no tool work
-                # left to route.
-                yield ChatResponseUpdate(
-                    role="assistant",
-                    contents=[Content.from_text(fallback_text)],
-                    finish_reason="stop",
-                )
+                # left to route. It carries the very content the response
+                # holds, so what a stream observer records on it lands too.
+                yield ChatResponseUpdate(role="assistant", contents=[fallback_content], finish_reason="stop")
             elif stripped and final_response.finish_reason:
                 # No fallback (the final kept visible text), but the strip
                 # suppressed every provider reason after the first stripped

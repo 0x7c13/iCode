@@ -32,6 +32,7 @@ from chrys.foundation.events.types import (
     CompactionFinished,
     CompactionStarted,
     ContextCompressed,
+    InvocationAnswerWithdrawn,
     InvocationContextPressure,
     InvocationMessage,
     InvocationStarted,
@@ -195,6 +196,41 @@ def test_on_sub_agent_paused_ignores_a_workflow_node_child() -> None:
     asyncio.run(_run_pause(handler, parent=InvocationOrigin("workflow_node", "", "node-run", None)))
     assert calls == []
     assert handler.attention_mark() == ""
+
+
+@pytest.mark.parametrize(
+    ("origin", "expected"),
+    [
+        (InvocationOrigin("turn", "s1", "turn-1", None), [("chat", ("seg-1",))]),
+        (
+            InvocationOrigin("sub_agent", "s1", "inv-1", InvocationOrigin("turn", "s1", "turn-1", None)),
+            [("sub_agent", "inv-1", ("seg-1",))],
+        ),
+        # A workflow node's details hear it from the workflow projector; the chat has no card for its children.
+        (InvocationOrigin("workflow_node", "s1", "node-1", None), []),
+        (
+            InvocationOrigin("sub_agent", "s1", "inv-2", InvocationOrigin("workflow_node", "s1", "node-1", None)),
+            [],
+        ),
+    ],
+    ids=["turn", "chat-sub-agent", "workflow-node", "workflow-child"],
+)
+def test_a_withdrawn_answer_leaves_the_view_that_shows_it(origin: InvocationOrigin, expected: list[tuple]) -> None:
+    calls: list[tuple] = []
+
+    class _FakePanel:
+        async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
+            calls.append(("chat", segment_ids))
+
+        def sub_agent_answer_withdrawn(self, invocation_id: str, segment_ids: tuple[str, ...]) -> None:
+            calls.append(("sub_agent", invocation_id, segment_ids))
+
+    screen = SimpleNamespace(_state=MainScreenState(run=RunState()), query_one=lambda _cls: _FakePanel())
+    handler = make_backend_handler(screen)
+
+    asyncio.run(handler.on_answer_withdrawn(InvocationAnswerWithdrawn(origin=origin, segment_ids=("seg-1",))))
+
+    assert calls == expected
 
 
 @pytest.mark.parametrize("settle", ["decided", "resumed", "cascade_aborted", "aborted", "next_run"])

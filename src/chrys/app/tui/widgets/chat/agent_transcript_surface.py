@@ -25,6 +25,7 @@ from chrys.app.tui.widgets.chat.messages import (
     RetryMessage,
     SystemMessage,
     UserMessage,
+    remove_withdrawn_answer,
 )
 from chrys.app.tui.widgets.chat.scroll_controller import ManualScrollGcGuard
 from chrys.app.tui.widgets.chat.toc_model import TurnTocModel
@@ -166,6 +167,13 @@ class TranscriptResumedOp:
 
 
 @dataclass(frozen=True, slots=True)
+class TranscriptAnswerWithdrawnOp:
+    """A retry dropped the answer these segments showed from history, to ask for it again: it goes."""
+
+    segment_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TranscriptRetryOp:
     """Automatic retry, either in the main transcript or its compaction card."""
 
@@ -199,6 +207,7 @@ type AgentTranscriptOp = (
     | TranscriptErrorOp
     | TranscriptPausedOp
     | TranscriptResumedOp
+    | TranscriptAnswerWithdrawnOp
     | TranscriptRetryOp
     | TranscriptWarningOp
 )
@@ -269,7 +278,10 @@ class AgentTranscriptJournal:
             self._failed = False
         elif self._failed and not isinstance(operation, TranscriptInterruptedOp):
             return
-        if isinstance(operation, TranscriptToolProgressOp) and operation.call_id in self._progress_positions:
+        if isinstance(operation, TranscriptAnswerWithdrawnOp):
+            # Retained no longer, so a view opened later never shows it; open views remove it.
+            self._withdraw(frozenset(operation.segment_ids))
+        elif isinstance(operation, TranscriptToolProgressOp) and operation.call_id in self._progress_positions:
             self._operations[self._progress_positions[operation.call_id]] = operation
         else:
             self._operations.append(operation)
@@ -290,19 +302,26 @@ class AgentTranscriptJournal:
         for subscriber in tuple(self._subscribers):
             subscriber.enqueue(operation)
 
+    def _withdraw(self, segment_ids: frozenset[str]) -> None:
+        self._operations = [
+            operation
+            for operation in self._operations
+            if not (isinstance(operation, TranscriptAssistantOp) and operation.segment_id in segment_ids)
+        ]
+        self._progress_positions = {
+            operation.call_id: position
+            for position, operation in enumerate(self._operations)
+            if isinstance(operation, TranscriptToolProgressOp) and operation.call_id in self._progress_positions
+        }
+
     def continue_from(self, earlier: AgentTranscriptJournal) -> None:
         """Take *earlier*'s retained transcript as this one's beginning: an attempt resuming another.
 
-        The answer *earlier* had shown when it failed is left out: the resumed attempt asks for it
-        again, as a bare Continue does. Called on an empty journal before its first operation; live
-        subscribers receive the carried operations in order.
+        Called on an empty journal before its first operation; live subscribers receive the carried
+        operations in order. The answer the resumed attempt asks for again is withdrawn after the
+        resume (:class:`TranscriptAnswerWithdrawnOp`).
         """
         operations = list(earlier.operations)
-        if operations and isinstance(operations[-1], TranscriptErrorOp):
-            start = len(operations) - 1
-            while start and isinstance(answer := operations[start - 1], TranscriptAssistantOp) and not answer.final:
-                start -= 1
-            del operations[start:-1]
         self._operations.extend(operations)
         self._progress_positions = {
             call_id: position + len(self._operations) - len(operations)
@@ -693,6 +712,9 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
                 provider_item_type=operation.provider_item_type,
                 provider_status=operation.provider_status,
                 provider_call_id=operation.provider_call_id,
+                # A running call's start can come again (ACP: when what it shows changes), after later output
+                # ended its group: it updates the card where it is and never opens another.
+                running_in_place=True,
             )
         elif isinstance(operation, TranscriptToolArgsOp):
             self._tools.update_tool_args(operation.call_id, dict(operation.args))
@@ -742,13 +764,12 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
             # As the main chat's error card does; Retry then removes the text, Abort keeps it.
             self._live.stop_answer()
         elif isinstance(operation, TranscriptResumedOp):
-            # Released as intermediate text, not finalized: it is removed below.
+            # Released as intermediate text: the answer the resumed attempt asks for again is withdrawn next.
             self._live.settle_answer_before_tools()
             await self._live.prepare_retry()
             await self.remove_trailing_status()
-            # The resumed attempt asks again for the answer the failed one was writing.
-            while isinstance(answer := self.failed_turn_status(), AgentMessage):
-                await remove_shielded(answer)
+        elif isinstance(operation, TranscriptAnswerWithdrawnOp):
+            await remove_withdrawn_answer(self, operation.segment_ids)
         elif isinstance(operation, TranscriptRetryOp):
             message = self._render_message(operation.message)
             if operation.hint is not None:

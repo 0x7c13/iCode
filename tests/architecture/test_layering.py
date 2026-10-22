@@ -1782,6 +1782,10 @@ def test_background_tasks_have_declared_owners() -> None:
         ("run/coordinator", "TurnCoordinator", "_admit_user_message"): (2, "execution lease run task"),
         ("run/retry", "RetryCoordinator", "_handle_user_retry"): (2, "execution lease run task"),
         ("run/retry", "RetryCoordinator", "_create_retry_run_task"): (2, "execution lease run task"),
+        ("run/runner", "TurnRunner", "_withdraw_answer"): (
+            1,
+            "answer withdrawal publication, drained whole by its finish_close caller",
+        ),
         ("run/turn_hooks", "TurnHookDispatcher", "schedule_user_interrupt"): (1, "dispatcher pending set"),
         (
             "session_lifecycle",

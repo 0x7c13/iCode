@@ -165,6 +165,7 @@ class AcpConversation:
         self._diagnostic_path: str | None = None
         self._stop_reason = ""
         self._transcript_final_text: str | None = None
+        self._translator: AcpUpdateTranslator | None = None
         self._last_spec: AcpAgentSpec | None = None
         self._trajectory_context = trajectory_context
         self._trajectory_boundary_operation_id = trajectory_boundary_operation_id
@@ -289,6 +290,13 @@ class AcpConversation:
         """The final assistant segment of the completed pass: the text after its last tool call start."""
         return self._transcript_final_text
 
+    def withdraw_final_answer(self) -> tuple[str, ...]:
+        """Withdraw the answer segments the last pass showed after its last tool card opened.
+
+        A retry runs a new session from the prompt, which asks for that answer again.
+        """
+        return () if self._translator is None else self._translator.withdraw_final_answer()
+
     def _start_background(self, awaitable: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
         task = asyncio.create_task(awaitable)
         self._background_tasks.add(task)
@@ -359,6 +367,7 @@ class AcpConversation:
     async def _run_fresh_execution(self) -> AcpExecutionResult | None:
         self._pass_started()
         self._transcript_final_text = None
+        self._translator = None
         connect_failure = ""
         for connect_index in range(self._max_connect_retries + 1):
             if self._cascade_requested:
@@ -376,6 +385,7 @@ class AcpConversation:
                 spend_before=self._counters.spend,
                 unreported_before=self._counters.usage_unreported,
             )
+            self._translator = translator
             self._broker.set_translator(translator)
             if self._translator_callback is not None:
                 # Adopt the translator into the durable audit trail BEFORE the

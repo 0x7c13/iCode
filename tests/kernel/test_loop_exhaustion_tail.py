@@ -230,6 +230,8 @@ class TestExhaustionTailStrip:
         assert response.finish_reason == "stop"
         assert [m.role for m in response.messages] == ["assistant", "tool", "assistant"]
         assert response.messages[-1].text == _MAX_ITERATIONS_FALLBACK_TEXT
+        # The streamed fallback is the landed content itself: what an observer stamps on it, history keeps.
+        assert updates[-1].contents[-1] is response.messages[-1].contents[-1]
         call_ids = [c.call_id for m in response.messages for c in m.contents if c.type == "function_call"]
         assert call_ids == ["c1"]
 

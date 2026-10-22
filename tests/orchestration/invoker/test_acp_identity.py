@@ -100,9 +100,8 @@ async def test_manual_retry_preserves_invocation_and_advances_transport_identity
     results = [
         event for event in events if (isinstance(event, InvocationToolCallResult) and event.origin.kind == "sub_agent")
     ]
-    # The translator re-publishes start with ensure=True before its terminal.
-    # Preserve that existing presentation behavior; IDs identify occurrences.
-    assert [event.call_id for event in starts] == ["a1:reused", "a1:reused", "a2:reused", "a2:reused"]
+    # One start per call occurrence: its terminal publishes none again when nothing it shows changed.
+    assert [event.call_id for event in starts] == ["a1:reused", "a2:reused"]
     assert [event.call_id for event in results] == ["a1:reused", "a2:reused"]
     normalizer = EventNormalizer()
     normalized = [normalizer.event(event) for event in events]
@@ -114,11 +113,9 @@ async def test_manual_retry_preserves_invocation_and_advances_transport_identity
     assert [type(event).__name__ for event in events] == [
         "InvocationStarted",
         "InvocationToolCallStart",
-        "InvocationToolCallStart",
         "InvocationToolCallResult",
         "InvocationPaused",
         "InvocationResumed",
-        "InvocationToolCallStart",
         "InvocationToolCallStart",
         "InvocationToolCallResult",
         "InvocationToolCallResult",

@@ -46,6 +46,7 @@ from chrys.foundation.trajectory.context import (
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.kernel import (
     CONTEXT_WINDOW_FILLED_KEY,
+    EXHAUSTION_TAIL_KWARG,
     BaseChatClient,
     ChatResponse,
     ChatResponseUpdate,
@@ -627,6 +628,24 @@ async def test_wire_call_folds_kwargs_cap_and_uses_merged_admission_view() -> No
     assert call["kwargs"]["sentinel"] == "kept"
     context = strategy.contexts[0]
     assert context.request_overhead_tokens > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("compacting", [False, True], ids=["direct", "compaction"])
+async def test_the_exhaustion_tail_flag_never_reaches_the_provider(compacting: bool) -> None:
+    client = _RecordingClient(tokenizer=_LenTokenizer())
+    strategy = _AdmissionStrategy(max_context_tokens=1_000, last_included_tokens=1) if compacting else None
+
+    await client.get_response(
+        [Message("user", ["hi"])],
+        options={},
+        compaction_strategy=strategy,
+        client_kwargs={EXHAUSTION_TAIL_KWARG: True, "sentinel": "kept"},
+    )
+
+    sent = client.inner_calls[-1]["kwargs"]
+    assert EXHAUSTION_TAIL_KWARG not in sent
+    assert sent["sentinel"] == "kept"
 
 
 @pytest.mark.asyncio

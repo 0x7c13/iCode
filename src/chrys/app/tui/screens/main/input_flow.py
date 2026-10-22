@@ -298,10 +298,7 @@ class InputFlowController:
             await self.flush_deferred_agent_messages()
             self._view.update_toc()
         else:
-            try:
-                # The backend drops the answer the failed pass showed and asks for it again.
-                await self._view.remove_answer_before_failure()
-            finally:
-                await self.flush_deferred_agent_messages()
+            # The backend withdraws the answer it drops to ask for it again (InvocationAnswerWithdrawn).
+            await self.flush_deferred_agent_messages()
 
         self._debug("UserRetry", text[:60] if text else "")

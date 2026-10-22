@@ -205,7 +205,7 @@ class _Executor:
         return contents, created_at
 
     @asynccontextmanager
-    async def retry_request(self, additional_text: str = "", created_at: Any = None):
+    async def retry_request(self, additional_text: str = "", created_at: Any = None, *, withdraw: Any = None):
         yield ([additional_text] if additional_text else []), created_at
 
     def record_outcome(self, outcome):

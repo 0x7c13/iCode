@@ -17,11 +17,13 @@ from typing import Protocol
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     InvocationAborted,
+    InvocationAnswerWithdrawn,
     InvocationCascadeAborted,
     InvocationPaused,
     InvocationResumed,
 )
 from chrys.foundation.models.invocations import InvocationOrigin
+from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.invoker.contracts import (
     AbortCause,
     Aborted,
@@ -60,7 +62,10 @@ class SubAgentPolicy(Protocol):
         """
         ...
 
-    def prepare_retry(self) -> None: ...
+    def prepare_retry(self) -> tuple[str, ...]:
+        """Prepare the next pass's input; return the segment ids of the answer it dropped to ask again."""
+        ...
+
     async def abort_result(self, *, by_user: bool) -> str: ...
     @property
     def last_error(self) -> str: ...
@@ -278,6 +283,16 @@ class SubAgentToolShell:
             )
         )
 
+    async def publish_withdrawn(self, segment_ids: tuple[str, ...]) -> None:
+        """The retry dropped the answer these segments showed; delivered whole, as the drop is done."""
+        event = InvocationAnswerWithdrawn(
+            origin=self.origin,
+            agent_name=self._agent_name,
+            session_id=self.origin.session_id or None,
+            segment_ids=segment_ids,
+        )
+        await finish_close(asyncio.create_task(self._emitter.publish(event)))
+
     async def _end_after_failure(self, *, by_user: bool) -> str:
         """End the failed invocation as aborted: on the user's Abort, or at once where no card could pause.
 
@@ -322,9 +337,13 @@ class SubAgentToolShell:
                 decision = await self.await_decision()
                 self.policy.check_terminal_race()
                 if decision == "retry":
-                    self.policy.prepare_retry()
+                    # Announced before the answer is dropped: a view carries the
+                    # transcript on from the resume, then withdraws that answer.
                     if self._bus is not None:
                         await self.publish_resumed()
+                    withdrawn = self.policy.prepare_retry()
+                    if withdrawn and self._bus is not None:
+                        await self.publish_withdrawn(withdrawn)
                     self.policy.check_terminal_race()
                     continue
                 if decision == "abort":

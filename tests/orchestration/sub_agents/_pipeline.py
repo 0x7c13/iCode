@@ -9,7 +9,6 @@ responses and failures and drives the full chain: UserMessage → engine → par
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -53,7 +52,7 @@ from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import DEFAULT_MAX_OUTPUT_TOKENS, ModelProfile
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.scripted_clients import ErrorMockChatClient
-from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, await_run_task_chain
+from tests.support.waiting import ENGINE_TEST_WAIT_TIMEOUT, await_run_task_chain, wait_for
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -108,17 +107,17 @@ class _SubAgentPipelineCtx:
 
     # Ceilings sized for contended CI workers (a loaded Windows runner has
     # pushed the mock-client pipeline past 20s) while staying under the
-    # global 60s per-test timeout, so the diagnostic TimeoutError below
-    # still fires with the observed-event list instead of a thread kill.
+    # global 60s per-test timeout, so the failure below still names the
+    # observed events instead of a thread kill.
     async def wait_for_event(self, event_type: type, *, timeout: float = 45.0, min_count: int = 1) -> list[Event]:
-        deadline = asyncio.get_running_loop().time() + timeout
-        while asyncio.get_running_loop().time() < deadline:
-            matches = [e for e in self.events if isinstance(e, event_type)]
-            if len(matches) >= min_count:
-                return matches
-            await asyncio.sleep(0.02)
-        found = [type(e).__name__ for e in self.events]
-        raise TimeoutError(f"Timed out waiting for {event_type.__name__} (saw {found})")
+        def matches() -> list[Event]:
+            return [e for e in self.events if isinstance(e, event_type)]
+
+        try:
+            await wait_for(lambda: len(matches()) >= min_count, timeout=timeout, description=event_type.__name__)
+        except AssertionError as exc:
+            raise AssertionError(f"{exc} (saw {[type(e).__name__ for e in self.events]})") from None
+        return matches()
 
     async def wait_for_idle(self, *, timeout: float = ENGINE_TEST_WAIT_TIMEOUT) -> None:
         """Wait for the complete parent run-task chain, including its save."""

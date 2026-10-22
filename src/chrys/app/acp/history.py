@@ -25,7 +25,7 @@ from chrys.foundation.hosted_tools import (
     HostedToolStatus,
     normalize_hosted_tool_status,
 )
-from chrys.foundation.models.history_markers import HistoryMarkerKind
+from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY, HistoryMarkerKind
 from chrys.foundation.models.turns import turn_slices
 from chrys.foundation.tool_result_metadata import tool_result_metadata_failure_state
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
@@ -71,7 +71,6 @@ _REPLAY_PAIRING_POLICY = PairingPolicy(
     empty_id=EmptyIdPolicy.POSITIONAL,
     malformed_id="treat_as_none",
 )
-_ANSWER_BOUNDARY_TYPES = _REPLAY_PAIRING_POLICY.call_types | _REPLAY_PAIRING_POLICY.result_types
 
 _TEXT_FALLBACK_LIMIT = 4_000
 
@@ -209,18 +208,19 @@ async def replay_session_history(
     *,
     prefer_recovery: bool = False,
     tool_kind_resolver: Callable[[str], str] | None = None,
-) -> tuple[str, ...]:
+) -> dict[str, tuple[str, ...]]:
     """Emit basic ACP replay updates for a restored session.
 
-    Returns the ``messageId``s of the answer messages history ends with: what
-    a bare retry drops from history, and so withdraws from the client.
+    Returns the ``messageId``s each persisted answer segment replayed as:
+    what a bare retry that drops the segment from history withdraws from
+    the client.
     """
     transcript = await state_store.load_session_transcript(session_id, prefer_recovery=prefer_recovery)
     if transcript is None:
-        return ()
+        return {}
     raw_messages = transcript.messages
     if not raw_messages:
-        return ()
+        return {}
     # Compaction tool summaries are the model's context, not the client's; as
     # in the TUI session transcript, neither a summary nor the messages it
     # replaced replay. Drop them before pairing so coordinates and replay ids
@@ -239,9 +239,7 @@ async def replay_session_history(
     call_start_updates: dict[tuple[int, int], Any] = {}
     started_calls: set[tuple[int, int]] = set()
     occurrence_index = 0
-    # As ``SessionHistoryManager.remove_trailing_answer`` reads history once
-    # the trailing markers are gone: a user message or a tool exchange ends it.
-    trailing_answer_ids: list[str] = []
+    answer_message_ids: dict[str, list[str]] = {}
 
     # Allocate every call before publishing anything. Results can then find
     # their exchange-scoped card without forcing the normal replay path to
@@ -305,7 +303,6 @@ async def replay_session_history(
         text = _message_text(message)
         turn_meta = _turn_meta(turn_for_message[message_index])
         if role == "user":
-            trailing_answer_ids.clear()
             # Skip crash-leftover synthetic ``continue`` nudges: streaming
             # one as a user message misrepresents the conversation to the
             # client.  Injections keep streaming as plain user messages —
@@ -325,17 +322,14 @@ async def replay_session_history(
         if role not in ("assistant", "tool"):
             continue
         indexed_contents = _indexed_contents(message)
-        in_exchange = role == "tool" or any(
-            content.get("type") in _ANSWER_BOUNDARY_TYPES for _index, content in indexed_contents
-        )
-        if in_exchange:
-            trailing_answer_ids.clear()
-        # Every content of one persisted message is one ACP message: ACP
-        # groups chunks by messageId, and the transcript separates them by
-        # paragraph, not by id. Readable reasoning replays in its place as
-        # thoughts, which start the answer text after them as a new message,
-        # as the live segments did; opaque reasoning replays nothing.
+        # The text of one persisted message is one ACP message per answer
+        # segment: ACP groups chunks by messageId, and the transcript
+        # separates them by paragraph, not by id. Readable reasoning replays
+        # in its place as thoughts, which start the answer text after them as
+        # a new message, as the live segments did; opaque reasoning replays
+        # nothing.
         answer_message_id: str | None = None
+        answer_segment: str | None = None
         emitted_text = False
         thought: tuple[str, str] | None = None
         for content_index, content in indexed_contents:
@@ -361,12 +355,13 @@ async def replay_session_history(
             if role == "assistant" and content_type == "text":
                 content_text = content.get("text", "")
                 if isinstance(content_text, str) and content_text:
+                    segment = _answer_segment(content)
+                    if answer_message_id is None or segment != answer_segment:
+                        answer_message_id, answer_segment, emitted_text = str(uuid.uuid4()), segment, False
+                        if segment is not None:
+                            answer_message_ids.setdefault(segment, []).append(answer_message_id)
                     if emitted_text:
                         content_text = f"\n\n{content_text}"
-                    if answer_message_id is None:
-                        answer_message_id = str(uuid.uuid4())
-                        if not in_exchange:
-                            trailing_answer_ids.append(answer_message_id)
                     update = acp_schema.AgentMessageChunk(
                         sessionUpdate="agent_message_chunk",
                         content=acp_schema.TextContentBlock(type="text", text=content_text),
@@ -475,7 +470,14 @@ async def replay_session_history(
         if meta:
             update.field_meta = with_chrys_metadata(update.field_meta, meta)
         await client.session_update(session_id=session_id, update=update)
-    return tuple(trailing_answer_ids)
+    return {segment: tuple(message_ids) for segment, message_ids in answer_message_ids.items()}
+
+
+def _answer_segment(content: dict[str, Any]) -> str | None:
+    """The live segment a persisted answer text was shown in, if history recorded it."""
+    properties = content.get("additional_properties")
+    segment = properties.get(ANSWER_SEGMENT_KEY) if isinstance(properties, dict) else None
+    return segment if isinstance(segment, str) and segment else None
 
 
 def _turn_labels(

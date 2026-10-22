@@ -20,6 +20,7 @@ from chrys.app.acp.server import ChrysAcpServer
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
+    InvocationAnswerWithdrawn,
     InvocationContentDelta,
     InvocationMessage,
     InvocationToolCallStart,
@@ -186,6 +187,12 @@ def _origin() -> InvocationOrigin:
     return InvocationOrigin("turn", "s1", _TURN_ID, None)
 
 
+def _withdrawn(*segment_ids: str, origin: InvocationOrigin | None = None) -> InvocationAnswerWithdrawn:
+    return InvocationAnswerWithdrawn(
+        origin=origin if origin is not None else _origin(), session_id="s1", segment_ids=segment_ids
+    )
+
+
 def _delta(segment_id: str, text: str, channel: ContentChannel = "answer") -> InvocationContentDelta:
     return InvocationContentDelta(origin=_origin(), session_id="s1", segment_id=segment_id, channel=channel, text=text)
 
@@ -206,8 +213,8 @@ class _OrderedClient(_FakeClient):
         self.sent.append(method)
 
 
-def _cut_off_turn_host() -> _FakeHost:
-    """A turn cancelled while it wrote its answer after a tool call; each retry writes the answer again."""
+def _cut_off_turn_host(*withdrawn: str) -> _FakeHost:
+    """A turn cancelled while it wrote its answer after a tool call; each retry withdraws *withdrawn* and writes again."""
     engine = _FakeEngine()
     engine.can_retry = True
     return _FakeHost(
@@ -223,6 +230,7 @@ def _cut_off_turn_host() -> _FakeHost:
         ],
         retry_events=[
             TurnStarted(turn_id=_TURN_ID, turn_number=3, is_retry=True, session_id="s1"),
+            *([_withdrawn(*withdrawn)] if withdrawn else []),
             _delta("again", "The result is 42."),
         ],
         outcome=Cancelled(),
@@ -246,7 +254,7 @@ def _retractions(client: _FakeClient) -> list[dict[str, Any]]:
 @pytest.mark.anyio
 async def test_a_bare_retry_withdraws_the_answer_its_turn_ended_with_before_writing_it_again() -> None:
     client = _OrderedClient()
-    server = _server(_cut_off_turn_host(), client=client)
+    server = _server(_cut_off_turn_host("answer"), client=client)
     await server.prompt([text_block("go")], session_id="s1")
     intro_id, answer_id = _answer_ids(client)
     assert _answer_ids(client) == {intro_id: "Let me look.", answer_id: "The result is"}
@@ -264,7 +272,8 @@ async def test_a_bare_retry_withdraws_the_answer_its_turn_ended_with_before_writ
 
 
 @pytest.mark.anyio
-async def test_a_retry_with_text_goes_on_from_the_answer_and_withdraws_nothing() -> None:
+async def test_a_retry_the_backend_withdraws_nothing_from_retracts_nothing() -> None:
+    """A retry with text goes on from the answer: the server retracts only what the backend withdraws."""
     client = _FakeClient()
     server = _server(_cut_off_turn_host(), client=client)
     await server.prompt([text_block("go")], session_id="s1")
@@ -275,9 +284,36 @@ async def test_a_retry_with_text_goes_on_from_the_answer_and_withdraws_nothing()
 
 
 @pytest.mark.anyio
+async def test_a_bare_retry_retracts_every_segment_the_backend_withdraws_in_one_notification() -> None:
+    """Text before a call that never reached history (a provider-hosted one) is withdrawn with the answer."""
+    client = _FakeClient()
+    server = _server(_cut_off_turn_host("intro", "answer"), client=client)
+    await server.prompt([text_block("go")], session_id="s1")
+    intro_id, answer_id = _answer_ids(client)
+
+    await server.ext_method("session/retry", {"sessionId": "s1"})
+
+    assert [params["messageIds"] for params in _retractions(client)] == [[intro_id, answer_id]]
+
+
+@pytest.mark.anyio
+async def test_a_withdrawal_inside_a_sub_agent_retracts_no_chat_message() -> None:
+    host = _cut_off_turn_host()
+    child = InvocationOrigin("sub_agent", "s1", "child-run", _origin())
+    host.retry_events.insert(1, _withdrawn("answer", origin=child))
+    client = _FakeClient()
+    server = _server(host, client=client)
+    await server.prompt([text_block("go")], session_id="s1")
+
+    await server.ext_method("session/retry", {"sessionId": "s1"})
+
+    assert _retractions(client) == []
+
+
+@pytest.mark.anyio
 async def test_each_bare_retry_withdraws_only_the_answer_the_turn_before_it_ended_with() -> None:
     """A refused retry keeps the answer to withdraw; a retry that ran replaces it with its own."""
-    host = _cut_off_turn_host()
+    host = _cut_off_turn_host("answer")
     client = _FakeClient()
     server = _server(host, client=client)
     await server.prompt([text_block("go")], session_id="s1")
@@ -289,6 +325,25 @@ async def test_each_bare_retry_withdraws_only_the_answer_the_turn_before_it_ende
     host.engine.can_retry = True
     await server.ext_method("session/retry", {"sessionId": "s1"})
     first_again_id = list(_answer_ids(client))[-1]
+    host.retry_events[1] = _withdrawn("again")
     await server.ext_method("session/retry", {"sessionId": "s1"})
 
     assert [params["messageIds"] for params in _retractions(client)] == [[answer_id], [first_again_id]]
+
+
+@pytest.mark.anyio
+async def test_a_new_turn_keeps_only_its_own_answer_messages_for_a_retry_to_withdraw() -> None:
+    """A bare retry drops only the last turn's answer: the session no longer tracks the turns before it."""
+    host = _cut_off_turn_host("answer")
+    manager = _FakeManager(host)
+    server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(_FakeClient())
+    await server.prompt([text_block("go")], session_id="s1")
+    host.events = [
+        TurnStarted(turn_id="5" * 32, turn_number=4, session_id="s1"),
+        _delta("next", "Next answer"),
+    ]
+
+    await server.prompt([text_block("next")], session_id="s1")
+
+    assert set(manager.get("s1").answer_message_ids) == {"next"}

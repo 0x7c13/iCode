@@ -21,7 +21,6 @@ from chrys.foundation.events.types import (
     AgentLoadProgress,
     AgentLoadStarted,
     AgentRuntimeUpdated,
-    AgentThinking,
     ApprovalModeUpdated,
     ApprovalRequest,
     ApprovalReviewed,
@@ -31,6 +30,7 @@ from chrys.foundation.events.types import (
     Error,
     Event,
     InvocationAborted,
+    InvocationAnswerWithdrawn,
     InvocationCascadeAborted,
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
@@ -136,9 +136,9 @@ _HEADLESS_RUN_EVENT_TYPES = (
     InvocationMessage,
     InvocationContentDelta,
     InvocationContentFinished,
+    InvocationAnswerWithdrawn,
     InvocationContentAbandoned,
     AgentRuntimeUpdated,
-    AgentThinking,
     TurnStarted,
     ApprovalModeUpdated,
     ApprovalRequest,
@@ -178,7 +178,13 @@ _HEADLESS_RUN_EVENT_TYPES = (
 )
 
 
-_InvocationProse = InvocationMessage | InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned
+_InvocationProse = (
+    InvocationMessage
+    | InvocationContentDelta
+    | InvocationContentFinished
+    | InvocationContentAbandoned
+    | InvocationAnswerWithdrawn
+)
 """Model output a sub-agent keeps private: only its own invocation's stream shows it."""
 
 

@@ -300,11 +300,6 @@ class TestLiveCoalescing:
             approval_default="skip",
             stream=False,
         )
-        # MockChatClient's legacy local-tool callback does not know hosted
-        # presentation ownership. Production clients suppress that callback
-        # when provider-hosted content is present, leaving the bridge as the
-        # single publisher; mirror that production behavior in this fixture.
-        context.mock_client._on_intermediate_text = None
 
         try:
             async with _PanelApp().run_test() as pilot:

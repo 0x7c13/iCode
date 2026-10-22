@@ -22,7 +22,9 @@ ACP replay contract
 New translated updates carry their monotonic ``attempt`` and a successful
 terminal audit names ``successful_attempt``. The detail view may fingerprint
 parent-result shapes only from that attempt; flattened legacy trails fail
-closed to the parent fallback. All attempts remain available for audit replay.
+closed to the parent fallback. All attempts remain available for audit replay,
+but for the answer a retry withdrew: a local ``answer_withdrawn`` entry drops
+the text its attempt showed after its last tool card, as the live views did.
 """
 
 from __future__ import annotations
@@ -52,6 +54,7 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     normalize_hosted_replay_content,
 )
 from chrys.service.session.sub_agent_logs import (
+    ACP_ANSWER_WITHDRAWN_UPDATE,
     MAX_SUB_AGENT_AUDIT_BYTES,
     SUB_AGENT_TRANSCRIPT_OCCURRENCE_IDENTITY,
     is_safe_sub_agent_log_basename,
@@ -456,6 +459,7 @@ def _acp_messages(raw_updates: Any, *, terminal_audit: bool = False) -> list[dic
     open_message_id = ""
     text_sequence = 0
     current_attempt: int | None = None
+    attempt_start = 0
 
     def flush_text() -> None:
         nonlocal open_text, text_sequence
@@ -475,6 +479,7 @@ def _acp_messages(raw_updates: Any, *, terminal_audit: bool = False) -> list[dic
         if type(item_attempt) is int and item_attempt > 0:
             if current_attempt is not None and item_attempt != current_attempt:
                 flush_text()
+                attempt_start = len(tokens)
                 current_tool_keys.clear()
                 open_message_id = ""
             current_attempt = item_attempt
@@ -482,6 +487,12 @@ def _acp_messages(raw_updates: Any, *, terminal_audit: bool = False) -> list[dic
         if not isinstance(update, dict):
             continue
         kind = update.get("sessionUpdate")
+        if kind == ACP_ANSWER_WITHDRAWN_UPDATE:
+            # A retry withdrew the answer its attempt showed after its last card, to ask for it again.
+            flush_text()
+            while len(tokens) > attempt_start and tokens[-1][0] == "text":
+                tokens.pop()
+            continue
         if kind == "agent_message_chunk":
             message_id = update.get("messageId")
             normalized_message_id = message_id if isinstance(message_id, str) else ""

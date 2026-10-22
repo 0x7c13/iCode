@@ -228,8 +228,9 @@ class _FakeSubAgentWidget:
         provider_item_type: str = "",
         provider_status: str = "",
         provider_call_id: str = "",
-    ) -> None:
+    ) -> bool:
         self.events.append(("start", call_id, tool_name, args, tool_kind))
+        return True
 
     def complete_inner_tool(
         self,

@@ -96,14 +96,6 @@ _LABEL_PREFIXES = ("here is the title:", "session title:", "final title:", "titl
 _QUOTE_CHARS = "\"'`“”‘’「」『』"  # noqa: RUF001
 _TRAILING_PUNCTUATION = "。.!！?？;；,，:："  # noqa: RUF001
 
-# Reasoning models may leak think-aloud markup into plain text output.
-# Drop closed blocks, then treat an unmatched closing tag as "everything
-# before it was reasoning" and an unmatched opening tag as "everything
-# after it is reasoning".
-_THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.IGNORECASE | re.DOTALL)
-_THINK_UNMATCHED_CLOSE_RE = re.compile(r"^.*</think(?:ing)?>", re.IGNORECASE | re.DOTALL)
-_THINK_UNMATCHED_OPEN_RE = re.compile(r"<think(?:ing)?>.*$", re.IGNORECASE | re.DOTALL)
-
 # Some models mirror the XML-like input delimiter despite being asked for
 # plain text.  A single complete title wrapper is safe to unwrap; multiple
 # or malformed prompt tags are ambiguous and must never reach persistence.
@@ -116,13 +108,6 @@ _PROMPT_DELIMITER_TAG_RE = re.compile(
     r"</?(?:existing-title|current-title|session-title|final-title|conversation-transcript)>",
     re.IGNORECASE,
 )
-
-
-def _strip_think_blocks(text: str) -> str:
-    """Remove ``<think>``/``<thinking>`` reasoning traces from model output."""
-    text = _THINK_BLOCK_RE.sub("", text)
-    text = _THINK_UNMATCHED_CLOSE_RE.sub("", text)
-    return _THINK_UNMATCHED_OPEN_RE.sub("", text)
 
 
 def _wrapper_covers_response(text: str, match: re.Match[str]) -> bool:
@@ -148,7 +133,7 @@ def _extract_wrapped_title(text: str) -> str:
 
 def _sanitize_title(text: str) -> str:
     """Normalize LLM output into a single-line plain-text title."""
-    title = _extract_wrapped_title(_strip_think_blocks(text))
+    title = _extract_wrapped_title(text)
     title = " ".join(title.split())
     title = title.strip(_QUOTE_CHARS).strip()
     for prefix in _LABEL_PREFIXES:

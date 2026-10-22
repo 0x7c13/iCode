@@ -46,6 +46,15 @@ reasoning content the refused request replayed is marked, refused or not, and
 never sent again.
 """
 
+ANSWER_SEGMENT_KEY: Final[str] = "_chrys_answer_segment_id"
+"""The content segment an answer text ``Content`` was shown in, in its ``additional_properties``.
+
+The invocation's content projector stamps each answer text it publishes with
+the ``segment_id`` its frontends key that text by, so the history that keeps
+the text can name, when a bare Continue drops it, exactly what to withdraw.
+Never sent on the wire.
+"""
+
 
 class HistoryMarkerKind:
     """String constants stored in ``Message.additional_properties``."""

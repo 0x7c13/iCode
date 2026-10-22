@@ -19,6 +19,7 @@ import chrys.orchestration.workflows.agent_node_build as agent_node_build_module
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.errors import ErrorKind, classify_error
 from chrys.foundation.events.types import (
+    InvocationAnswerWithdrawn,
     InvocationContentDelta,
     InvocationResumed,
     InvocationRetryAttempt,
@@ -218,6 +219,97 @@ async def test_a_resumed_attempt_keeps_the_narration_of_a_completed_tool_exchang
         resumed, _options = client.call_history[2]
         assert [message.text for message in resumed if message.role == "assistant"] == [narration]
     finally:
+        await host.shutdown()
+
+
+@pytest.mark.parametrize("held", [False, True], ids=["delivered", "timed-out-while-delivered"])
+async def test_a_resumed_attempt_withdraws_the_answer_it_asks_for_again_with_its_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: bool
+) -> None:
+    """Node details carry the transcript on from the resume, then drop what the attempt asks for again.
+
+    Both reach every view even when the attempt's deadline cancels its pass while they are delivered: a
+    later attempt carries on from what the views hold by then.
+    """
+    expire = _hold_node_deadline(monkeypatch)
+    project = make_project(tmp_path)
+    reference = project / "reference.txt"
+    reference.write_text("reference", encoding="utf-8")
+    client = MockChatClient(
+        responses=[
+            MockResponse(tool_calls=[("read_file", "call_1", {"path": str(reference)})]),
+            MockResponse(text="Looking. never", chunk_size=9, chunk_delay=3600),
+            MockResponse(text="reviewed"),
+        ]
+    )
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), client], builtin_tools=True)
+    write_workflow(project, "review", _workflow(max_attempts=3, timeout=_NODE_TIMEOUT))
+    host = make_host(tmp_path, project=project, stream=True, profiles=[make_profile(builtins=["filesystem.read"])])
+    holding, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    deadline_wait = agent_node_module.asyncio.wait
+
+    async def wait(
+        tasks: Iterable[asyncio.Future[Any]], *, timeout: float | None = None, return_when: str = asyncio.ALL_COMPLETED
+    ) -> tuple[set[asyncio.Future[Any]], set[asyncio.Future[Any]]]:
+        if holding.is_set() and timeout == agent_node_module.ABORT_GRACE:
+            # The aborted pass is still delivering its resume: the grace runs out, and the node cancels the pass.
+            cancelled.set()
+            return set(), set(tasks)
+        return await deadline_wait(tasks, timeout=timeout, return_when=return_when)
+
+    monkeypatch.setattr(agent_node_module.asyncio, "wait", wait)
+
+    async def slow_view(event: InvocationResumed) -> None:
+        if held and event.origin.attempt == 2:
+            holding.set()
+            await release.wait()
+
+    await host.event_bus.subscribe(InvocationResumed, slow_view)
+    try:
+        await confirm(host, "review")
+        async with capture_event_sequence(
+            host.event_bus,
+            WorkflowNodeStateChanged,
+            InvocationContentDelta,
+            InvocationResumed,
+            InvocationAnswerWithdrawn,
+        ) as events:
+            task = asyncio.create_task(run(host, "review", input_text="Review the reference."))
+            await wait_for(
+                lambda: bool(of_type(events, InvocationContentDelta)) or task.done(),
+                timeout=ENGINE_TURN_TIMEOUT,
+                description="the answer after the tool shown",
+            )
+            assert not task.done()
+            expire.set()
+            if held:
+                await wait_for(lambda: holding.is_set() or task.done(), description="the resume delivered")
+                assert holding.is_set()
+                expire.set()
+                await wait_for(lambda: cancelled.is_set() or task.done(), description="the pass cancelled")
+                assert cancelled.is_set()
+                release.set()
+            result, _stream = await task
+        assert result.outcome.value == "completed"
+        timed_out_resume = [("retrying", 2, "agent_timeout"), ("running", 3, ""), ("completed", 3, "")]
+        assert _node_states(events) == [
+            ("running", 1, ""),
+            ("retrying", 1, "agent_timeout"),
+            ("running", 2, ""),
+            *(timed_out_resume if held else [("completed", 2, "")]),
+        ]
+        assert [event.origin.attempt for event in of_type(events, InvocationResumed)] == ([2, 3] if held else [2])
+        (shown, *_after) = of_type(events, InvocationContentDelta)
+        assert (shown.origin.attempt, shown.text) == (1, "Looking. ")
+        withdrawn = of_type(events, InvocationAnswerWithdrawn)
+        assert [(event.origin.attempt, event.segment_ids) for event in withdrawn] == [(2, (shown.segment_id,))]
+        assert events.index(of_type(events, InvocationResumed)[0]) < events.index(withdrawn[0])
+        # The request goes on after the tool call, not from the answer it withdrew.
+        resumed, _options = client.call_history[-1]
+        assert [message.text for message in resumed if message.role == "assistant"] == [""]
+    finally:
+        release.set()
+        await host.event_bus.unsubscribe(InvocationResumed, slow_view)
         await host.shutdown()
 
 

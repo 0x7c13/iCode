@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.widgets import Static
 
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup, ToolGroupTitle, _tool_activity_reference
 from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
 from chrys.foundation.i18n.formatting import format_message
@@ -250,6 +252,54 @@ async def test_sub_agent_inner_activity_updates_parent_header_and_retains_latest
         await panel.add_tool_result("parent", "Explore", "done")
         assert _title(group).startswith("▶ Tools (1/1")
         assert indicator.display is False
+
+
+def _sub_agent_line(panel: ChatPanel) -> str:
+    return panel.query_one(SubAgentToolCall).query_one("#sa-activity-text", Static).render().plain
+
+
+@pytest.mark.asyncio
+async def test_a_sub_agent_retry_takes_the_answer_it_withdraws_out_of_the_latest_activity() -> None:
+    """The header and the card's line show the agent again; withdrawing an answer they no longer show changes nothing."""
+    async with _PanelApp(expanded=True).run_test(size=(100, 30)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_tool_start("parent", "Explore", KIND_SUB_AGENT, args={"task": "inspect"})
+        panel.link_sub_agent_invocation("parent", "invocation", "Explore Agent")
+        group = panel.query_one(ToolGroup)
+
+        panel.add_sub_agent_answer("Explore Agent", "invocation", "segment-1", "Done.")
+        # A later answer shows the same line: the line is that answer's now.
+        panel.add_sub_agent_answer("Explore Agent", "invocation", "segment-2", "Done.")
+        panel.sub_agent_answer_withdrawn("invocation", ("segment-1",))
+        assert (_title(group), _sub_agent_line(panel)) == ("Running Explore Agent: Done.", "Done.")
+
+        panel.sub_agent_answer_withdrawn("invocation", ("segment-2",))
+        assert (_title(group), _sub_agent_line(panel)) == ("Running Explore Agent", "Running Explore Agent")
+
+
+@pytest.mark.asyncio
+async def test_a_sub_agent_call_started_again_unchanged_is_no_new_activity() -> None:
+    """An ACP agent sends a running call's start again before its result: only new input makes it the activity again."""
+    async with _PanelApp(expanded=True).run_test(size=(100, 30)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_tool_start("parent", "Explore", KIND_SUB_AGENT, args={"task": "inspect"})
+        panel.link_sub_agent_invocation("parent", "invocation", "Explore Agent")
+        group = panel.query_one(ToolGroup)
+
+        async def start(path: str) -> None:
+            await panel.add_sub_agent_tool_start(
+                "Explore", "invocation", "read_file", {"path": path}, "inner", tool_kind=KIND_FILESYSTEM_READ
+            )
+
+        await start("a.txt")
+        panel.add_sub_agent_answer("Explore Agent", "invocation", "segment", "Now the next file.")
+        await start("a.txt")
+        assert (_title(group), _sub_agent_line(panel)) == (
+            "Running Explore Agent: Now the next file.",
+            "Now the next file.",
+        )
+        await start("b.txt")
+        assert (_title(group), _sub_agent_line(panel)) == ("Running Explore Agent: Reading b.txt", "Reading b.txt")
 
 
 @pytest.mark.asyncio

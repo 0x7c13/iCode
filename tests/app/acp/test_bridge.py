@@ -12,7 +12,6 @@ from acp.schema import SessionNotification
 from chrys.app.acp.bridge import AcpEventBridge, plan_update_for_todos, tool_call_title
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
-    AgentThinking,
     InvocationAborted,
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
@@ -100,14 +99,8 @@ def test_bridge_maps_answer_and_reasoning_deltas_to_message_and_thought_chunks()
     assert all(str(uuid.UUID(message_id)) == message_id for message_id in ids)
 
 
-def test_bridge_skips_empty_deltas_and_keeps_the_legacy_thinking_chunk() -> None:
-    bridge = AcpEventBridge()
-
-    assert bridge.updates_for_event(_delta("answer", "answer", "")) == []
-    thought = bridge.updates_for_event(AgentThinking(text="thinking"))[0]
-
-    assert thought.session_update == "agent_thought_chunk"
-    assert thought.content.text == "thinking"
+def test_bridge_skips_empty_deltas() -> None:
+    assert AcpEventBridge().updates_for_event(_delta("answer", "answer", "")) == []
 
 
 def test_a_retry_after_text_neither_retracts_nor_resends_it() -> None:

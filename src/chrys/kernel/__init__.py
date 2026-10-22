@@ -18,6 +18,7 @@ from ._loop_recorder import LoopRecorder, LoopRecorderSnapshot
 from .agent import Agent
 from .client import (
     CONVERSATION_HANDLE_KEYS,
+    EXHAUSTION_TAIL_KWARG,
     BaseChatClient,
     StorageModeResolution,
     SupportsAclose,
@@ -149,6 +150,7 @@ __all__ = [
     "CONVERSATION_HANDLE_KEYS",
     "EXCLUDED_KEY",
     "EXCLUDE_REASON_KEY",
+    "EXHAUSTION_TAIL_KWARG",
     "GROUP_ANNOTATION_KEY",
     "GROUP_ID_KEY",
     "GROUP_KIND_KEY",

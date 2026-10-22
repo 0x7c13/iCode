@@ -217,9 +217,9 @@ class AcpSubAgentPolicy:
         if self._shell.cascade_requested:
             raise asyncio.CancelledError
 
-    def prepare_retry(self) -> None:
-        # The backend ticket authorizes a fresh transport session.
-        pass
+    def prepare_retry(self) -> tuple[str, ...]:
+        # The backend ticket authorizes a new session from the prompt: the failed pass's final answer goes.
+        return self.backend.withdraw_final_answer()
 
     @property
     def last_error(self) -> str:

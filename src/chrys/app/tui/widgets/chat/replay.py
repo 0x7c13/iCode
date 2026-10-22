@@ -30,6 +30,7 @@ from chrys.foundation.hosted_tools import (
 from chrys.foundation.i18n import MessageDef, MessageRef
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block
 from chrys.foundation.models.history_markers import (
+    ANSWER_SEGMENT_KEY,
     AWAITING_SUB_AGENTS_MESSAGE,
     EXECUTION_FAILED_MESSAGE,
     EXECUTION_INTERRUPTED_MESSAGE,
@@ -1133,22 +1134,27 @@ class HistoryReplayRenderer:
         """Replay a single assistant message, preserving text/tool-call order."""
         replay_widgets = widgets if widgets is not None else []
         pending_text: list[tuple[str, str | None]] = []
+        # The segment the pending text was shown in: one bubble per segment, as a bare Continue may withdraw each.
+        pending_segment: str | None = None
         pending_tools: list[ReplayToolCall | dict[str, Any]] = []
         timestamp = "" if is_intermediate else format_message_created_at(created_at)
 
-        async def flush_text() -> None:
+        async def flush_text(*, settled: bool = False) -> None:
             text = join_text_blocks(reconstruct_text_blocks(pending_text)).strip()
+            segment_ids = (pending_segment,) if pending_segment else ()
             pending_text.clear()
             if text:
+                intermediate = is_intermediate or settled
                 replay_widgets.append(
                     AgentMessage(
                         text,
                         is_final=True,
                         profile_name=profile_name,
-                        is_intermediate=is_intermediate,
+                        is_intermediate=intermediate,
                         is_compressed=is_compressed,
-                        timestamp=timestamp,
-                        duration_ms=None if is_intermediate else duration_ms,
+                        timestamp="" if intermediate else timestamp,
+                        duration_ms=None if intermediate else duration_ms,
+                        segment_ids=segment_ids,
                     )
                 )
 
@@ -1267,13 +1273,22 @@ class HistoryReplayRenderer:
                 if pending_tools:
                     await flush_tools()
                 if isinstance(content, dict) and content.get("type") == "text":
-                    text = content.get("text", "")
-                    block_id = text_block_id(content.get("additional_properties"))
-                    # Even an empty fragment can separate different item IDs.
-                    # Suppress empty blocks only after reconstruction.
-                    pending_text.append((text or "", block_id))
+                    properties = content.get("additional_properties")
+                    text, block_id = content.get("text", "") or "", text_block_id(properties)
+                    segment = properties.get(ANSWER_SEGMENT_KEY) if isinstance(properties, dict) else None
+                    segment = segment if isinstance(segment, str) and segment else None
                 elif isinstance(content, str):
-                    pending_text.append((content, None))
+                    text, block_id, segment = content, None, None
+                else:
+                    continue
+                # Even an empty fragment can separate different item IDs, but only
+                # text shows a segment. Suppress empty blocks after reconstruction.
+                if text:
+                    if pending_text and segment != pending_segment:
+                        # A later segment settles this one as intermediate text, as it did live.
+                        await flush_text(settled=True)
+                    pending_segment = segment
+                pending_text.append((text, block_id))
 
         await flush_tools()
         await flush_text()

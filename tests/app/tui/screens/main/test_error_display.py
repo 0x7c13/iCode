@@ -48,7 +48,6 @@ class _Surfaces:
 
     status: list[MessageRef | str] = field(default_factory=list)
     chat_errors: list[str] = field(default_factory=list)
-    errors_ending_turns: list[bool] = field(default_factory=list)
     retry_banners: list[str] = field(default_factory=list)
     sub_agent_retries: list[str] = field(default_factory=list)
     sub_agent_pauses: list[tuple[Any, ...]] = field(default_factory=list)
@@ -82,9 +81,8 @@ def _handler(
             return False
 
     class _FakeChatPanel:
-        async def add_error(self, message: str, *, action_label: str | None = "Retry", ends_turn: bool = True) -> None:
+        async def add_error(self, message: str, *, action_label: str | None = "Retry") -> None:
             surfaces.chat_errors.append(message)
-            surfaces.errors_ending_turns.append(ends_turn)
 
         async def prepare_retry(self) -> None:
             return
@@ -132,15 +130,6 @@ def test_a_turn_error_says_what_went_wrong_then_the_raw_text() -> None:
         f"Error: {Localizer('en').render(_DNS)}"
     ]
     assert surfaces.debug == [("Error", f"[executor_error] {_RAW}")]
-
-
-@pytest.mark.parametrize("running", [True, False], ids=["turn", "no-turn"])
-def test_an_error_card_says_whether_it_ended_a_turn(running: bool) -> None:
-    handler, surfaces = _handler(LocaleController(Settings(locale="en")), running=running)
-
-    asyncio.run(handler.on_error(_turn_error()))
-
-    assert surfaces.errors_ending_turns == [running]
 
 
 def test_other_errors_with_a_display_still_show_it_alone() -> None:

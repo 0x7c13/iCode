@@ -13,7 +13,12 @@ from chrys.app.tui.widgets.chat.messages import AgentMessage, InterruptedMessage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from chrys.foundation.events.bus import EventBus
-from chrys.foundation.events.types import InvocationContentDelta, InvocationContentFinished, InvocationMessage
+from chrys.foundation.events.types import (
+    InvocationAnswerWithdrawn,
+    InvocationContentDelta,
+    InvocationContentFinished,
+    InvocationMessage,
+)
 from chrys.foundation.models.invocations import InvocationOrigin
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.tui_helpers import click_when_settled
@@ -82,7 +87,7 @@ def _delta(segment_id: str, text: str) -> InvocationContentDelta:
 async def test_a_bare_continue_removes_the_half_answer_it_asks_for_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A bare Continue drops the interrupted pass's answer from history and asks again; the transcript drops it too."""
+    """A bare Continue drops the interrupted pass's answer from history and asks again; the transcript drops what it names."""
     bus = EventBus()
     app = make_chrys_app(tmp_path, engine=SessionGenerationEngine(), event_bus=bus)
     async with app.run_test(size=(120, 36)) as pilot:
@@ -104,11 +109,14 @@ async def test_a_bare_continue_removes_the_half_answer_it_asks_for_again(
         await wait_for(lambda: _shown(panel) == ["Half an ans"], pilot=pilot, description="half answer shown")
 
         await click_when_settled(pilot, status.query_one(Button))
-        await wait_for(
-            lambda: main.agent_running_state and not panel.query(AgentMessage),
-            pilot=pilot,
-            description="continue admitted and the half answer removed",
+        await wait_for(lambda: main.agent_running_state, pilot=pilot, description="continue admitted")
+        assert _shown(panel) == ["Half an ans"]
+
+        await bus.publish(
+            InvocationAnswerWithdrawn(origin=_ORIGIN, session_id="s1", segment_ids=("seg-1",)),
+            raise_handler_errors=True,
         )
+        await wait_for(lambda: not panel.query(AgentMessage), pilot=pilot, description="the half answer removed")
         assert panel.query_one(InterruptedMessage) is status
 
         await bus.publish(_delta("seg-2", "The whole answer"), raise_handler_errors=True)

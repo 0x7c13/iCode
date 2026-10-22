@@ -9,6 +9,7 @@ ERROR_MESSAGE_IDS = frozenset(
         "error.display.with_hint",
         "error.hint.maybe_offline",
         "error.kind.auth_failed",
+        "error.kind.blank_response",
         "error.kind.connect_timeout",
         "error.kind.connection_failed",
         "error.kind.connection_lost",

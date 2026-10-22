@@ -216,10 +216,16 @@ class ToolGroupRegistry:
         provider_status: str = "",
         provider_call_id: str = "",
         canonical_status: str = "running",
+        running_in_place: bool = False,
     ) -> None:
-        """Add a running tool call, creating a group if needed."""
+        """Add a running tool call, creating a group if needed.
+
+        With *running_in_place*, the start of a call whose card still runs updates that card in its own group.
+        """
         group_generation = self._group_generation
         group = self._current_tool_group
+        if running_in_place and self.is_tool_running(call_id):
+            group = self._tool_groups_by_call_id[call_id]
         if group is None:
             group = await self._open_tool_group(group_generation)
             if group is None:
@@ -510,7 +516,7 @@ class ToolGroupRegistry:
         """Route an inner tool call start to the correct SubAgentToolCall widget."""
         widget = self._resolve_sub_agent(invocation_id)
         if widget is not None:
-            await widget.add_inner_tool_start(
+            changed = await widget.add_inner_tool_start(
                 call_id,
                 tool_name,
                 args,
@@ -523,7 +529,7 @@ class ToolGroupRegistry:
                 provider_call_id=provider_call_id,
             )
             group = self._sub_agent_owning_group(widget)
-            if group is not None:
+            if changed and group is not None:
                 group.update_nested_tool_activity(
                     widget.call_id,
                     call_id,
@@ -699,6 +705,14 @@ class ToolGroupRegistry:
         if widget is not None:
             widget.set_paused(reason, last_error, retry_attempts, diagnostic_path, last_error_display)
             self._set_sub_agent_action_required(widget, required=True)
+
+    def sub_agent_answer_withdrawn(self, invocation_id: str, segment_ids: tuple[str, ...]) -> None:
+        """Withdraw the answer a sub-agent's retry dropped from its transcript and its latest activity."""
+        widget = self._sub_agent_widgets.get(invocation_id)
+        if widget is not None and widget.withdraw_answer(segment_ids):
+            group = self._sub_agent_owning_group(widget)
+            if group is not None:
+                group.update_sub_agent_activity(widget.call_id, None)
 
     def sub_agent_resumed_after_pause(self, invocation_id: str) -> None:
         """Dispatch a resume-after-pause transition to the correct card."""

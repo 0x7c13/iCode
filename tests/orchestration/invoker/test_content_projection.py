@@ -15,6 +15,7 @@ from chrys.foundation.events.types import (
     InvocationContentDelta,
     InvocationContentFinished,
 )
+from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.kernel import ChatResponse, ChatResponseUpdate, Content, Message
 from chrys.orchestration.invoker.content_projection import ContentProjector
@@ -161,14 +162,21 @@ async def test_a_failed_pass_closes_its_segment_and_keeps_the_unlanded_answer() 
     assert projector.take_unlanded_answer() == ()
 
 
-async def test_a_landed_response_with_calls_or_a_retry_boundary_leaves_no_unlanded_answer() -> None:
+async def test_a_landed_response_keeps_the_text_it_showed_and_a_retry_boundary_keeps_none() -> None:
+    """The loop may not have recorded a response with calls yet: its shown narration stays kept until history holds it."""
     projector, events = await _projector()
+    updates = [_update(Content.from_text("Let me "), Content.from_text("look.")), _update(_call())]
 
-    await projector.on_update(_update(Content.from_text("landed"), _call()))
-    await projector.response_ready(
-        ChatResponse(messages=[Message("assistant", [Content.from_text("landed"), _call()])])
-    )
-    assert projector.take_unlanded_answer() == ()
+    for update in updates:
+        await projector.on_update(update)
+    # The landed response the kernel assembles from the streamed updates.
+    landed = ChatResponse.from_updates(updates)
+    await projector.response_ready(landed)
+    (narration,) = projector.take_unlanded_answer()
+    assert narration is landed.messages[0].contents[0]
+    assert narration.text == "Let me look."
+    (delta, *_) = [event for event in events if isinstance(event, InvocationContentDelta)]
+    assert narration.additional_properties[ANSWER_SEGMENT_KEY] == delta.segment_id
 
     await projector.on_update(_update(Content.from_text("abandoned")))
     await projector.on_retry_boundary()
@@ -251,12 +259,14 @@ async def test_a_final_answer_stays_unlanded_until_the_pass_hands_it_over(beside
     Calls the provider ran, or only reported, leave the answer final.
     """
     projector, _events = await _projector()
+    updates = [_update(*beside), _update(Content.from_text("final"))]
 
-    await projector.on_update(_update(Content.from_text("final")))
-    final = Content.from_text("final")
-    await projector.response_ready(ChatResponse(messages=[Message("assistant", [*beside, final])]))
+    for update in updates:
+        await projector.on_update(update)
+    landed = ChatResponse.from_updates(updates)
+    await projector.response_ready(landed)
 
-    assert projector.take_unlanded_answer() == (final,)
+    assert projector.take_unlanded_answer() == (landed.messages[0].contents[-1],)
     assert projector.take_unlanded_answer() == ()
 
 
@@ -271,11 +281,12 @@ async def test_a_response_cancelled_while_its_segment_closes_stays_unlanded() ->
         await release.wait()
 
     await bus.subscribe(InvocationContentFinished, slow_subscriber)
-    await projector.on_update(_update(Content.from_text("lan"), Content.from_text("ded")))
-    landed = Content.from_text("landed")
-    ready = asyncio.create_task(
-        projector.response_ready(ChatResponse(messages=[Message("assistant", [landed, _call()])]))
-    )
+    updates = [_update(Content.from_text("lan"), Content.from_text("ded")), _update(_call())]
+    for update in updates[:1]:
+        await projector.on_update(update)
+    response = ChatResponse.from_updates(updates)
+    landed = response.messages[0].contents[0]
+    ready = asyncio.create_task(projector.response_ready(response))
     await closing.wait()
     assert not ready.done()
     ready.cancel()
@@ -343,9 +354,11 @@ async def test_a_whole_segment_cut_off_by_a_retry_was_never_shown() -> None:
     assert projector.take_unlanded_answer() == ()
     assert _shape(events)[-1] == ("finished", "1", "answer", "failed")
 
-    await projector.on_update(_update(Content.from_text("again")))
-    final = Content.from_text("again")
-    await projector.response_ready(ChatResponse(messages=[Message("assistant", [final])]))
+    update = _update(Content.from_text("again"))
+    await projector.on_update(update)
+    landed = ChatResponse.from_updates([update])
+    (final,) = landed.messages[0].contents
+    await projector.response_ready(landed)
 
     assert projector.exposed is True
     # The next response is another wire call.
@@ -354,10 +367,11 @@ async def test_a_whole_segment_cut_off_by_a_retry_was_never_shown() -> None:
     assert projector.take_unlanded_answer() == (final,)
 
 
+@pytest.mark.parametrize("whole", [False, True], ids=["streaming_view", "whole_segment_view"])
 @pytest.mark.parametrize("cancelled", [False, True], ids=["landed", "cancelled_at_hosted_card"])
-async def test_a_whole_segment_blocking_response_keeps_the_segments_it_showed(cancelled: bool) -> None:
-    """An interrupt while a hosted card opens between two segments showed only the first."""
-    projector, _events = await _projector(shows_whole_segments=True)
+async def test_a_blocking_response_keeps_the_segments_it_showed(cancelled: bool, whole: bool) -> None:
+    """An interrupt while a hosted card opens between two segments showed only the first, stamped with its segment."""
+    projector, events = await _projector(shows_whole_segments=whole)
     held, release = asyncio.Event(), asyncio.Event()
     narration, trailing = Content.from_text("Searching."), Content.from_text("Found it.")
     hosted = Content.from_search_tool_call("ws1", tool_name="web_search")
@@ -380,3 +394,7 @@ async def test_a_whole_segment_blocking_response_keeps_the_segments_it_showed(ca
 
     # The landed contents, which history may hold already.
     assert projector.take_unlanded_answer() == ((narration,) if cancelled else (narration, trailing))
+    segments = [event.segment_id for event in events if isinstance(event, InvocationContentDelta)]
+    assert [content.additional_properties.get(ANSWER_SEGMENT_KEY) for content in (narration, trailing)] == (
+        [segments[0], None] if cancelled else segments
+    )

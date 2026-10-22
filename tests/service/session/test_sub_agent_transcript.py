@@ -14,7 +14,11 @@ from chrys.foundation.platform.files import atomic_write_owner_only_text
 from chrys.foundation.tool_result_metadata import TOOL_INTERRUPTED_METADATA_KEY, TOOL_RESULT_METADATA_KEY
 from chrys.foundation.trajectory.metadata import ANALYTICS_ITEM_ID_KEY
 from chrys.kernel import Content, Message
-from chrys.service.session.sub_agent_logs import SUB_AGENT_TRANSCRIPT_OCCURRENCE_IDENTITY, sessions_dir
+from chrys.service.session.sub_agent_logs import (
+    ACP_ANSWER_WITHDRAWN_UPDATE,
+    SUB_AGENT_TRANSCRIPT_OCCURRENCE_IDENTITY,
+    sessions_dir,
+)
 from chrys.service.session.sub_agent_transcript import load_persisted_sub_agent_transcript
 
 
@@ -623,6 +627,69 @@ async def test_load_acp_sub_agent_transcript_fingerprints_only_successful_attemp
     assert transcript.represents_result_text("New first.\n\nNew second.") is True
     assert transcript.represents_result_text("Old failed attempt.\n\nNew first.\n\nNew second.") is False
     assert transcript.covers_result_text("New first.\n\nNew second.") is True
+
+
+@pytest.mark.parametrize(
+    ("trail", "expected"),
+    [
+        # The attempt's work before its last card stays; the retried answer shows once, from the attempt that gave it.
+        ("retried", ["Before.", "acp:read:1", "acp:read:1", "Answer."]),
+        # A retry that failed before its first update still withdrew the answer.
+        ("retry_showed_nothing", ["Before.", "acp:read:1", "acp:read:1"]),
+        # An audit that records no withdrawal keeps every attempt's text.
+        ("no_withdrawal", ["Before.", "acp:read:1", "acp:read:1", "Answer.", "More.", "Answer."]),
+    ],
+)
+async def test_load_acp_transcript_drops_the_answer_a_retry_withdrew(
+    tmp_path: Path, trail: str, expected: list[str]
+) -> None:
+    path = sessions_dir(tmp_path) / "Remote_retry_answer.json"
+    path.parent.mkdir(parents=True)
+
+    def text(attempt: int, message_id: str, value: str) -> dict[str, object]:
+        return {
+            "attempt": attempt,
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "messageId": message_id,
+                "content": {"type": "text", "text": value},
+            },
+        }
+
+    updates: list[dict[str, object]] = [
+        text(1, "a1-before", "Before."),
+        {
+            "attempt": 1,
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "read",
+                "title": "Read",
+                "kind": "read",
+                "status": "completed",
+            },
+        },
+        text(1, "a1-answer", "Answer."),
+        text(1, "a1-more", "More."),
+    ]
+    if trail != "no_withdrawal":
+        updates.append({"attempt": 1, "seq": None, "update": {"sessionUpdate": ACP_ANSWER_WITHDRAWN_UPDATE}})
+    meta = {"record_type": "sub_agent_session", "runner": "acp", "status": "failed"}
+    acp_state: dict[str, object] = {"translated_updates": updates}
+    if trail != "retry_showed_nothing":
+        updates.append(text(2, "a2-answer", "Answer."))
+        meta["status"] = "completed"
+        acp_state["successful_attempt"] = 2
+    atomic_write_owner_only_text(path, json.dumps({"meta": meta, "acp_state": acp_state}))
+
+    transcript = await load_persisted_sub_agent_transcript(tmp_path, path.name)
+
+    assert transcript is not None
+    shown = [
+        content.get("text") or content.get("call_id")
+        for message in transcript.messages
+        for content in message["contents"]
+    ]
+    assert shown == expected
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])

@@ -15,6 +15,7 @@ under their parent as a tree.  Resume to load, Delete to remove.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from rich.cells import cell_len
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
     from chrys.service.state.session_listing import SessionListing
     from chrys.service.state.store import SessionMeta, StateStore
 
+logger = logging.getLogger(__name__)
 
 _SEARCH_DEBOUNCE_SECONDS = 0.15
 """Delay between the last search keystroke and the table re-render."""
@@ -86,6 +88,10 @@ _DELETE_SESSION_TITLE = msg("tui.sessions.title.delete", fallback="Delete Sessio
 _SESSION_OPEN_ELSEWHERE = msg(
     "tui.sessions.delete.open_elsewhere",
     fallback="Session is open in another {app_name} instance.",
+)
+_SESSION_NOT_DELETED = msg(
+    "tui.sessions.delete.failed",
+    fallback="The session could not be fully deleted. Close any program that may have its files open, then try again.",
 )
 _SESSIONS_TITLE = msg("tui.sessions.title", fallback="Chat Sessions")
 _WORKFLOW_SESSIONS_TITLE = msg("tui.sessions.title.workflow", fallback="Workflow Sessions")
@@ -759,6 +765,15 @@ class SessionsScreen(BaseDialog[str | WorkflowSessionPick | None]):
                     ),
                     severity="warning",
                     timeout=4,
+                    markup=False,
+                )
+                return
+            except OSError:
+                logger.exception("Failed to delete session %s", session_id)
+                self.notify(
+                    render_str(widget_localizer(self), _SESSION_NOT_DELETED.bind()),
+                    title=render_str(widget_localizer(self), _DELETE_SESSION_TITLE.bind()),
+                    severity="error",
                     markup=False,
                 )
                 return
