@@ -53,7 +53,14 @@ from chrys.service.profiles.models.schema import ModelProfile
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.tui_helpers import click_when_settled, resize_when_settled
-from tests.support.waiting import wait_for, wait_until, wait_until_quiet
+from tests.support.waiting import (
+    ENGINE_TEST_WAIT_TIMEOUT,
+    ENGINE_TURN_TIMEOUT,
+    wait_for,
+    wait_until,
+    wait_until_quiet,
+    with_wait_deadline,
+)
 
 from ._workflow_support import WorkflowEngine
 
@@ -522,7 +529,7 @@ async def test_a_real_interrupted_blocking_hook_disappears_through_the_managers_
             fire = asyncio.create_task(
                 manager.fire(HookEvent.BEFORE_TOOL_CALL, {"tool": {"name": "shell", "args": {}}})
             )
-            await _shows(pilot, "slow-guard", timeout=15.0)
+            await _shows(pilot, "slow-guard", timeout=ENGINE_TURN_TIMEOUT)
             await click_when_settled(pilot, main.query_one(InputBar).query_one("#send-btn"))
             await _shows(pilot, "Hooks", what="the cancelled run reported removed")
             assert manager.executions() == ()
@@ -1277,6 +1284,7 @@ async def test_the_box_hugs_its_label_in_the_corner(tmp_path: Path) -> None:
 # --- Real hooks behind an unwaited slot holder ----------------------------------
 
 
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
 async def test_a_blocking_hook_queued_behind_a_fire_and_forget_shows_itself_not_the_holder(tmp_path: Path) -> None:
     """Real hook subprocesses on the app's bus, ``max_parallel_hooks=1``: F holds the slot, B queues behind it."""
     import asyncio
@@ -1333,7 +1341,7 @@ async def test_a_blocking_hook_queued_behind_a_fire_and_forget_shows_itself_not_
             await manager.fire(HookEvent.AFTER_TOOL_CALL, payload)
             await wait_for(
                 lambda: any(v.hook_id == "observer-ff" and not v.queued for v in manager.executions()),
-                timeout=15.0,
+                timeout=ENGINE_TURN_TIMEOUT,
                 pilot=pilot,
                 description="the fire-and-forget run holding the slot",
             )
@@ -1343,7 +1351,7 @@ async def test_a_blocking_hook_queued_behind_a_fire_and_forget_shows_itself_not_
             fire_b = asyncio.create_task(manager.fire(HookEvent.BEFORE_TOOL_CALL, payload))
             await wait_for(
                 lambda: any(v.hook_id == "guard" and v.queued for v in manager.executions()),
-                timeout=15.0,
+                timeout=ENGINE_TURN_TIMEOUT,
                 pilot=pilot,
                 description="the blocking run queued behind it",
             )
@@ -1353,13 +1361,16 @@ async def test_a_blocking_hook_queued_behind_a_fire_and_forget_shows_itself_not_
             release_f.touch()
             await wait_for(
                 lambda: any(v.hook_id == "guard" and not v.queued for v in manager.executions()),
-                timeout=15.0,
+                timeout=ENGINE_TURN_TIMEOUT,
                 pilot=pilot,
                 description="the blocking run took the slot",
             )
             await _keeps(pilot, "guard", seconds=0.5)
             release_b.touch()
-            await asyncio.wait_for(fire_b, 15.0)
+            await wait_for(
+                fire_b.done, timeout=ENGINE_TURN_TIMEOUT, pilot=pilot, description="the blocking fire returned"
+            )
+            await fire_b
             await _shows(pilot, "Hooks")
         finally:
             release_f.touch()
