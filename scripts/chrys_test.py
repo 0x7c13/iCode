@@ -194,6 +194,10 @@ _LLM_CLIENT_SOURCES = (
 # those dependency edges explicit: subprocess fixtures, filesystem scanners,
 # and import-every-module checks are invisible to the AST import graph.
 REGULAR_RULES = (
+    TestRule(
+        "tests/app/tui/behaviors/test_startup_imports.py",
+        ("src/chrys/app/tui/**", "src/chrys/orchestration/**", "src/chrys/service/acp_client/**"),
+    ),
     TestRule("tests/service/approval/test_formal_core.py", ("src/chrys/service/approval/principles.json",)),
     TestRule("tests/app/tui/screens/test_approval_review_reason.py", ("src/chrys/service/approval/principles.json",)),
     TestRule("tests/foundation/test_documentation.py", ("pyproject.toml", "docs/index.yaml")),

@@ -16,13 +16,13 @@ from textual.message import Message
 
 from chrys import __version__
 from chrys.app.tui.terminal._pty_backend import IS_WINDOWS
-from chrys.app.tui.terminal.pty_process import PtyProcess, spawn_pty_process
 from chrys.app.tui.terminal.shell_integration import ShellLaunch, prepare_shell_launch
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.platform.runtime_paths import reorder_path_demoting_runtime
 
 if TYPE_CHECKING:
+    from chrys.app.tui.terminal.pty_process import PtyProcess
     from chrys.app.tui.terminal.widget import Terminal
 
 _CLOSE_TASK_TIMEOUT: Final = 2.0
@@ -219,6 +219,8 @@ class Shell:
             self._mark_finished(announce=True)
 
     async def _run(self) -> None:
+        from chrys.app.tui.terminal.pty_process import spawn_pty_process
+
         if self._finished:
             return
         env = _shell_environment()

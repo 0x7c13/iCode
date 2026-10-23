@@ -117,6 +117,8 @@ cd <project-directory>
 icode
 ```
 
+在终端中启动时，iCode 会先显示 `Starting iCode...`，然后显示加载界面，准备好后进入主界面；智能体准备就绪前，主界面会继续显示加载状态。查看帮助、重定向标准错误输出或使用浏览器会话时，不显示这条启动提示。
+
 将 `<project-directory>` 替换为项目目录的实际路径。启动后如需切换目录，请参阅[工作目录](../guides/daily-use/workspaces.md)。
 
 ## 3. 配置模型

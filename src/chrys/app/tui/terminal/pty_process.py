@@ -24,9 +24,10 @@ from typing import Final, Protocol
 
 from chrys.app.tui.terminal._pty_backend import (
     IS_WINDOWS,
-    WINPTY_ERRORS,
-    WINPTY_FACTORY,
+    WinPTYFactory,
     WinPTYProtocol,
+    _load_winpty,
+    _missing_winpty,
     kill_posix_process,
     open_pty,
     prepare_child_pty,
@@ -41,6 +42,13 @@ from chrys.foundation.platform.pty_output import PtyOutputProtocol
 _BURST_GAP: Final = 1 / 100
 _BURST_WINDOW: Final = 1 / 60
 _READ_SIZE: Final = 64 * 1024
+
+
+WINPTY_FACTORY: WinPTYFactory = _missing_winpty
+WINPTY_ERRORS: tuple[type[BaseException], ...] = ()
+if IS_WINDOWS:
+    WINPTY_FACTORY, WINPTY_ERRORS = _load_winpty()
+
 
 _CONPTY_ERRORS: Final = (OSError, RuntimeError, *WINPTY_ERRORS)
 

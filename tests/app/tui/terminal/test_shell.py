@@ -133,7 +133,7 @@ class Spawner:
 @pytest.fixture
 def spawner(monkeypatch: pytest.MonkeyPatch) -> Spawner:
     spawner = Spawner()
-    monkeypatch.setattr(shell_module, "spawn_pty_process", spawner.spawn)
+    monkeypatch.setattr("chrys.app.tui.terminal.pty_process.spawn_pty_process", spawner.spawn)
     return spawner
 
 

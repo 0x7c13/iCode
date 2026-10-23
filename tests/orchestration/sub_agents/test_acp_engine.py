@@ -13,7 +13,6 @@ from typing import Any
 import pytest
 
 import chrys.orchestration.engine.build.builder as builder_module
-import chrys.orchestration.sub_agents.tools as tools_module
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
@@ -114,7 +113,7 @@ async def _start_acp_engine(
             kwargs.setdefault("backoff_schedule", (0, 0, 0, 0, 0))
             super().__init__(*args, **kwargs)
 
-    monkeypatch.setattr(tools_module, "AcpSubAgentPolicy", FastAcpController)
+    monkeypatch.setattr("chrys.orchestration.sub_agents.acp_policy.AcpSubAgentPolicy", FastAcpController)
 
     model_registry = ModelProfileRegistry()
     model_registry.register(

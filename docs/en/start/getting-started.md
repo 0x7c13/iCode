@@ -117,6 +117,8 @@ cd <project-directory>
 icode
 ```
 
+When launched in a terminal, iCode prints `Starting iCode...`, then displays a loading screen while preparing the main interface. The main screen keeps a loading indicator visible until the agent is ready. The startup line is omitted for help, when standard error is redirected, and in browser sessions.
+
 Replace `<project-directory>` with the actual path to your project. To switch directories after startup, see [Working directory](../guides/daily-use/workspaces.md).
 
 ## 3. Configure a model

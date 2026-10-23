@@ -48,7 +48,6 @@ from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.foundation.util.once_close import finish_close
 from chrys.orchestration.engine.execution import WorkflowExecution
-from chrys.orchestration.workflows.agent_node_build import AgentNodeResources
 from chrys.orchestration.workflows.hooks import WorkflowSessionHooks
 from chrys.orchestration.workflows.preview import (
     REJECT_NOT_CONFIRMED,
@@ -60,7 +59,6 @@ from chrys.orchestration.workflows.preview import (
     prepare_workflow_environment,
     worker_bytecode_cache_dir,
 )
-from chrys.orchestration.workflows.runner import WorkerCallbacks, WorkflowRunner, WorkflowRunResult
 from chrys.orchestration.workflows.session import (
     WorkflowSessionInUse,
     WorkflowSessionNotFound,
@@ -87,6 +85,7 @@ if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.orchestration.engine.run.turn_state import TurnRuntimeState
     from chrys.orchestration.engine.state.active_session import ActiveSession
+    from chrys.orchestration.workflows.runner import WorkflowRunner, WorkflowRunResult
     from chrys.orchestration.workflows.session import HookFactory
     from chrys.service.mcp.cache import MCPConnectionCache
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -561,6 +560,9 @@ class WorkflowCoordinator:
 
     async def _admit(self, event: WorkflowRunRequest, active: _ActiveRun) -> tuple[WorkflowRunner, WorkflowJournal]:
         """Everything between the reservation and the acceptance; raises :class:`_Rejection`."""
+        from chrys.orchestration.workflows.agent_node_build import AgentNodeResources
+        from chrys.orchestration.workflows.runner import WorkerCallbacks, WorkflowRunner
+
         execution = active.execution
         owner = WorkflowSessionOwner(
             bus=self._bus,
