@@ -1923,6 +1923,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         input_bar = self.query_one(InputBar)
         if not loading and input_bar.locked and not self._state.run.agent_running:
             input_bar.unlock_and_keep()
+        # Loading hides the trajectory key; nothing else refreshes the footer when it ends.
+        self._sync_main_bindings()
 
     def _set_has_messages(self, has: bool) -> None:
         if MainScreen._reactive_state_ready(self):
