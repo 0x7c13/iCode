@@ -464,7 +464,17 @@ def _jump_into_a_prepended_batch(
         if when == "registered" or before is None or not chosen():
             await real_mount_batch(entries, before=before)
             return
+        compositor = panel.screen._compositor
+        # Whether an earlier scroll left the screen's map invalid here depends
+        # on timing (a loaded runner): forced, so every run takes that path.
+        compositor._full_map_invalidated = True
         layout_hold.enter_context(panel.app.batch_update())
+        # A geometry read rebuilds an invalid map, and would place the held
+        # batch without a frame: built here, before the batch mounts, the map
+        # stays valid under the hold, so the batch has no geometry until the
+        # hold ends.
+        full_map = compositor.full_map
+        assert panel in full_map
         held.append(entries)
         await real_mount_batch(entries, before=before)
         if when == "mounted":

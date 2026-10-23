@@ -76,6 +76,7 @@ from chrys.foundation.events.types import (
     CompactionStarted,
     ContextCompressed,
     Error,
+    HookExecutionsChanged,
     ImageAttachmentCompressionFinished,
     ImageAttachmentCompressionStarted,
     InvocationAborted,
@@ -866,6 +867,11 @@ class BackendEventHandler:
             self._state.runtime.background_tasks = None
         s.main_usage_source_id = event.session_id or ""
         self._show_background_tasks()
+        # The previous session's hook runs ended with its manager; a snapshot
+        # this session sent before it became current shows now.
+        if self._state.runtime.hook_snapshots:
+            self._state.runtime.keep_hook_snapshot_of(s.main_usage_source_id)
+            self.refresh_hook_indicator()
         s.profile = event.display_name or event.agent_profile
         s.runtime_metadata = event.runtime_details
         self._state.runtime.details_confirmed = True
@@ -1687,6 +1693,32 @@ class BackendEventHandler:
         """Show the current session's last background command list, or none."""
         last = self._state.runtime.background_tasks
         self._ui().set_background_tasks(last.tasks if last is not None else ())
+
+    async def on_hook_executions_changed(self, event: HookExecutionsChanged) -> None:
+        # Kept per session: a session not current yet (its build, before its
+        # SessionReady) shows once it is; a closing one's never displaces the
+        # current one's. Stored before any await, so each session's stored
+        # snapshot is its latest published one: the manager publishes right
+        # after each change, and this handler must never await before storing.
+        self._state.runtime.hook_snapshots[event.session_id or ""] = event
+        if event.session_id == self.main_usage_source_id:
+            self.refresh_hook_indicator()
+
+    def refresh_hook_indicator(self) -> None:
+        """Queue one render of the last hook snapshot; snapshots arriving before it runs share it."""
+        runtime = self._state.runtime
+        if runtime.hook_render_pending:
+            return
+        runtime.hook_render_pending = True
+        # On the screen's own pump: the manager publishes from hook tasks.
+        if not self._view.call_later(self._show_hook_indicator):
+            runtime.hook_render_pending = False
+
+    def _show_hook_indicator(self) -> None:
+        """Hand the current session's last hook snapshot to the hook indicator."""
+        self._state.runtime.hook_render_pending = False
+        last = self._state.runtime.hook_snapshots.get(self.main_usage_source_id)
+        self._ui().set_hook_executions(last.executions if last is not None else ())
 
     async def on_todo_list_updated(self, event: TodoListUpdated) -> None:
         s = self

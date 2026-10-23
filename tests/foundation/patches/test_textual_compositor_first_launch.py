@@ -41,9 +41,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
-# Follow the production import ordering: ChrysApp imports Textual before main
-# reaches bootstrap_runtime(), which in turn calls apply_all().
-from chrys.app.tui.app import ChrysApp
+# Textual is imported before apply_all() runs, as in production, where ChrysApp
+# imports it before main reaches bootstrap_runtime(). The Textual modules that
+# hold the patched classes are imported below and Chrys holds none, so the
+# app's own import, the bulk of a cold start, would add no holder to repair.
 from chrys.foundation.patches import apply_all, textual_compositor_cjk
 from chrys.foundation.patches import textual_win_sleep
 import textual._compositor as compositor_module

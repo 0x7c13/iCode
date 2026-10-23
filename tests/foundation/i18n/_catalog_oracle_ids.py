@@ -15,6 +15,7 @@ from tests.foundation.i18n._workflow_catalog_oracle_ids import WORKFLOW_MESSAGE_
 # Adding or removing a msg() definition means editing this set in the SAME commit;
 # the oracle test pins both the id set and its size.
 _message_ids: set[str | tuple[str, str]] = {
+    "tui.hook_indicator.idle",
     "tui.theme_editor.builtin_source",
     "tui.theme_editor.choose_theme",
     "tui.theme_editor.switch_body",

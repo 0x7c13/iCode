@@ -33,6 +33,7 @@ from chrys.foundation.trajectory.event_types import ProfileKind
 from chrys.orchestration.engine.build import construction
 from chrys.orchestration.engine.build.construction import BuildAgentFn, StagedBuild
 from chrys.orchestration.engine.build.loaded import AgentManifest, CompletedBuild, ReplacedBuild
+from chrys.orchestration.engine.hook_reporting import wire_hook_reporting
 from chrys.orchestration.engine.state.machine import Trigger
 from chrys.orchestration.engine.trajectory import TrajectoryRecorder
 from chrys.orchestration.invoker.resources import PreparedAgent
@@ -300,11 +301,17 @@ class AgentLoader:
     async def build_hook_manager(
         self, *, project_root: str, project_hooks_enabled: bool, session_id: str | None = None
     ) -> HookManager | None:
-        return await SessionHookFactory(self._bus)(
+        resolved_session_id = session_id or self._session.session_id
+        manager = await SessionHookFactory(self._bus)(
             project_root=project_root,
             project_hooks_enabled=project_hooks_enabled,
-            session_id=session_id or self._session.session_id,
+            session_id=resolved_session_id,
         )
+        # Every main-session manager reports to the TUI; workflow managers are
+        # built by their own factory and stay unreported.
+        if manager is not None:
+            wire_hook_reporting(manager, self._bus, session_id=resolved_session_id or "")
+        return manager
 
     def start_outbox_recovery(self) -> None:
         """Start durable outbox recovery for the current hook manager if needed."""

@@ -114,7 +114,10 @@ async def test_main_view_status_callers_preserve_message_refs_for_live_retransla
                 mark_terminal_title_failed=lambda: setattr(self, "terminal_title_result", "✗"),
             )
 
-        def query_one(self, widget_type: type):
+        def query_one(self, widget_type: type | str):
+            # The footer row holds the Footer and the hook indicator; shell mode hides the row.
+            if widget_type == "#footer-row":
+                return self.footer
             if widget_type is StatusBar:
                 return self.status_bar
             if widget_type is ChatPanel:

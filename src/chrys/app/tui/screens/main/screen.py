@@ -99,6 +99,7 @@ from chrys.app.tui.widgets.chat.tool_call import ToolViewRequested, is_tool_copy
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
 from chrys.app.tui.widgets.chrome.commands import is_slash_command_candidate
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
+from chrys.app.tui.widgets.chrome.hook_indicator import HookIndicator
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
@@ -1067,7 +1068,16 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             has_messages=MainScreen.has_messages_state,
             shell_mode=MainScreen.shell_mode_state,
         )
-        yield ChrysFooter(locale_controller=self._locale_controller)
+        footer = ChrysFooter(locale_controller=self._locale_controller)
+        # The command palette slot (Ctrl+Q, quit) gives the right end to the
+        # hook indicator; Ctrl+Q keeps quitting through its hidden binding.
+        footer.show_command_palette = False
+        # A sibling, not a Footer child: the Footer recomposes on binding
+        # changes, and the indicator's spinner repaints ten times a second
+        # while a hook it shows runs.
+        with Horizontal(id="footer-row"):
+            yield footer
+            yield HookIndicator(locale_controller=self._locale_controller)
 
     async def _load_sub_agent_transcript(self, log_file: str) -> PersistedSubAgentTranscript | None:
         """Load a transcript relative to the currently displayed session."""
@@ -1081,12 +1091,13 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self.query_one(ChrysFooter).sync_bindings()
 
     def on_screen_resume(self, _event: ScreenResume) -> None:
-        """Recover deferred workflow and Footer updates after an overlay closes."""
+        """Recover deferred workflow, Footer and hook indicator updates after an overlay closes."""
         if self._workflow.workflow_mode:
             self._workflow.shown()
         self._sync_workflow_timer()
         self.query_one(InputBar).sync_deferred_button_geometry()
         self.sync_footer_bindings()
+        self.query_one(HookIndicator).screen_resumed()
         self.query_one(SuggestionList).resume_marquee()
         if self.theme_editor is not None:
             self.theme_editor.resume()
@@ -1774,6 +1785,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def action_runtime_details(self) -> None:
         """Open the active runtime details modal."""
         self._config_actions.open_runtime_details()
+
+    def on_hook_indicator_clicked(self, _event: HookIndicator.Clicked) -> None:
+        """Show the session's hooks: the runtime details' Hooks tab."""
+        from chrys.app.tui.screens.dialogs.runtime_details import RUNTIME_DETAILS_HOOKS_TAB
+
+        self._config_actions.open_runtime_details(initial_tab=RUNTIME_DETAILS_HOOKS_TAB)
 
     def _open_settings(self, initial_tab: str = GENERAL_TAB_ID) -> None:
         """Open the Settings dialog at *initial_tab*."""

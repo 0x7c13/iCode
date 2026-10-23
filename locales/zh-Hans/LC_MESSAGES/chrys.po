@@ -6280,6 +6280,12 @@ msgstr "语言：{language}（按空格切换）"
 msgid "tui.guides.title"
 msgstr "{app} 用户指南"
 
+#. English: Hooks
+#. chrys-meta={"fingerprint":"bc590033958e925397df73037927d0966b3d6b872ec389277b25224deed0ebd3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/hook_activity.py
+msgid "tui.hook_indicator.idle"
+msgstr "钩子"
+
 #. English: Arguments:
 #. chrys-meta={"fingerprint":"abee83246fc63d7f641b344313ab75e31d459c0f4c99231da217a066e73be558","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/renderers/hosted_generic.py

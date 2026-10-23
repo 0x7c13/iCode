@@ -169,6 +169,8 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file
 
 异步钩子（`async`）不会延迟触发它的事件或当前操作。当前轮或会话结束时，如果相应的异步钩子仍在运行，iCode 会等待它完成后再结束当前轮或会话。`user_interrupt` 触发的异步钩子不会被等待。会话结束时的等待上限可在[全局设置](../../reference/hooks.md#全局设置)中配置。需要在 iCode 退出后重试未完成的任务时，还应配置 `delivery: durable`。
 
+在对话中，右下角会显示正在运行的钩子；点击它可以查看 iCode 加载的钩子。
+
 ## 使用全局钩子
 
 前面的示例都放在当前工作目录的 `.chrys/hooks` 中，只对该工作目录生效。需要在所有工作目录使用同一个钩子时，可以改用全局配置：

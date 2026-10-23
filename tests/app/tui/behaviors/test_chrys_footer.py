@@ -289,7 +289,6 @@ async def test_chrys_footer_localizes_in_place_with_natural_per_locale_widths(
             "toggle_sidebar",
             "pick_theme",
             "settings",
-            "quit",
         }
         widths_before = {key.action: key.region.width for key in keys_before}
         english_descriptions = {key.action: key.description for key in keys_before}
@@ -354,7 +353,6 @@ async def test_chrys_footer_localizes_in_place_with_natural_per_locale_widths(
             "toggle_sidebar": "侧边栏",
             "pick_theme": "主题",
             "settings": "设置",
-            "quit": "退出",
         }
         # Natural per-locale geometry: each key re-measures to exactly fit its
         # zh-Hans text, so the shorter CJK labels shrink their keys.
@@ -470,7 +468,6 @@ async def test_chrys_footer_locale_change_after_compose_before_mount_is_reconcil
                     "侧边栏",
                     "主题",
                     "设置",
-                    "退出",
                 }
             finally:
                 release_mount.set()

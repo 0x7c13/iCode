@@ -14,6 +14,7 @@ from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoi
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.models.background_tasks import BackgroundTaskView
 from chrys.foundation.models.execution import ExecutionSnapshot
+from chrys.foundation.models.hook_executions import HookExecutionView
 from chrys.foundation.models.invocations import ContentChannel, ContentStatus, InvocationOrigin
 from chrys.foundation.models.todos import TodoItem
 from chrys.foundation.models.workflow_session import (
@@ -977,6 +978,13 @@ class BackgroundTasksChanged(Event):
     tasks: tuple[BackgroundTaskView, ...] = ()
     full: bool = False
     """Whether the session already runs as many background commands as it can."""
+
+
+@dataclass
+class HookExecutionsChanged(Event):
+    """The hook runs in flight changed (full set, not a diff; for the TUI only)."""
+
+    executions: tuple[HookExecutionView, ...] = ()
 
 
 @dataclass

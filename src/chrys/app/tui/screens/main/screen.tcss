@@ -19,3 +19,22 @@ TrajectoryDashboard > TrajectoryTextView.-overview {
 TrajectoryDashboard > SessionJsonPanel {
     border: none;
 }
+
+/* The footer and the hook indicator share the bottom row. */
+#footer-row {
+    dock: bottom;
+    height: 1;
+    width: 1fr;
+    background: $footer-background;
+}
+
+#footer-row > ChrysFooter {
+    dock: none;
+    width: 1fr;
+}
+
+/* Docked, so on a terminal narrower than the indicator it covers the
+   footer's last cell instead of being pushed past the screen's edge. */
+#footer-row > HookIndicator {
+    dock: right;
+}

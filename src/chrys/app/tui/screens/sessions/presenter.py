@@ -14,9 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from rich.cells import cell_len
-
-from chrys.app.tui.util.formatting import format_byte_size
+from chrys.app.tui.util.formatting import elide_middle, format_byte_size
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.session_surface import SessionSurface
@@ -161,35 +159,6 @@ def directory_display(meta: SessionMeta) -> str:
     """Trailing directory name of the session's primary cwd."""
     full_path = meta.primary_cwd or ""
     return full_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if full_path else ""
-
-
-def elide_middle(text: str, max_width: int) -> str:
-    """Cap *text* at *max_width* terminal cells, eliding the middle.
-
-    Head and tail survive (both ends of a directory name tend to carry the
-    distinguishing parts); widths are measured in cells so CJK names don't
-    overflow the cap.
-    """
-    if cell_len(text) <= max_width:
-        return text
-    budget = max_width - 1  # the ellipsis cell
-    tail_budget = budget // 2
-    head_budget = budget - tail_budget
-    head: list[str] = []
-    used = 0
-    for char in text:
-        used += cell_len(char)
-        if used > head_budget:
-            break
-        head.append(char)
-    tail: list[str] = []
-    used = 0
-    for char in reversed(text):
-        used += cell_len(char)
-        if used > tail_budget:
-            break
-        tail.append(char)
-    return f"{''.join(head)}…{''.join(reversed(tail))}"
 
 
 @dataclass(frozen=True)

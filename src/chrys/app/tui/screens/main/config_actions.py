@@ -322,9 +322,9 @@ class RuntimeConfigController:
                     return profile.name
         return self._state.runtime.profile
 
-    def open_runtime_details(self) -> None:
-        """Open the active runtime details modal."""
-        self._view.open_runtime_details(self._state.runtime.details)
+    def open_runtime_details(self, *, initial_tab: str | None = None) -> None:
+        """Open the active runtime details modal, on *initial_tab* when given."""
+        self._view.open_runtime_details(self._state.runtime.details, initial_tab=initial_tab)
 
     def open_settings(self, initial_tab: str) -> None:
         """Open the Settings dialog on *initial_tab*."""

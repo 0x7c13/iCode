@@ -48,6 +48,8 @@ _TOOLS = msg("tui.runtime_details.tools", fallback="Tools")
 _MCP = msg("tui.runtime_details.mcp", fallback="MCP")
 _SKILLS = msg("tui.runtime_details.skills", fallback="Skills")
 _HOOKS = msg("tui.runtime_details.hooks", fallback="Hooks")
+RUNTIME_DETAILS_HOOKS_TAB = "runtime-hooks"
+"""The Hooks tab's id, for opening the dialog on it."""
 _FILES = msg("tui.runtime_details.files", fallback="Files")
 _PROFILE_ID = msg("tui.runtime_details.label.profile_id", fallback="Profile ID")
 _NAME = msg("tui.runtime_details.label.name", fallback="Name")
@@ -184,15 +186,16 @@ class RuntimeDetailsDialog(BaseDialog[None]):
         localized_binding("q", "close", CLOSE_BINDING, show=False),
     ]
 
-    def __init__(self, details: AgentRuntimeDetails) -> None:
+    def __init__(self, details: AgentRuntimeDetails, *, initial_tab: str | None = None) -> None:
         self._details = details
+        self._initial_tab = initial_tab
         super().__init__()
 
     def compose(self) -> ComposeResult:
         localizer = widget_localizer(self)
         with VerticalGroup(id="runtime-details-container") as container:
             container.border_title = Text(render_str(localizer, _RUNTIME_DETAILS.bind()))
-            with TabbedContent(id="runtime-details-tabs"):
+            with TabbedContent(id="runtime-details-tabs", initial=self._initial_tab or ""):
                 with (
                     TabPane(render_str(localizer, _MODEL.bind()), id="runtime-model"),
                     ScrollableContainer(classes="runtime-detail-scroll"),
@@ -218,7 +221,7 @@ class RuntimeDetailsDialog(BaseDialog[None]):
                     for section in self._skill_sections():
                         yield section
                 with (
-                    TabPane(render_str(localizer, _HOOKS.bind()), id="runtime-hooks"),
+                    TabPane(render_str(localizer, _HOOKS.bind()), id=RUNTIME_DETAILS_HOOKS_TAB),
                     ScrollableContainer(classes="runtime-detail-scroll"),
                 ):
                     for section in self._hook_sections():
