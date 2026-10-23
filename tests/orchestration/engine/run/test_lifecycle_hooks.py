@@ -467,7 +467,11 @@ async def test_user_interrupt_hook_is_detached_from_turn_drain(tmp_path: Path) -
     release = asyncio.Event()
 
     async def _run_and_wait(
-        _hook: HookConfig, _payload: dict[str, Any], *, payload_text: str | None = None
+        _hook: HookConfig,
+        _payload: dict[str, Any],
+        *,
+        payload_text: str | None = None,
+        result: HookResult | None = None,
     ) -> HookResult:
         entered.set()
         await release.wait()

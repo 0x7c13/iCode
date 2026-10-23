@@ -48,7 +48,9 @@ async def test_replaced_managers_report_results_until_the_original_recorder_clos
     tasks: list[asyncio.Task[HookResult]] = []
     managers: list[HookManager] = []
 
-    async def held_result(hook: HookConfig, _payload: dict[str, Any], *, payload_text: str | None = None) -> HookResult:
+    async def held_result(
+        hook: HookConfig, _payload: dict[str, Any], *, payload_text: str | None = None, result: HookResult | None = None
+    ) -> HookResult:
         await release.wait()
         return HookResult(hook_id=hook.id, exit_code=exit_code)
 

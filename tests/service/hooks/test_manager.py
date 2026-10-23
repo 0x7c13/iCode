@@ -292,6 +292,33 @@ async def test_blocking_hook_timeout_with_on_error_block(hooks_dir: Path) -> Non
     assert "timeout" in decision.block_reason
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups and SIGSTOP only")
+@pytest.mark.asyncio
+async def test_a_block_by_a_stopped_hook_says_it_stopped_past_a_long_stderr(hooks_dir: Path, tmp_path: Path) -> None:
+    """The reason is cut at 200 characters of stderr, which the stopped note only ends."""
+    pid_file = tmp_path / "child.pid"
+    script = textwrap.dedent(
+        f"""
+        import subprocess, sys
+        sys.stderr.write("x" * 500)
+        sys.stderr.flush()
+        subprocess.Popen([
+            sys.executable,
+            "-c",
+            "import os, pathlib, signal, time; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
+            "os.kill(os.getpid(), signal.SIGSTOP); time.sleep(30)",
+        ])
+        """
+    )
+    hook = _hook(hook_id="stops", event=HookEvent.BEFORE_TOOL_CALL, script=script, timeout=10, on_error="block")
+    mgr = HookManager(file=_file(hook), hooks_dir=hooks_dir)
+
+    decision = await mgr.fire(HookEvent.BEFORE_TOOL_CALL, {})
+
+    assert decision.blocked is True
+    assert decision.block_reason.startswith("hook 'stops' failed (stopped): xxx")
+
+
 @pytest.mark.asyncio
 async def test_blocking_hook_timeout_with_on_error_warn(hooks_dir: Path) -> None:
     mgr = HookManager(
@@ -401,7 +428,11 @@ async def test_explicit_trajectory_context_applies_only_to_blocking_hooks(hooks_
     release_async = asyncio.Event()
 
     async def _run_and_wait(
-        hook: HookConfig, _payload: dict[str, object], *, payload_text: str | None = None
+        hook: HookConfig,
+        _payload: dict[str, object],
+        *,
+        payload_text: str | None = None,
+        result: HookResult | None = None,
     ) -> HookResult:
         if hook is asynchronous:
             await release_async.wait()
@@ -781,7 +812,11 @@ async def test_session_drain_preserves_background_result_while_log_stays_open(
     release = asyncio.Event()
 
     async def run_and_wait(
-        config: HookConfig, _payload: dict[str, Any], *, payload_text: str | None = None
+        config: HookConfig,
+        _payload: dict[str, Any],
+        *,
+        payload_text: str | None = None,
+        result: HookResult | None = None,
     ) -> HookResult:
         entered.set()
         await release.wait()
@@ -904,7 +939,11 @@ async def test_drain_session_fences_inflight_blocking_hook_dispatch(hooks_dir: P
     executed: list[str] = []
 
     async def _run_and_wait(
-        hook: HookConfig, _payload: dict[str, object], *, payload_text: str | None = None
+        hook: HookConfig,
+        _payload: dict[str, object],
+        *,
+        payload_text: str | None = None,
+        result: HookResult | None = None,
     ) -> HookResult:
         executed.append(hook.id)
         if hook is blocking_one:
@@ -953,7 +992,11 @@ async def test_drain_session_fences_blocking_dispatch_during_start_ack(hooks_dir
     executed: list[str] = []
 
     async def _run_and_wait(
-        config: HookConfig, _payload: dict[str, object], *, payload_text: str | None = None
+        config: HookConfig,
+        _payload: dict[str, object],
+        *,
+        payload_text: str | None = None,
+        result: HookResult | None = None,
     ) -> HookResult:
         executed.append(config.id)
         return HookResult(hook_id=config.id, exit_code=0)
@@ -1003,7 +1046,11 @@ async def test_drain_session_fences_durable_async_dispatch_during_start_ack(hook
     executed: list[str] = []
 
     async def _run_and_wait(
-        config: HookConfig, _payload: dict[str, object], *, payload_text: str | None = None
+        config: HookConfig,
+        _payload: dict[str, object],
+        *,
+        payload_text: str | None = None,
+        result: HookResult | None = None,
     ) -> HookResult:
         executed.append(config.id)
         return HookResult(hook_id=config.id, exit_code=0)
@@ -1080,7 +1127,11 @@ async def test_detached_scope_async_hook_is_reaped_only_after_completion(hooks_d
     release = asyncio.Event()
 
     async def _run_and_wait(
-        config: HookConfig, _payload: dict[str, object], *, payload_text: str | None = None
+        config: HookConfig,
+        _payload: dict[str, object],
+        *,
+        payload_text: str | None = None,
+        result: HookResult | None = None,
     ) -> HookResult:
         entered.set()
         await release.wait()

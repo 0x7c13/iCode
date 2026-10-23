@@ -648,6 +648,9 @@ def test_profile_switched_finishes_agent_load_after_final_event() -> None:
     panel = _FakePanel()
     input_bar = _FakeInputBar()
     status = _FakeStatusBar()
+    # The Hooks tab is told when the number of configured hooks changes.
+    hook_runs: list[None] = []
+    sidebar = SimpleNamespace(hooks_panel=SimpleNamespace(runs_changed=lambda: hook_runs.append(None)))
 
     def _query_one(cls):
         if cls.__name__ == "ChatPanel":
@@ -656,6 +659,8 @@ def test_profile_switched_finishes_agent_load_after_final_event() -> None:
             return input_bar
         if cls.__name__ == "StatusBar":
             return status
+        if cls.__name__ == "SidebarPanel":
+            return sidebar
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     state = main_screen_state_at("/repo/current")
@@ -694,6 +699,7 @@ def test_profile_switched_finishes_agent_load_after_final_event() -> None:
     assert status_clears == [None]
     assert finish_messages == ["Profile switched: QA Agent -> Code Agent"]
     assert [status_trail(trail) for trail in tool_trails] == ["1 hook"]
+    assert hook_runs == [None]
     assert welcome_updates == [("Code Agent", "/repo/current")]
     assert len(screen._gc_messages) == 1
     assert isinstance(screen._gc_messages[0], GcAbsorbRequested)
@@ -736,9 +742,15 @@ def test_profile_switched_syncs_model_cache_only_for_active_selection(
         def flash(self, _message: str, **_kwargs: object) -> None:
             return
 
+    # The Hooks tab is told when the number of configured hooks changes.
+    hook_runs: list[None] = []
+    sidebar = SimpleNamespace(hooks_panel=SimpleNamespace(runs_changed=lambda: hook_runs.append(None)))
+
     def query_one(cls: type):
         if cls.__name__ == "StatusBar":
             return _FakeStatusBar()
+        if cls.__name__ == "SidebarPanel":
+            return sidebar
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     services = MainScreenServices(bus=EventBus(), active_model_profile_id="old-model")
@@ -773,3 +785,4 @@ def test_profile_switched_syncs_model_cache_only_for_active_selection(
 
     assert services.active_model_profile_id == expected
     assert [status_trail(trail) for trail in tool_trails] == ["1 hook"]
+    assert hook_runs == [None]

@@ -76,7 +76,7 @@ async def test_a_timed_out_run_keeps_what_it_printed_before_the_timeout(runner: 
         """
     )
     result = await runner.run_and_wait(_hook(script, timeout=1.0), {})
-    assert result.timed_out is True
+    assert (result.timed_out, result.stopped) == (True, False)
     assert "stdout before the timeout" in result.stdout
     assert "stderr before the timeout" in result.stderr
 
@@ -100,7 +100,8 @@ async def test_a_run_whose_process_stopped_keeps_what_it_printed(runner: HookRun
         """
     )
     result = await runner.run_and_wait(_hook(script, timeout=10), {})
-    assert result.timed_out is True
+    # Named apart from a timeout, which it is ended as.
+    assert (result.timed_out, result.stopped) == (True, True)
     assert "printed before the stop" in result.stdout
     assert "warned before the stop" in result.stderr
 

@@ -335,23 +335,19 @@ async def test_the_details_are_not_written_to_session_files_trajectory_or_logs(
     detail = _log(engine).detail(record.run_id)
     assert detail is not None and detail.io is not None
     assert stdout_secret in detail.io.stdout, "kept in memory for the panel"
+    # Shutdown writes the last of the session and trajectory, and releases the
+    # session's active lock and trajectory writer lease, which on Windows are
+    # byte-range locks that refuse every other handle's read while held.
+    await engine.shutdown()
 
     leaks: list[str] = []
-    unreadable: list[Path] = []
     for root in (tmp_path, get_platform().config_dir):
         for path in root.rglob("*"):
             if not path.is_file() or path.suffix == ".py":
                 continue
-            try:
-                data = path.read_bytes()
-            except PermissionError:
-                # Windows refuses reads of a byte-range-locked file (the
-                # session's active lock); only lock files may be skipped.
-                unreadable.append(path)
-                continue
+            data = path.read_bytes()
             secrets = (stdout_secret, stderr_secret, result_secret)
             leaks.extend(f"{secret} in {path}" for secret in secrets if secret.encode() in data)
     assert leaks == []
-    assert all(path.suffix == ".lock" for path in unreadable), unreadable
     for secret in (stdout_secret, stderr_secret, result_secret):
         assert secret not in caplog.text

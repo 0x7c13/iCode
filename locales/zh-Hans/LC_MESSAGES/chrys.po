@@ -6292,11 +6292,11 @@ msgstr "钩子"
 msgid "tui.hook_run.applied.args"
 msgstr "将工具参数改为："
 
-#. English: Blocked the action: {reason}
-#. chrys-meta={"fingerprint":"869c0c47dfbff769b0747bd613dde9f3c6343c4c2b134ff33701c4dbe8768091","multiline":false,"placeholders":["reason"]}
+#. English: Blocked the action:
+#. chrys-meta={"fingerprint":"2cf87c65acf4bb5aef37e1913778060a63348c11288763c253eda0a13875ff92","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/hook_run.py
 msgid "tui.hook_run.applied.blocked"
-msgstr "阻止了此操作：{reason}"
+msgstr "阻止了此操作，原因："
 
 #. English: Added to the tool result:
 #. chrys-meta={"fingerprint":"21c92d105ef15620ffa4504e8f0b7423c5ee3ebe60d066ea8ed900626db30859","multiline":false,"placeholders":[]}
@@ -6315,6 +6315,12 @@ msgstr "无"
 #: src/chrys/app/tui/screens/dialogs/hook_run.py
 msgid "tui.hook_run.applied.reminder"
 msgstr "为模型添加了提醒："
+
+#. English: Arguments cut at 64 KB of {size}
+#. chrys-meta={"fingerprint":"0cafa06fa41ccdf2c41021edd0e75336bec1bf36b9b9e6932a47fc6904901760","multiline":false,"placeholders":["size"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.args_truncated"
+msgstr "参数共 {size}，只保留前 64 KB"
 
 #. English: Copied log path
 #. chrys-meta={"fingerprint":"87ede8461a4168c6439cb0814da6124fe28d8193222a81286dfe86a8836bccfb","multiline":false,"placeholders":[]}
@@ -6501,6 +6507,13 @@ msgstr "async 和 fire_and_forget 钩子不能改变操作"
 #: src/chrys/app/tui/screens/dialogs/hook_run.py
 msgid "tui.hook_run.not_applied.unsupported"
 msgstr "{event} 不支持此操作"
+
+#. English: {chars} characters from the middle are not shown; a copy includes
+#. them
+#. chrys-meta={"fingerprint":"f1deaf01c71a445b9a1e02513d7681d15eafb80829e02c123adfb8224de83be1","multiline":false,"placeholders":["chars"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.not_shown"
+msgstr "中间的 {chars} 个字符未显示；复制时会包含它们"
 
 #. English: Payload cut at 64 KB of {size}
 #. chrys-meta={"fingerprint":"95bc340815d859aa5908b17774f108a24218dd554b5853dc114b2c9ee0d2745e","multiline":false,"placeholders":["size"]}

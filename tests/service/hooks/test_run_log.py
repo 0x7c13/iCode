@@ -16,16 +16,21 @@ import textwrap
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from chrys.foundation.models.hook_runs import HookRunDetail, HookRunRecord
+from chrys.foundation.models.hook_runs import HookRunApplied, HookRunDetail, HookRunRecord
+from chrys.foundation.platform.output_capture import BoundedCapture
 from chrys.foundation.trajectory.context import trajectory_scope
 from chrys.foundation.trajectory.event_types import EventType
+from chrys.service.hooks import manager as manager_module
+from chrys.service.hooks import runner as runner_module
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
-from chrys.service.hooks.run_log import HookRunLog
-from chrys.service.hooks.runner import HookRunner
+from chrys.service.hooks.outbox import DONE, FAILED, Outbox
+from chrys.service.hooks.run_log import UNWRITABLE_JSON, HookRunLog
+from chrys.service.hooks.runner import HookResult, HookRunner
 from chrys.service.hooks.schema import (
     HookConfig,
     HookExecution,
@@ -51,6 +56,28 @@ def _result(decision: dict[str, object], *, exit_code: int = 0) -> str:
         sys.exit({exit_code})
         """
     )
+
+
+def _nested_override(depth: int) -> str:
+    """A hook overriding ``x`` with *depth* nested lists, deeper than a Python literal may nest."""
+    return textwrap.dedent(
+        f"""
+        import os
+        with open(os.environ["CHRYS_HOOK_RESULT"], "w") as f:
+            f.write('{{"action": "modify", "args_override": {{"x": ' + "[" * {depth} + "]" * {depth} + "}}}}")
+        """
+    )
+
+
+def _deep(depth: int) -> dict[str, object]:
+    """Objects nested *depth* deep, deeper than any stack lets JSON write or Python compare them."""
+    top: dict[str, object] = {}
+    node = top
+    for _ in range(depth):
+        child: dict[str, object] = {}
+        node["a"] = child
+        node = child
+    return top
 
 
 def _held(release: Path) -> str:
@@ -130,6 +157,20 @@ def hooks_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def fed(monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
+    """Every chunk the runner reads from a hook's stdout and stderr, as it reads them."""
+    chunks: list[bytes] = []
+
+    class _Seen(BoundedCapture):
+        def feed(self, chunk: bytes) -> None:
+            chunks.append(chunk)
+            super().feed(chunk)
+
+    monkeypatch.setattr(runner_module, "BoundedCapture", _Seen)
+    return chunks
+
+
+@pytest.fixture
 async def release(tmp_path: Path) -> AsyncIterator[Path]:
     path = tmp_path / "release"
     yield path
@@ -161,6 +202,14 @@ async def test_a_successful_run_with_no_decision_is_recorded_ended_with_no_effec
     assert (detail.applied.block_reason, detail.applied.args) == ("", "")
     assert logged.changes, "every write is followed by the change callback"
     assert logged.changes[-1] == logged.log.records()
+
+
+async def test_an_empty_result_object_is_kept_as_written(hooks_dir: Path) -> None:
+    logged = _logged(hooks_dir, _hook("nothing-to-say", HookEvent.BEFORE_TOOL_CALL, script=_result({})))
+    await logged.manager.fire(HookEvent.BEFORE_TOOL_CALL, _tool())
+    detail = logged.detail("nothing-to-say")
+    assert detail.io is not None
+    assert (detail.io.result_file, detail.io.decision) == ("ok", "{}")
 
 
 async def test_a_block_is_recorded_as_success_with_the_blocked_effect(hooks_dir: Path) -> None:
@@ -209,6 +258,134 @@ async def test_a_later_hook_returning_the_already_merged_arguments_did_not_modif
     await logged.manager.fire(HookEvent.BEFORE_TOOL_CALL, _tool(args={"path": "/a"}))
     assert logged.only("first").effect == "modified_args"
     assert logged.only("second").effect is None
+
+
+async def test_an_argument_turned_from_1_to_true_was_modified(hooks_dir: Path) -> None:
+    """Python finds ``{"n": 1}`` and ``{"n": True}`` equal; the tool gets ``true`` all the same."""
+    logged = _logged(
+        hooks_dir,
+        _hook("first", HookEvent.BEFORE_TOOL_CALL, script=_result({"action": "modify", "args_override": {"n": 1}})),
+        _hook("second", HookEvent.BEFORE_TOOL_CALL, script=_result({"action": "modify", "args_override": {"n": True}})),
+    )
+    result = await logged.manager.fire(HookEvent.BEFORE_TOOL_CALL, _tool(args={"n": 0}))
+    assert result.args_override is not None and result.args_override["n"] is True
+    assert logged.only("second").effect == "modified_args"
+    applied = logged.detail("second").applied
+    assert applied is not None
+    assert json.loads(applied.args) == {"n": True}
+
+
+async def test_arguments_nested_past_the_recursion_limit_still_end_every_run(hooks_dir: Path) -> None:
+    plain = {"action": "modify", "args_override": {"y": 1}}
+    logged = _logged(
+        hooks_dir,
+        _hook("deep", HookEvent.BEFORE_TOOL_CALL, script=_nested_override(3_000)),
+        _hook("plain", HookEvent.BEFORE_TOOL_CALL, script=_result(plain)),
+    )
+    result = await logged.manager.fire(HookEvent.BEFORE_TOOL_CALL, _tool(args={"a": 1}))
+    assert result.args_override is not None and result.args_override["y"] == 1
+    records = [(record.hook_id, record.state, record.effect) for record in logged.log.records()]
+    assert records == [("deep", "ended", "modified_args"), ("plain", "ended", "modified_args")]
+
+
+async def test_a_result_nested_deeper_than_json_writes_still_ends_every_run(hooks_dir: Path) -> None:
+    """The decoder takes objects nested deeper than the encoder writes: recording them must not fail the call."""
+    deep = _deep(100_000)
+    logged = _logged(hooks_dir, _hook("deep", HookEvent.BEFORE_TOOL_CALL), _hook("after", HookEvent.BEFORE_TOOL_CALL))
+
+    # Handed over as parsed, without a subprocess: how deep a decoder goes depends on the stack.
+    async def run_and_wait(
+        hook: HookConfig, _payload: dict[str, Any], *, payload_text: str | None = None, result: HookResult | None = None
+    ) -> HookResult:
+        if hook.id != "deep":
+            return HookResult(hook_id=hook.id, exit_code=0)
+        override = {"action": "modify", "args_override": {"x": deep}}
+        return HookResult(hook_id=hook.id, exit_code=0, decision=override, result_file="ok")
+
+    logged.manager._runner.run_and_wait = run_and_wait  # type: ignore[method-assign]
+    result = await logged.manager.fire(HookEvent.BEFORE_TOOL_CALL, _tool(args={"a": 1}))
+    assert result.args_override is not None and result.args_override["x"] is deep
+    records = [(record.hook_id, record.state, record.effect) for record in logged.log.records()]
+    assert records == [("deep", "ended", "modified_args"), ("after", "ended", None)]
+    detail = logged.detail("deep")
+    assert detail.io is not None and detail.applied is not None
+    assert (detail.io.decision, detail.applied.args) == (UNWRITABLE_JSON, UNWRITABLE_JSON)
+
+
+async def test_overrides_too_deep_to_compare_still_report_every_end(hooks_dir: Path) -> None:
+    first, second = _deep(100_000), _deep(100_000)
+    overrides = {"first": first, "second": second}
+    logged = _logged(hooks_dir, _hook("first", HookEvent.BEFORE_TOOL_CALL), _hook("second", HookEvent.BEFORE_TOOL_CALL))
+
+    async def run_and_wait(
+        hook: HookConfig, _payload: dict[str, Any], *, payload_text: str | None = None, result: HookResult | None = None
+    ) -> HookResult:
+        decision = {"action": "modify", "args_override": {"x": overrides[hook.id]}}
+        return HookResult(hook_id=hook.id, exit_code=0, decision=decision, result_file="ok")
+
+    logged.manager._runner.run_and_wait = run_and_wait  # type: ignore[method-assign]
+    result = await logged.manager.fire(HookEvent.BEFORE_TOOL_CALL, _tool(args={"a": 1}))
+    assert result.args_override is not None and result.args_override["x"] is second
+    assert [(record.hook_id, record.state) for record in logged.log.records()] == [
+        ("first", "ended"),
+        ("second", "ended"),
+    ]
+    # Both ends reported: the indicator and the list show nothing running.
+    assert logged.manager.executions() == ()
+    assert logged.changes[-1] == logged.log.records()
+
+
+@pytest.mark.parametrize("mode", ["blocking", "async"])
+async def test_only_a_string_names_an_action(hooks_dir: Path, mode: str) -> None:
+    """Any other value names none, though one nested too deep to write as text."""
+    logged = _logged(hooks_dir, _hook("odd", HookEvent.AFTER_TURN, mode=mode))
+
+    async def run_and_wait(
+        hook: HookConfig, _payload: dict[str, Any], *, payload_text: str | None = None, result: HookResult | None = None
+    ) -> HookResult:
+        return HookResult(hook_id=hook.id, exit_code=0, decision={"action": _deep(100_000)}, result_file="ok")
+
+    logged.manager._runner.run_and_wait = run_and_wait  # type: ignore[method-assign]
+    decision = await logged.manager.fire(HookEvent.AFTER_TURN, {"turn": 1})
+    await asyncio.wait_for(logged.manager.drain_turn(), ENGINE_TURN_TIMEOUT)
+    assert (decision.blocked, decision.args_override) == (False, None)
+    record = logged.only("odd")
+    assert (record.state, record.outcome, record.effect) == ("ended", HookOutcome.SUCCESS, None)
+    assert logged.detail("odd").applied == HookRunApplied()
+    assert logged.manager.executions() == ()
+
+
+async def test_a_result_that_cannot_be_taken_still_ends_and_reports_its_run(
+    hooks_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The error goes on to the caller, as it always did, but the run is not left running."""
+    logged = _logged(hooks_dir, _hook("odd", HookEvent.BEFORE_TOOL_CALL, script=_result({"action": "block"})))
+
+    # As a reason nested too deep to write as text raises, where the stack is too small to write it.
+    def unwritable(*_args: object, **_kwargs: object) -> None:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(manager_module, "_merge_blocking_result", unwritable)
+    sink = FakeSink()
+    with trajectory_scope(make_context(sink)), pytest.raises(RecursionError):
+        await logged.manager.fire(HookEvent.BEFORE_TOOL_CALL, _tool())
+    record = logged.only("odd")
+    assert (record.state, record.outcome) == ("ended", HookOutcome.SUCCESS)
+    assert logged.manager.executions() == ()
+    assert logged.changes[-1] == logged.log.records()
+    finished = [draft.payload["outcome"] for draft in sink.of_type(EventType.HOOK_OPERATION_FINISHED)]
+    assert finished == [HookOutcome.SUCCESS]
+
+
+async def test_a_deeply_nested_result_is_recorded_compact(hooks_dir: Path) -> None:
+    """Indented, 3,000 levels would take some 18 million characters: the depth on every line."""
+    logged = _logged(hooks_dir, _hook("deep", HookEvent.BEFORE_TOOL_CALL, script=_nested_override(3_000)))
+    await logged.manager.fire(HookEvent.BEFORE_TOOL_CALL, _tool(args={"a": 1}))
+    nested = "[" * 3_000 + "]" * 3_000
+    detail = logged.detail("deep")
+    assert detail.io is not None and detail.applied is not None
+    assert detail.io.decision == f'{{"action": "modify", "args_override": {{"x": {nested}}}}}'
+    assert detail.applied.args == f'{{"a": 1, "x": {nested}}}'
 
 
 async def test_an_added_reminder_is_recorded(hooks_dir: Path) -> None:
@@ -338,6 +515,41 @@ async def test_a_cancelled_running_run_is_recorded_cancelled_and_reported(hooks_
     assert logged.changes[-1] == logged.log.records()
 
 
+@pytest.mark.parametrize("mode", ["blocking", "async"])
+async def test_a_cancelled_run_keeps_what_it_printed(
+    hooks_dir: Path, release: Path, fed: list[bytes], mode: str
+) -> None:
+    """Opened to see why a hook stalled, its details show what it printed until then."""
+    script = "import sys\nprint('contacting server', flush=True)\nprint('slow', file=sys.stderr, flush=True)\n"
+    event = HookEvent.BEFORE_TOOL_CALL if mode == "blocking" else HookEvent.SESSION_END
+    logged = _logged(
+        hooks_dir, _hook("stalls", event, mode=mode, script=script + _held(release)), shutdown_grace_seconds=0
+    )
+
+    def printed() -> bool:
+        read = b"".join(fed)
+        return b"contacting server" in read and b"slow" in read
+
+    if mode == "blocking":
+        fire = asyncio.create_task(logged.manager.fire(event, _tool()))
+        await wait_for(lambda: printed() or fire.done(), timeout=ENGINE_TURN_TIMEOUT, description="output read")
+        assert not fire.done()
+        fire.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await fire
+    else:
+        await logged.manager.fire(event, {}, scope="session")
+        await wait_for(printed, timeout=ENGINE_TURN_TIMEOUT, description="output read")
+        await asyncio.wait_for(logged.manager.drain_session(close=False), ENGINE_TURN_TIMEOUT)
+    record = logged.only("stalls")
+    assert (record.state, record.outcome) == ("ended", HookOutcome.CANCELLED)
+    io = logged.detail("stalls").io
+    assert io is not None
+    assert "contacting server" in io.stdout
+    assert "slow" in io.stderr
+    await logged.manager.drain_session()
+
+
 @pytest.mark.parametrize("runs", [1, 2])
 async def test_runs_a_zero_grace_drain_cancels_before_their_first_step_are_recorded_cancelled(
     hooks_dir: Path, release: Path, runs: int
@@ -416,6 +628,26 @@ async def test_run_ids_are_the_trajectory_operation_ids_and_outcomes_match(hooks
             assert trajectory_outcome == record.outcome, record
     assert records["guard"].outcome == HookOutcome.SUCCESS
     assert records["guard"].effect == "blocked"
+
+
+async def test_an_outbox_job_whose_payload_is_no_object_fails_and_the_jobs_after_it_still_run(
+    hooks_dir: Path,
+) -> None:
+    """As unrecorded: a job edited by hand, or written by another version, is read back as it is."""
+    outbox = Outbox(hooks_dir / "outbox")
+    odd = outbox.write_pending(hook_id="durable", event="after_turn", payload={})
+    odd.payload = []  # type: ignore[assignment]
+    outbox._write(odd)
+    outbox.write_pending(hook_id="durable", event="after_turn", payload={"turn": 1})
+    hook = _hook("durable", HookEvent.AFTER_TURN, mode="async", delivery="durable")
+    logged = _logged(hooks_dir, hook, outbox_retry_age_seconds=0.0)
+    assert await logged.manager.recover_outbox() == 2
+    await asyncio.wait_for(logged.manager.drain_session(close=False), ENGINE_TURN_TIMEOUT)
+    assert [record.state for record in logged.log.records()] == ["ended", "ended"]
+    assert logged.manager.executions() == ()
+    assert len(list((hooks_dir / "outbox" / FAILED).glob("*.json"))) == 1
+    assert len(list((hooks_dir / "outbox" / DONE).glob("*.json"))) == 1
+    await logged.manager.drain_session()
 
 
 async def test_runs_are_recorded_without_a_trajectory(hooks_dir: Path) -> None:

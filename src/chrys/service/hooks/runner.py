@@ -43,8 +43,9 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal
+from typing import TYPE_CHECKING, Any, BinaryIO, Final
 
+from chrys.foundation.models.hook_runs import HookResultFileStatus
 from chrys.foundation.platform.output_capture import BoundedCapture, drain_process_pipes
 from chrys.foundation.platform.process import (
     SubprocessStoppedError,
@@ -69,8 +70,6 @@ HOOK_RESULT_FILE_MAX_BYTES = 1 * 1024 * 1024
 HOOK_OUTPUT_CAPTURE_LIMIT_BYTES = 256 * 1024
 """Bytes kept of a waited-for hook's stdout and of its stderr; decisions come from the result file."""
 
-ResultFileStatus = Literal["ok", "missing", "invalid"]
-
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
@@ -90,6 +89,8 @@ class HookResult:
     and for timeouts that hit the SIGKILL fallback.
     """
     timed_out: bool = False
+    stopped: bool = False
+    """The process entered job-control stopped state and was terminated; ``timed_out`` is set too."""
     decision: dict[str, Any] = field(default_factory=dict)
     """Parsed JSON from ``CHRYS_HOOK_RESULT``; empty dict if the file
     was absent / empty / malformed.
@@ -99,7 +100,7 @@ class HookResult:
     stdout_dropped: int = 0
     stderr_dropped: int = 0
     """Bytes cut from the middle of each stream past ``HOOK_OUTPUT_CAPTURE_LIMIT_BYTES``."""
-    result_file: ResultFileStatus = "missing"
+    result_file: HookResultFileStatus = "missing"
     """Whether the result file was read (``ok``), absent or empty, or ignored as invalid."""
     duration_ms: int = 0
 
@@ -164,7 +165,12 @@ class HookRunner:
         return self._hooks_dir
 
     async def run_and_wait(
-        self, hook: HookConfig, payload: dict[str, Any], *, payload_text: str | None = None
+        self,
+        hook: HookConfig,
+        payload: dict[str, Any],
+        *,
+        payload_text: str | None = None,
+        result: HookResult | None = None,
     ) -> HookResult:
         """Spawn *hook* with stdio pipes and await it (with timeout).
 
@@ -172,13 +178,16 @@ class HookRunner:
         only differs in *who* awaits — the manager does, after dispatch
         returns — so this entry point is shared. *payload_text*, when
         given, is written to the payload file as it is, in place of
-        serializing *payload*.
+        serializing *payload*. *result*, when given, is filled and returned
+        in place of a new one: a caller whose wait is cancelled keeps what
+        the hook printed until then.
         """
         start = datetime.now(UTC)
-        result = HookResult(hook_id=hook.id, exit_code=None)
+        if result is None:
+            result = HookResult(hook_id=hook.id, exit_code=None)
         invocation: HookInvocation | None = None
-        # Outside the subprocess block: a run that times out or is stopped
-        # keeps what it printed until then.
+        # Outside the subprocess block: a run that times out, is stopped or
+        # is cancelled keeps what it printed until then.
         stdout = BoundedCapture(HOOK_OUTPUT_CAPTURE_LIMIT_BYTES)
         stderr = BoundedCapture(HOOK_OUTPUT_CAPTURE_LIMIT_BYTES)
         try:
@@ -209,18 +218,21 @@ class HookRunner:
             )
             return result
         except SubprocessStoppedError:
-            result.timed_out = True
+            result.timed_out = result.stopped = True
             _take_output(result, stdout, stderr)
             note = "Hook process entered stopped state and was terminated."
             result.stderr = f"{result.stderr.rstrip()}\n{note}" if result.stderr.strip() else note
             logger.warning("Hook %r entered stopped state and was terminated", hook.id)
             return result
+        except asyncio.CancelledError:
+            _take_output(result, stdout, stderr)
+            raise
         except (FileNotFoundError, OSError, ValueError) as exc:
             result.exit_code = None
             result.stderr = str(exc)
         finally:
             if invocation is not None:
-                result.decision, result.result_file = _read_result_file_with_status(invocation.result_path)
+                result.decision, result.result_file = _read_result_file(invocation.result_path)
                 _cleanup_invocation_files(invocation)
             result.duration_ms = int((datetime.now(UTC) - start).total_seconds() * 1000)
         return result
@@ -458,13 +470,8 @@ class HookRunner:
 # ---------------------------------------------------------------------------
 
 
-def _read_result_file(path: Path) -> dict[str, Any]:
-    """Parse ``CHRYS_HOOK_RESULT``; return ``{}`` on absent/empty/invalid."""
-    return _read_result_file_with_status(path)[0]
-
-
-def _read_result_file_with_status(path: Path) -> tuple[dict[str, Any], ResultFileStatus]:
-    """Parse ``CHRYS_HOOK_RESULT``, and say whether it was read, absent or empty, or invalid."""
+def _read_result_file(path: Path) -> tuple[dict[str, Any], HookResultFileStatus]:
+    """Parse ``CHRYS_HOOK_RESULT`` (``{}`` when absent, empty or invalid), and say which it was."""
     try:
         with path.open("rb") as result_file:
             raw = result_file.read(HOOK_RESULT_FILE_MAX_BYTES + 1)

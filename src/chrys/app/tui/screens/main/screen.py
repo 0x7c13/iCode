@@ -50,7 +50,7 @@ from chrys.app.tui.screens.main.model_indicator import (
 from chrys.app.tui.screens.main.navigation import MainNavigationController
 from chrys.app.tui.screens.main.ports import StatusMessage
 from chrys.app.tui.screens.main.rollback_controller import RollbackController
-from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider
+from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider, enabled_hook_count
 from chrys.app.tui.screens.main.session_handlers import RestoreRequest, SessionCallbacks, SessionHandler
 from chrys.app.tui.screens.main.session_title import SessionTitleController
 from chrys.app.tui.screens.main.settings_coordinator import (
@@ -1797,10 +1797,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Show the sidebar's Hooks tab, and over it the run the indicator shows, if any.
 
         The tab opens the sidebar if it is closed, so closing the run's details
-        lands on the list, scrolled to that run's row and marking it. A workflow hides that tab: there, with no run shown,
-        the configured hooks show instead.
+        lands on the list, scrolled to that run's row and marking it. A workflow hides that tab, and the sidebar
+        stays closed while an agent loads or the theme editor holds it hidden: there, with no run shown, the
+        configured hooks show instead.
         """
         detail = self._hook_run_detail(event.run_id) if event.run_id else None
+        listed = False
         if not self._workflow.workflow_mode:
             sidebar = self.query_one(SidebarPanel)
             if not sidebar.is_visible:
@@ -1808,11 +1810,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             sidebar.focus_tab(SIDEBAR_HOOKS_TAB)
             if detail is not None:
                 sidebar.hooks_panel.select(event.run_id)
+            listed = sidebar.is_visible
         if detail is not None:
             from chrys.app.tui.screens.dialogs.hook_run import HookRunModal
 
             self.app.push_screen(HookRunModal(detail, latest=self._hook_run_detail))
-        elif self._workflow.workflow_mode:
+        elif not listed:
             from chrys.app.tui.screens.dialogs.runtime_details import RUNTIME_DETAILS_HOOKS_TAB
 
             self._config_actions.open_runtime_details(initial_tab=RUNTIME_DETAILS_HOOKS_TAB)
@@ -1830,8 +1833,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         return EngineReadModel(provider()).hook_run_detail(run_id) if provider is not None else None
 
     def _configured_hook_count(self) -> int:
-        details = self._state.runtime.details
-        return sum(hook.enabled for source in details.hook_sources for hook in source.hooks)
+        return enabled_hook_count(self._state.runtime.details)
 
     @on(HookRunList.Opened)
     def _open_hook_run(self, event: HookRunList.Opened) -> None:

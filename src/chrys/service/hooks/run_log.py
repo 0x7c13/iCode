@@ -11,6 +11,7 @@ process's memory only.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
@@ -33,8 +34,19 @@ HOOK_RUN_LOG_MAX_ENDED = 100
 HOOK_RUN_LOG_MAX_DETAIL_CHARS = 16 * 1024 * 1024
 """What the kept details may hold together; the oldest ended runs' details go first."""
 
-HOOK_RUN_PAYLOAD_MAX_CHARS = 64 * 1024
-"""Payload text kept per run (payloads are ASCII JSON, so characters are bytes)."""
+HOOK_RUN_TEXT_MAX_BYTES = 64 * 1024
+"""What a run keeps of its payload, of the tool arguments it changed and of why it blocked, in UTF-8 bytes.
+
+The block reason outlives the other details (``_without_details``), so the
+ended runs' reasons always fit the detail budget. Every other text a run keeps
+is bounded where it is made: the output by its capture, the result file and
+what iCode took from it by the result file's limit, its JSON by
+``indented_json``.
+"""
+
+_INDENT_SLACK_CHARS = 4096
+UNWRITABLE_JSON = "(nested too deeply to write as JSON)"
+"""What ``indented_json`` gives for a value nested deeper than the encoder writes."""
 
 
 @dataclass(slots=True)
@@ -43,10 +55,66 @@ class _Entry:
     detail: HookRunDetail
 
 
-def _io_size(io: HookRunIO | None) -> int:
-    if io is None:
-        return 0
-    return len(io.payload) + len(io.decision) + len(io.stdout) + len(io.stderr)
+def _detail_size(detail: HookRunDetail) -> int:
+    """Every text *detail* keeps, in characters: what the detail budget counts."""
+    size = 0
+    io = detail.io
+    if io is not None:
+        size += len(io.payload) + len(io.decision) + len(io.stdout) + len(io.stderr)
+    applied = detail.applied
+    if applied is not None:
+        size += len(applied.block_reason) + len(applied.args) + len(applied.reminder) + len(applied.extra_context)
+    return size
+
+
+def _without_details(detail: HookRunDetail) -> HookRunDetail:
+    """*detail* without what it read and wrote, and without the texts iCode took from it.
+
+    The block reason stays: a run that blocked an action still says why.
+    """
+    applied = detail.applied
+    if applied is not None:
+        applied = replace(applied, args="", args_size=0, reminder="", extra_context="")
+    return replace(detail, io=None, applied=applied)
+
+
+def indented_json(value: object) -> str:
+    """*value* as JSON, indented unless that would swell it past twice its compact size, then compact.
+
+    Indenting grows with the nesting depth on every line, so a small deeply
+    nested value would indent into a huge text. Never raises: parsed JSON can
+    nest deeper than the encoder writes, and reads ``UNWRITABLE_JSON`` then.
+    """
+    try:
+        compact = json.dumps(value, ensure_ascii=False, default=str)
+    except RecursionError:
+        return UNWRITABLE_JSON
+    limit = 2 * len(compact) + _INDENT_SLACK_CHARS
+    parts: list[str] = []
+    size = 0
+    try:
+        # The pure-Python encoder streams, so a swelling text is given up before it is built.
+        for part in json.JSONEncoder(ensure_ascii=False, default=str, indent=2).iterencode(value):
+            size += len(part)
+            if size > limit:
+                return compact
+            parts.append(part)
+    except RecursionError:
+        return compact
+    return "".join(parts)
+
+
+def _clip_text(text: str, limit: int = HOOK_RUN_TEXT_MAX_BYTES) -> tuple[str, int]:
+    """*text* cut to at most *limit* UTF-8 bytes, and its full size in them.
+
+    A cut drops the character it splits, and every lone surrogate of the text.
+    """
+    if text.isascii():
+        return text[:limit], len(text)
+    data = text.encode("utf-8", "surrogatepass")
+    if len(data) <= limit:
+        return text, len(data)
+    return data[:limit].decode("utf-8", "ignore"), len(data)
 
 
 class HookRunLog:
@@ -64,6 +132,7 @@ class HookRunLog:
         self._ended: list[str] = []
         """Ended run ids, oldest end first."""
         self._detail_chars = 0
+        """``_detail_size`` of every kept detail; only ``_set_detail`` and ``_trim_ended`` change it."""
         self._registered = 0
         """Runs registered so far: the next run's number is one more."""
         self._dropped = 0
@@ -135,9 +204,10 @@ class HookRunLog:
             argv = (*run.argv, *run.args)
         else:
             argv = (run.shell,)
+        payload, payload_size = _clip_text(payload_text)
         io = HookRunIO(
-            payload=payload_text[:HOOK_RUN_PAYLOAD_MAX_CHARS],
-            payload_size=len(payload_text.encode("utf-8")),
+            payload=payload,
+            payload_size=payload_size,
             result_file=None,
             decision="",
             stdout="",
@@ -162,8 +232,9 @@ class HookRunLog:
             io=io,
             applied=None,
         )
-        self._entries[run_id] = _Entry(record, detail)
-        self._detail_chars += _io_size(io)
+        entry = _Entry(record, detail)
+        self._entries[run_id] = entry
+        self._detail_chars += _detail_size(detail)
         self._trim_details()
 
     def mark_running(self, run_id: str) -> bool:
@@ -190,7 +261,10 @@ class HookRunLog:
         stderr_dropped: int = 0,
         log_path: str = "",
     ) -> bool:
-        """End a queued or running run; False when it is not open here."""
+        """End a queued or running run; False when it is not open here.
+
+        Changed arguments and a block reason past ``HOOK_RUN_TEXT_MAX_BYTES`` are cut, as the payload is.
+        """
         entry = self._entries.get(run_id)
         if entry is None or entry.record.state == "ended":
             return False
@@ -204,7 +278,7 @@ class HookRunLog:
         )
         io = entry.detail.io
         if io is not None:
-            new_io = replace(
+            io = replace(
                 io,
                 result_file=result_file,
                 decision=decision,
@@ -213,23 +287,22 @@ class HookRunLog:
                 stdout_dropped=stdout_dropped,
                 stderr_dropped=stderr_dropped,
             )
-            self._detail_chars += _io_size(new_io) - _io_size(io)
-            io = new_io
-        shared = bool(log_path) and any(
-            other.detail.log_path == log_path for key, other in self._entries.items() if key != run_id
-        )
-        if shared:
+        applied = applied if applied is not None else HookRunApplied()
+        if applied.args:
+            args, size = _clip_text(applied.args)
+            applied = replace(applied, args=args, args_size=size if args != applied.args else 0)
+        if applied.block_reason:
+            applied = replace(applied, block_reason=_clip_text(applied.block_reason)[0])
+        shared = False
+        if log_path:
             for key, other in self._entries.items():
-                if key != run_id and other.detail.log_path == log_path and not other.detail.shared_log:
-                    other.detail = replace(other.detail, shared_log=True)
+                if key != run_id and other.detail.log_path == log_path:
+                    shared = True
+                    if not other.detail.shared_log:
+                        self._set_detail(other, replace(other.detail, shared_log=True))
         entry.record = record
-        entry.detail = replace(
-            entry.detail,
-            record=record,
-            io=io,
-            applied=applied if applied is not None else HookRunApplied(),
-            log_path=log_path,
-            shared_log=shared,
+        self._set_detail(
+            entry, replace(entry.detail, record=record, io=io, applied=applied, log_path=log_path, shared_log=shared)
         )
         self._ended.append(run_id)
         self._trim_ended()
@@ -238,23 +311,24 @@ class HookRunLog:
 
     def _set_record(self, entry: _Entry, record: HookRunRecord) -> None:
         entry.record = record
-        entry.detail = replace(entry.detail, record=record)
+        self._set_detail(entry, replace(entry.detail, record=record))
+
+    def _set_detail(self, entry: _Entry, detail: HookRunDetail) -> None:
+        """Every change to a kept detail goes through here, which keeps the budget's count exact."""
+        self._detail_chars += _detail_size(detail) - _detail_size(entry.detail)
+        entry.detail = detail
 
     def _trim_ended(self) -> None:
         while len(self._ended) > self._max_ended:
             entry = self._entries.pop(self._ended.pop(0))
-            self._detail_chars -= _io_size(entry.detail.io)
+            self._detail_chars -= _detail_size(entry.detail)
             self._dropped += 1
 
     def _trim_details(self) -> None:
         """Drop the oldest ended runs' details until the rest fit; queued and running runs keep theirs."""
-        if self._detail_chars <= self._max_detail_chars:
-            return
         for run_id in self._ended:
-            entry = self._entries[run_id]
-            if entry.detail.io is None:
-                continue
-            self._detail_chars -= _io_size(entry.detail.io)
-            entry.detail = replace(entry.detail, io=None)
             if self._detail_chars <= self._max_detail_chars:
                 return
+            entry = self._entries[run_id]
+            if entry.detail.io is not None:
+                self._set_detail(entry, _without_details(entry.detail))

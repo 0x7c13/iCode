@@ -547,7 +547,11 @@ async def test_session_transition_settles_active_injection_and_blocking_hook_at_
     hook_release = asyncio.Event()
 
     async def _run_and_wait(
-        _hook: HookConfig, _payload: dict[str, Any], *, payload_text: str | None = None
+        _hook: HookConfig,
+        _payload: dict[str, Any],
+        *,
+        payload_text: str | None = None,
+        result: HookResult | None = None,
     ) -> HookResult:
         hook_entered.set()
         await hook_release.wait()

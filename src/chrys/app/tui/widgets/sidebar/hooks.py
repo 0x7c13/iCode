@@ -175,7 +175,9 @@ class HookRunList(Vertical, can_focus=False):
     HookRunList {
         height: 100%;
         width: 100%;
-        padding: 0 1;
+        /* Padding lies outside the scrollbar, so the right side has none: the one-cell bar sits
+           on the panel's edge, and its always-reserved column mirrors the left padding. */
+        padding: 0 0 0 1;
     }
     HookRunList > .hook-runs--running {
         color: $warning;
@@ -188,6 +190,7 @@ class HookRunList(Vertical, can_focus=False):
     }
     HookRunList > Horizontal {
         height: 1;
+        padding-right: 1;
     }
     HookRunList #hook-runs-title {
         width: 1fr;
@@ -204,6 +207,7 @@ class HookRunList(Vertical, can_focus=False):
     HookRunList > #hook-runs-box {
         height: 1fr;
         scrollbar-size: 1 1;
+        scrollbar-gutter: stable;
         overflow-x: hidden;
         display: none;
     }
@@ -218,6 +222,7 @@ class HookRunList(Vertical, can_focus=False):
     }
     HookRunList > #hook-runs-empty {
         height: 1fr;
+        padding-right: 1;
         color: $text-muted;
         content-align: center middle;
     }
@@ -249,6 +254,10 @@ class HookRunList(Vertical, can_focus=False):
         """The run whose details were opened last: its row stays marked."""
         self._reveal = False
         """Scroll the selected run's row into view at the next paint that lists it."""
+        self._empty_text = ""
+        """What the empty state says, as last painted."""
+        self._row_styles: tuple[Style, Style, Style] | None = None
+        """The running, hover and selected styles the rows were last painted in."""
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -268,8 +277,21 @@ class HookRunList(Vertical, can_focus=False):
         self._timer = self.set_interval(1, self._tick, pause=True)
         # Scrolled, another row is under the mouse: the next move finds it.
         self.watch(self.query_one("#hook-runs-box", VerticalScroll), "scroll_y", self.unhover, init=False)
+        # The row colors are resolved into the painted table, so a theme change repaints it.
+        self.app.theme_changed_signal.subscribe(self, self._theme_changed)
         self._localize()
         self._paint()
+
+    def on_unmount(self) -> None:
+        self.app.theme_changed_signal.unsubscribe(self)
+
+    def _theme_changed(self, _theme: object) -> None:
+        # Hidden or covered, it is painted in the new colors when it shows or its screen
+        # resumes; a repaint before then is work nobody sees.
+        if not self._composited or not is_widget_shown_on_active_screen(self):
+            return
+        if self._row_styles is not None and self._resolve_row_styles() != self._row_styles:
+            self.query_one("#hook-runs-rows", Static).update(self._rows(self._records), layout=False)
 
     def on_show(self) -> None:
         self._composited = True
@@ -385,18 +407,22 @@ class HookRunList(Vertical, can_focus=False):
         box = self.query_one("#hook-runs-box", VerticalScroll)
         grown = len(records) > self._painted_rows
         reveal = self._reveal and any(record.run_id == self._selected for record in records)
-        # Newest at the bottom: a list read to its end follows the runs that join it, as the chat
-        # does; one scrolled up to an older run stays there.
-        follow = grown and not reveal and (self._painted_rows <= 0 or box.scroll_y >= box.max_scroll_y)
-        rows.update(self._rows(records), layout=len(records) != self._painted_rows)
-        self._painted_rows = len(records)
-        if follow:
-            box.scroll_end(animate=False)
         # Only runs dropped past the log's cap: clearing is the user's own doing.
         unlisted = not self._kept_all
         notice = self.query_one("#hook-runs-unlisted", Static)
+        # Newest at the bottom: a list read to its end follows the runs that join it, and the
+        # notice that shows above them, as the chat does; one scrolled up to an older run stays there.
+        follow = (
+            (grown or (unlisted and not notice.display))
+            and not reveal
+            and (self._painted_rows <= 0 or box.scroll_y >= box.max_scroll_y)
+        )
+        rows.update(self._rows(records), layout=len(records) != self._painted_rows)
+        self._painted_rows = len(records)
         if unlisted != notice.display:
             notice.display = unlisted
+        if follow:
+            box.scroll_end(animate=False)
         empty = self.query_one("#hook-runs-empty", Static)
         if not records:
             configured = self._configured() if self._configured is not None else 0
@@ -406,7 +432,11 @@ class HookRunList(Vertical, can_focus=False):
                 reference = _EMPTY.bind(app=APP_DISPLAY_NAME)
             else:
                 reference = _EMPTY_UNCONFIGURED.bind()
-            empty.update(Text(self._text(reference)))
+            text = self._text(reference)
+            # Painted again on every resume of the screen: an update that changes nothing would lay it out.
+            if text != self._empty_text:
+                self._empty_text = text
+                empty.update(Text(text))
         if box.display != bool(records):
             box.display = bool(records)
             empty.display = not records
@@ -433,14 +463,19 @@ class HookRunList(Vertical, can_focus=False):
         if row is None:
             return
         box = self.query_one("#hook-runs-box", VerticalScroll)
-        top = 1 if self.query_one("#hook-runs-unlisted", Static).display else 0
+        # Below the notice, however many lines it wraps to.
+        top = self.query_one("#hook-runs-rows", Static).virtual_region.y
         box.scroll_to_region(Region(0, top + row, box.size.width, 1), center=True, animate=False, immediate=True)
 
-    def _rows(self, records: tuple[HookRunRecord, ...]) -> Table:
+    def _resolve_row_styles(self) -> tuple[Style, Style, Style]:
+        """The running, hover and selected styles in the current theme."""
         resolved = self.get_component_rich_style("hook-runs--running", default=Style(color="yellow"))
-        running_style = Style(color=resolved.color)
-        hover = Style(bgcolor=self.get_component_rich_style("hook-runs--hover").bgcolor)
-        selected = Style(bgcolor=self.get_component_rich_style("hook-runs--selected").bgcolor)
+        hover = self.get_component_rich_style("hook-runs--hover")
+        selected = self.get_component_rich_style("hook-runs--selected")
+        return Style(color=resolved.color), Style(bgcolor=hover.bgcolor), Style(bgcolor=selected.bgcolor)
+
+    def _rows(self, records: tuple[HookRunRecord, ...]) -> Table:
+        self._row_styles = running_style, hover, selected = self._resolve_row_styles()
         now = time.monotonic()
         still = self.app.animation_level == "none"
         grid = Table.grid(padding=(0, 1), expand=True)
@@ -448,23 +483,26 @@ class HookRunList(Vertical, can_focus=False):
         grid.add_column(justify="right", no_wrap=True, style="dim")
         grid.add_column(width=1, no_wrap=True)
         grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
-        grid.add_column(justify="right", no_wrap=True)
         # The name matters more: a long result gives way to it past a third of the row.
         width = self.content_size.width
         grid.add_column(
             justify="right", no_wrap=True, overflow="ellipsis", max_width=max(8, width // 3) if width else None
         )
+        # Last, so every row's time ends at the right edge, whatever results the rows show.
+        grid.add_column(justify="right", no_wrap=True)
         for row, record in enumerate(records):
             glyph = REST_GLYPH if still else SPINNER_FRAMES[self._frame % len(SPINNER_FRAMES)]
             icon = run_icon(record, running_style=running_style, glyph=glyph)
-            detail = running_style if record.state == "running" else "dim"
-            outcome = " · ".join(self._text(part) for part in run_outcome(record))
+            running = record.state == "running"
+            detail = running_style if running else "dim"
+            # Its time, ticking in the running color, already says it runs.
+            outcome = "" if running else " · ".join(self._text(part) for part in run_outcome(record))
             grid.add_row(
                 str(record.number),
                 icon,
                 Text(run_label(record), no_wrap=True, overflow="ellipsis"),
-                Text(run_duration(record, now), style=detail),
                 Text(outcome, style=detail, no_wrap=True, overflow="ellipsis"),
+                Text(run_duration(record, now), style=detail),
                 style=hover if row == self._hovered else selected if record.run_id == self._selected else None,
             )
         return grid

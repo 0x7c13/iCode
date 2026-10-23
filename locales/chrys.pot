@@ -6249,8 +6249,8 @@ msgstr ""
 msgid "tui.hook_run.applied.args"
 msgstr ""
 
-#. English: Blocked the action: {reason}
-#. chrys-meta={"fingerprint":"869c0c47dfbff769b0747bd613dde9f3c6343c4c2b134ff33701c4dbe8768091","multiline":false,"placeholders":["reason"]}
+#. English: Blocked the action:
+#. chrys-meta={"fingerprint":"2cf87c65acf4bb5aef37e1913778060a63348c11288763c253eda0a13875ff92","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/hook_run.py
 msgid "tui.hook_run.applied.blocked"
 msgstr ""
@@ -6271,6 +6271,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"33cdfccec07ac69efef0321c4c4bc8bfbe64943e6c977c117a311e37287162f1","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/hook_run.py
 msgid "tui.hook_run.applied.reminder"
+msgstr ""
+
+#. English: Arguments cut at 64 KB of {size}
+#. chrys-meta={"fingerprint":"0cafa06fa41ccdf2c41021edd0e75336bec1bf36b9b9e6932a47fc6904901760","multiline":false,"placeholders":["size"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.args_truncated"
 msgstr ""
 
 #. English: Copied log path
@@ -6457,6 +6463,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"ffb21cb152099cd58c6ade26cf07bd47ed8c49302b9556f4f59a3d5b876cefa8","multiline":false,"placeholders":["event"]}
 #: src/chrys/app/tui/screens/dialogs/hook_run.py
 msgid "tui.hook_run.not_applied.unsupported"
+msgstr ""
+
+#. English: {chars} characters from the middle are not shown; a copy includes
+#. them
+#. chrys-meta={"fingerprint":"f1deaf01c71a445b9a1e02513d7681d15eafb80829e02c123adfb8224de83be1","multiline":false,"placeholders":["chars"]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.not_shown"
 msgstr ""
 
 #. English: Payload cut at 64 KB of {size}

@@ -47,7 +47,11 @@ class HookRunRecord:
     """``time.time()`` when registered."""
     state: HookRunState
     outcome: str | None
-    """A ``hook.operation.finished`` outcome (``HookOutcome``) once ended."""
+    """How the hook's process ended, once it did: a ``HookOutcome`` but ``blocked``.
+
+    A run that blocked the action succeeded, with the ``blocked`` effect; its
+    ``hook.operation.finished`` says ``blocked`` instead.
+    """
     exit_code: int | None
     effect: HookRunEffect | None
     number: int = 0
@@ -59,7 +63,7 @@ class HookRunIO:
     """What a run read and wrote: kept for the runs the panel lists, within a memory cap."""
 
     payload: str
-    """The payload file's text as the hook read it, cut at ``payload_size`` when longer."""
+    """The payload file's text as the hook read it, cut short when longer than the run log keeps."""
     payload_size: int
     """The payload's full length in UTF-8 bytes."""
     result_file: HookResultFileStatus | None
@@ -80,6 +84,8 @@ class HookRunApplied:
     block_reason: str = ""
     args: str = ""
     """The tool arguments after the run's override, as JSON; empty when unchanged."""
+    args_size: int = 0
+    """The changed arguments' full length in UTF-8 bytes when ``args`` was cut short; 0 when it is whole."""
     reminder: str = ""
     extra_context: str = ""
     not_applied: HookNotApplied | None = None
@@ -109,6 +115,6 @@ class HookRunDetail:
     shared_log: bool
     """Another run of the hook writes to the same log (they started in the same second)."""
     io: HookRunIO | None
-    """None once the details are no longer kept."""
+    """None once the details are no longer kept; ``applied`` then keeps only its block reason."""
     applied: HookRunApplied | None
     """None until the run ends."""

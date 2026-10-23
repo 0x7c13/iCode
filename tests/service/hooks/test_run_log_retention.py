@@ -19,16 +19,18 @@ from pathlib import Path
 
 import pytest
 
-from chrys.foundation.models.hook_runs import HookRunRecord
+from chrys.foundation.models.hook_runs import HookRunApplied, HookRunDetail, HookRunRecord
 from chrys.service.hooks.events import HookEvent
 from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.run_log import (
     HOOK_RUN_LOG_MAX_DETAIL_CHARS,
     HOOK_RUN_LOG_MAX_ENDED,
-    HOOK_RUN_PAYLOAD_MAX_CHARS,
+    HOOK_RUN_TEXT_MAX_BYTES,
+    UNWRITABLE_JSON,
     HookRunLog,
+    indented_json,
 )
-from chrys.service.hooks.runner import HookRunner
+from chrys.service.hooks.runner import HookResult, HookRunner
 from chrys.service.hooks.schema import HookConfig, HookExecution, HookMatch, HookRun, HookSettings, HooksFile
 from chrys.service.trajectory.hooks import HookOutcome
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
@@ -108,7 +110,9 @@ async def release(tmp_path: Path) -> AsyncIterator[Path]:
 def test_the_limits_are_the_planned_ones() -> None:
     assert HOOK_RUN_LOG_MAX_ENDED == 100
     assert HOOK_RUN_LOG_MAX_DETAIL_CHARS == 16 * 1024 * 1024
-    assert HOOK_RUN_PAYLOAD_MAX_CHARS == 64 * 1024
+    assert HOOK_RUN_TEXT_MAX_BYTES == 64 * 1024
+    # The block reasons of every ended run are kept, so they must fit the budget together.
+    assert HOOK_RUN_LOG_MAX_ENDED * HOOK_RUN_TEXT_MAX_BYTES <= HOOK_RUN_LOG_MAX_DETAIL_CHARS
 
 
 # --- Queueing (max_parallel_hooks=1) --------------------------------------------
@@ -188,6 +192,8 @@ async def test_a_run_cancelled_while_queued_never_started(hooks_dir: Path, relea
     assert changes[-1] == log.records()
     release.touch()
     await manager.drain_session()
+    # No drain waits on a fire_and_forget run: the holder ends once released.
+    await wait_for(lambda: not manager._inflight, timeout=ENGINE_TURN_TIMEOUT, description="the holder ended")
 
 
 # --- The payload as registered (5.3) --------------------------------------------
@@ -233,7 +239,7 @@ async def test_a_large_payload_is_cut_and_its_size_kept(hooks_dir: Path, tmp_pat
     assert detail is not None and detail.io is not None
     full = received.read_text(encoding="utf-8")
     assert len(full) > 200_000, "the hook itself gets the whole payload"
-    assert len(detail.io.payload) <= HOOK_RUN_PAYLOAD_MAX_CHARS
+    assert len(detail.io.payload) <= HOOK_RUN_TEXT_MAX_BYTES
     assert full.startswith(detail.io.payload)
     assert detail.io.payload_size == len(full)
 
@@ -242,9 +248,16 @@ async def test_without_a_log_nothing_is_serialized_for_it(hooks_dir: Path, monke
     seen: list[str | None] = []
     original = HookRunner.run_and_wait
 
-    async def spy(self: HookRunner, hook: HookConfig, payload: dict[str, object], *, payload_text: str | None = None):
+    async def spy(
+        self: HookRunner,
+        hook: HookConfig,
+        payload: dict[str, object],
+        *,
+        payload_text: str | None = None,
+        result: HookResult | None = None,
+    ) -> HookResult:
         seen.append(payload_text)
-        return await original(self, hook, payload, payload_text=payload_text)
+        return await original(self, hook, payload, payload_text=payload_text, result=result)
 
     monkeypatch.setattr(HookRunner, "run_and_wait", spy)
     unrecorded = _manager(hooks_dir, _hook("plain", HookEvent.AFTER_TURN))
@@ -393,6 +406,8 @@ async def test_records_stay_in_registration_order_as_runs_start_and_end(hooks_di
         for path in releases.values():
             path.touch()
     await asyncio.wait_for(manager.drain_session(), ENGINE_TURN_TIMEOUT)
+    # No drain waits on a fire_and_forget run: c and d end once released.
+    await wait_for(lambda: not manager._inflight, timeout=ENGINE_TURN_TIMEOUT, description="every run ended")
 
 
 # --- Details kept ---------------------------------------------------------------
@@ -457,6 +472,136 @@ async def test_a_running_runs_detail_is_never_dropped(hooks_dir: Path, release: 
     assert "y" * 1000 in detail.io.payload
     release.touch()
     await asyncio.wait_for(manager.drain_turn(), ENGINE_TURN_TIMEOUT)
+
+
+def _register(log: HookRunLog, run_id: str) -> None:
+    log.register(
+        run_id=run_id,
+        session_id=_SESSION,
+        hook=_hook("h", HookEvent.BEFORE_TOOL_CALL),
+        source="",
+        source_path="",
+        payload_text="{}",
+        tool_name="",
+        tool_call_id="",
+        sub_agent="",
+        retry=False,
+    )
+
+
+def _kept_text(detail: HookRunDetail) -> int:
+    """Every text *detail* holds, counted here apart from the log's own count."""
+    size = 0
+    if detail.io is not None:
+        size += sum(len(text) for text in (detail.io.payload, detail.io.decision, detail.io.stdout, detail.io.stderr))
+    if detail.applied is not None:
+        applied = detail.applied
+        size += sum(len(text) for text in (applied.block_reason, applied.args, applied.reminder, applied.extra_context))
+    return size
+
+
+def test_what_ended_runs_applied_counts_toward_the_detail_budget() -> None:
+    log = HookRunLog(max_detail_chars=10_000)
+    for n in range(5):
+        _register(log, f"r{n}")
+        log.finish(
+            f"r{n}",
+            outcome=HookOutcome.SUCCESS,
+            effect="added_reminder",
+            applied=HookRunApplied(reminder="r" * 4000),
+            stdout="o" * 10,
+        )
+    details = [log.detail(f"r{n}") for n in range(5)]
+    assert all(detail is not None for detail in details)
+    kept = [detail for detail in details if detail is not None]
+    assert sum(_kept_text(detail) for detail in kept) <= 10_000
+    assert log._detail_chars == sum(_kept_text(detail) for detail in kept), "the count is what the details hold"
+    # The oldest go first, the texts iCode took from them with what they read and wrote.
+    assert kept[0].io is None and kept[0].applied is not None and kept[0].applied.reminder == ""
+    assert kept[-1].applied is not None and kept[-1].applied.reminder == "r" * 4000
+
+
+def test_a_block_whose_details_went_still_says_why() -> None:
+    log = HookRunLog(max_detail_chars=1_000)
+    _register(log, "guard")
+    log.finish("guard", outcome=HookOutcome.SUCCESS, effect="blocked", applied=HookRunApplied(block_reason="no"))
+    _register(log, "noisy")
+    log.finish("noisy", outcome=HookOutcome.SUCCESS, stdout="o" * 2_000)
+    detail = log.detail(log.records()[0].run_id)
+    assert detail is not None and detail.io is None
+    assert detail.applied is not None and detail.applied.block_reason == "no"
+
+
+@pytest.mark.parametrize("unit", ["a", "é", "\udc80"], ids=["ascii", "two-byte", "lone-surrogate"])
+def test_changed_arguments_past_the_cap_are_cut_with_their_size_kept(unit: str) -> None:
+    full = json.dumps({"content": unit * 70_000}, ensure_ascii=False)
+    log = HookRunLog()
+    _register(log, "rewrite")
+    log.finish("rewrite", outcome=HookOutcome.SUCCESS, effect="modified_args", applied=HookRunApplied(args=full))
+    detail = log.detail("rewrite")
+    assert detail is not None and detail.applied is not None
+    kept = detail.applied.args
+    assert len(kept.encode("utf-8", "surrogatepass")) <= HOOK_RUN_TEXT_MAX_BYTES
+    assert detail.applied.args_size == len(full.encode("utf-8", "surrogatepass"))
+    if unit != "\udc80":
+        assert full.startswith(kept)
+
+
+def test_changed_arguments_within_the_cap_are_kept_whole() -> None:
+    full = json.dumps({"path": "/é/b"}, ensure_ascii=False)
+    log = HookRunLog()
+    _register(log, "rewrite")
+    log.finish("rewrite", outcome=HookOutcome.SUCCESS, effect="modified_args", applied=HookRunApplied(args=full))
+    detail = log.detail("rewrite")
+    assert detail is not None and detail.applied is not None
+    assert (detail.applied.args, detail.applied.args_size) == (full, 0)
+
+
+def test_the_block_reasons_kept_fit_the_detail_budget() -> None:
+    """A block reason outlives the other details, so each is cut as the payload is."""
+    reason = "r" * (HOOK_RUN_LOG_MAX_DETAIL_CHARS // HOOK_RUN_LOG_MAX_ENDED + 1)
+    log = HookRunLog()
+    for index in range(HOOK_RUN_LOG_MAX_ENDED):
+        _register(log, f"guard-{index}")
+        log.finish(
+            f"guard-{index}", outcome=HookOutcome.SUCCESS, effect="blocked", applied=HookRunApplied(block_reason=reason)
+        )
+    details = [log.detail(record.run_id) for record in log.records()]
+    assert len(details) == HOOK_RUN_LOG_MAX_ENDED
+    assert sum(_kept_text(detail) for detail in details if detail is not None) <= HOOK_RUN_LOG_MAX_DETAIL_CHARS
+    for detail in details:
+        assert detail is not None and detail.applied is not None
+        assert detail.applied.block_reason == reason[:HOOK_RUN_TEXT_MAX_BYTES]
+
+
+def _nested(depth: int) -> object:
+    return json.loads("[" * depth + "]" * depth)
+
+
+def test_json_is_indented_while_that_keeps_it_small() -> None:
+    value = {"path": "/é", "lines": [1, 2], "deep": _nested(5)}
+    assert indented_json(value) == json.dumps(value, indent=2, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "value",
+    # Indenting adds the depth to every line: 200 levels of 400 characters would indent to 80,000.
+    [_nested(200), {"pad": "x" * 2_000_000, "deep": _nested(3_000)}],
+    ids=["swelling", "past-the-recursion-limit"],
+)
+def test_json_that_indenting_would_swell_is_kept_compact(value: object) -> None:
+    assert indented_json(value) == json.dumps(value, ensure_ascii=False)
+
+
+def test_json_nested_deeper_than_the_encoder_writes_reads_as_a_note() -> None:
+    # Deeper than any stack lets the encoder go; parsed JSON can be deeper than it writes.
+    deep: dict[str, object] = {}
+    node = deep
+    for _ in range(100_000):
+        child: dict[str, object] = {}
+        node["a"] = child
+        node = child
+    assert indented_json({"action": "allow", "meta": deep}) == UNWRITABLE_JSON
 
 
 # --- Outbox retries and sessions ------------------------------------------------

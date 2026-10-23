@@ -89,6 +89,36 @@ def test_log_tail_skips_ahead_from_a_whole_line(tmp_path: Path, monkeypatch: pyt
     assert tail.read() == ("fourth\n", False)
 
 
+def test_log_tail_skips_ahead_from_a_line_a_carriage_return_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(background_task, "_TAIL_BYTES", 10)
+    log = tmp_path / "x.log"
+    # Progress a hook rewrites in place, as a detached hook's log keeps it.
+    log.write_bytes(b"10%\r20%\r30%\r40%\r50%\r")
+    tail = LogTail(str(log))
+    # The last 10 bytes start inside "30%": the rest is kept as written, but for the CR
+    # it ends on, which waits for the LF that may follow it.
+    assert tail.read_raw() == ("40%\r50%", True)
+
+
+def test_log_tail_joins_a_crlf_split_between_reads(tmp_path: Path) -> None:
+    log = tmp_path / "x.log"
+    log.write_bytes(b"first\r")
+    tail = LogTail(str(log))
+    assert tail.read_raw() == ("first", False)
+    with log.open("ab") as file:
+        file.write(b"\nsecond\r\n")
+    assert tail.read_raw() == ("\r\nsecond\r\n", False)
+    # A lone CR still ends its line once more is read.
+    with log.open("ab") as file:
+        file.write(b"50%\r")
+    assert tail.read() == ("50%", False)
+    with log.open("ab") as file:
+        file.write(b"60%")
+    assert tail.read() == ("\n60%", False)
+
+
 def test_log_tail_joins_a_character_split_between_reads(tmp_path: Path) -> None:
     log = tmp_path / "x.log"
     tail = LogTail(str(log))

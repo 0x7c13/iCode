@@ -138,7 +138,7 @@ async def _shown(pilot, count: int) -> list[str]:
     return _rows(pilot.app)
 
 
-# --- Each row: icon, label, duration, outcome -----------------------------------
+# --- Each row: icon, label, outcome, duration -----------------------------------
 
 
 @pytest.mark.parametrize(
@@ -187,20 +187,56 @@ async def test_a_rows_icon_and_outcome_follow_how_it_ended_and_what_was_applied(
     async with app.run_test(size=(60, 20)) as pilot:
         (row,) = await _shown(pilot, 1)
         assert row.startswith(f"{icon} check · zsh"), row
-        if outcome:
-            assert row.endswith(outcome), row
-        else:
+        if not outcome:
             # Nothing applied: only the duration follows the label.
             assert row.split("zsh", 1)[1].split() == ["40ms"], row
+        elif fields.get("ran_for", 0.0) is None:
+            # Handed off, it has no duration of its own: the outcome ends the row.
+            assert row.endswith(outcome), row
+        else:
+            # The outcome, then the duration, which ends the row.
+            assert re.search(rf"{re.escape(outcome)} +\d+m?s$", row), row
 
 
-async def test_a_running_row_shows_a_spinner_and_running() -> None:
+async def test_a_running_row_shows_a_spinner_and_its_duration_alone() -> None:
     app = _ListApp(_Source(_record("r1", hook_id="slow", state="running", ran_for=6.0)))
     async with app.run_test(size=(60, 20)) as pilot:
         (row,) = await _shown(pilot, 1)
         assert ord(row[0]) in _SPINNER, row
-        assert row.endswith("running")
-        assert "slow · zsh" in row
+        # Its duration ticks in the running color, which says it runs.
+        assert re.fullmatch(r"\d+s", row.split("slow · zsh", 1)[1].strip()), row
+
+
+async def test_every_rows_duration_ends_at_the_right_edge_whatever_the_others_show() -> None:
+    records = (
+        _record("a", hook_id="quick", number=1),
+        _record("b", hook_id="gate", outcome=HookOutcome.FAILED, exit_code=1, effect="blocked", number=2),
+        _record("c", hook_id="slow", state="running", ran_for=6.0, number=3),
+    )
+    app = _ListApp(_Source(*records))
+    async with app.run_test(size=(60, 20)) as pilot:
+        await _shown(pilot, 3)
+        rows = pilot.app.query_one("#hook-runs-rows", Static)
+        width = rows.size.width
+        lines = [strip.text for strip in rows.render_lines(Region(0, 0, width, 3))]
+        assert [len(line.rstrip()) for line in lines] == [width] * 3, lines
+        assert lines[0].endswith(" 40ms") and lines[1].endswith("exit 1 · blocked 40ms"), lines
+        assert re.search(r" \d+s$", lines[2]), lines
+
+
+async def test_the_scrollbar_sits_on_the_panels_edge_and_the_rows_end_with_the_title() -> None:
+    app = _ListApp(_Source(*_ended(40)))
+    async with app.run_test(size=(60, 20)) as pilot:
+        await wait_for(lambda: len(_rows(pilot.app)) > 5, pilot=pilot, description="rows")
+        hooks = pilot.app.query_one(HookRunList)
+        box = pilot.app.query_one("#hook-runs-box", VerticalScroll)
+        assert box.show_vertical_scrollbar, "40 rows overflow the box"
+        assert box.region.right == hooks.region.right, "no padding outside the bar"
+        rows = pilot.app.query_one("#hook-runs-rows", Static).region
+        # The bar's column, reserved with or without the bar, keeps the rows off the edge.
+        assert rows.right == hooks.region.right - 1
+        clear = pilot.app.query_one("#hook-runs-clear", Static).region
+        assert clear.right == rows.right, "the title's link ends where the rows do"
 
 
 def test_the_label_names_the_tool_or_the_event_and_the_sub_agent() -> None:
@@ -290,14 +326,14 @@ async def test_a_long_result_gives_way_to_the_name_past_a_third_of_the_row() -> 
     async with app.run_test(size=(42, 10)) as pilot:
         (row,) = await _shown(pilot, 1)
         width = pilot.app.query_one("#hook-runs-rows", Static).size.width
-        outcome = row[row.index("40ms") + len("40ms") :].strip()
+        outcome = row[row.index("timed out") : row.index("40ms")].strip()
         assert outcome.endswith("…") and len(outcome) <= width // 3, row
-        name = row[2 : row.index("40ms")].strip()
+        name = row[2 : row.index("timed out")].strip()
         assert len(name) > len(outcome), row
         # Wider, the whole result shows: the cap follows the width.
         await resize_when_settled(pilot, 90, 10)
         await wait_for(
-            lambda: _rows(pilot.app)[0].endswith("timed out · blocked"), pilot=pilot, description="whole result"
+            lambda: _rows(pilot.app)[0].endswith("timed out · blocked 40ms"), pilot=pilot, description="whole result"
         )
 
 
@@ -321,6 +357,31 @@ async def test_the_list_opens_on_the_newest_run_and_follows_new_ones_while_at_th
             lambda: box.scroll_y == box.max_scroll_y and box.max_scroll_y > 0,
             pilot=pilot,
             description="followed the new runs to the bottom",
+        )
+
+
+async def test_a_list_at_the_bottom_stays_there_when_the_notice_shows_above_its_rows() -> None:
+    source = _Source(*_ended(30))
+    app = _ListApp(source)
+    async with app.run_test(size=(60, 12)) as pilot:
+        await _shown(pilot, 30)
+        box = pilot.app.query_one("#hook-runs-box", VerticalScroll)
+        await wait_for(lambda: box.scroll_y == box.max_scroll_y > 0, pilot=pilot, description="at the newest")
+
+        # A run that ends at once (a detached one) drops the oldest: as many rows, and the notice.
+        source.records = _ended(30, start=2)
+        source.dropped = 1
+        pilot.app.query_one(HookRunList).runs_changed()
+        await wait_for(lambda: _unlisted(pilot.app) == _ONLY_LATEST, pilot=pilot, description="notice")
+        await wait_for(lambda: box.scroll_y == box.max_scroll_y, pilot=pilot, description="still at the newest")
+
+        source.records = _ended(32, start=2)
+        pilot.app.query_one(HookRunList).runs_changed()
+        await _shown(pilot, 32)
+        await wait_for(
+            lambda: box.scroll_y == box.max_scroll_y and _numbered_rows(pilot.app)[-1].lstrip().startswith("33 "),
+            pilot=pilot,
+            description="still following the new runs",
         )
 
 
@@ -456,21 +517,35 @@ async def test_clearing_ended_runs_never_shows_the_notice_and_numbers_carry_on()
         assert _unlisted(pilot.app) == ""
 
 
-async def _scroll_when_selecting_the_20th_row(start: int, *, dropped: int = 0) -> float:
+async def _scroll_when_selecting_the_20th_row(start: int, *, dropped: int = 0, width: int = 60) -> tuple[float, int]:
+    """Where the list scrolls to once the 20th row is selected, and how many lines the notice takes above the rows."""
     app = _ListApp(_Source(*_ended(60, start=start), dropped=dropped))
-    async with app.run_test(size=(60, 12)) as pilot:
+    async with app.run_test(size=(width, 12)) as pilot:
         await _shown(pilot, 60)
-        box = pilot.app.query_one("#hook-runs-box")
+        box = pilot.app.query_one("#hook-runs-box", VerticalScroll)
         await wait_for(lambda: box.scroll_y == box.max_scroll_y > 0, pilot=pilot, description="at the end")
         pilot.app.query_one(HookRunList).select(f"e{start + 19}")
         await wait_for(lambda: box.scroll_y < box.max_scroll_y, pilot=pilot, description="scrolled to it")
-        return box.scroll_y
+        notice = pilot.app.query_one("#hook-runs-unlisted", Static)
+        above = notice.outer_size.height if notice.display else 0
+        # In view: the rows start right under the notice, one line each.
+        assert box.scroll_y <= above + 19 < box.scroll_y + box.scrollable_content_region.height, (box.scroll_y, above)
+        return box.scroll_y, above
 
 
 async def test_a_selected_row_scrolls_into_view_below_the_notice() -> None:
-    plain = await _scroll_when_selecting_the_20th_row(start=1)
+    plain, _ = await _scroll_when_selecting_the_20th_row(start=1)
     # Once the log dropped runs, the notice takes the first line: the same row sits one line lower.
-    assert await _scroll_when_selecting_the_20th_row(start=41, dropped=40) == plain + 1
+    assert await _scroll_when_selecting_the_20th_row(start=41, dropped=40) == (plain + 1, 1)
+
+
+async def test_a_selected_row_scrolls_into_view_below_a_notice_that_wraps() -> None:
+    # A narrow sidebar: the notice wraps.
+    plain, _ = await _scroll_when_selecting_the_20th_row(start=1, width=24)
+    scrolled, above = await _scroll_when_selecting_the_20th_row(start=41, dropped=40, width=24)
+    assert above >= 2
+    # The row sits as far below where it sits without the notice as the notice is tall: as centered.
+    assert scrolled == plain + above
 
 
 async def test_clicking_a_row_opens_its_run() -> None:
@@ -551,3 +626,67 @@ async def test_the_timer_stops_while_hidden_and_when_nothing_is_active(monkeypat
 def test_the_module_exposes_its_row_helpers() -> None:
     assert hooks_module.run_state(_record("q", state="queued")) == "queued"
     assert hooks_module.run_state(_record("r", state="running")) == "running"
+
+
+def _row_backgrounds(app: App, index: int) -> set[object]:
+    rows = app.query_one("#hook-runs-rows", Static)
+    width, height = rows.size
+    lines = [strip for strip in rows.render_lines(Region(0, 0, width, height)) if strip.text.strip()]
+    return {segment.style.bgcolor for segment in lines[index] if segment.style is not None and segment.text.strip()}
+
+
+async def test_a_selected_row_follows_a_theme_change_with_nothing_over_the_list() -> None:
+    app = _ListApp(_Source(_record("a", number=1), _record("b", number=2)))
+    async with app.run_test(size=(60, 20)) as pilot:
+        await _shown(pilot, 2)
+        hooks = pilot.app.query_one(HookRunList)
+
+        def selected() -> object:
+            return hooks.get_component_rich_style("hook-runs--selected").bgcolor
+
+        hooks.select("a")
+        await wait_for(lambda: _row_backgrounds(pilot.app, 0) == {selected()}, pilot=pilot, description="marked")
+        before = selected()
+        # Every run ended: no tick repaints the rows, and no overlay closes over them.
+        pilot.app.theme = "textual-dark" if pilot.app.theme == "textual-light" else "textual-light"
+        await wait_for(lambda: selected() != before, pilot=pilot, description="the theme's color resolved")
+        await wait_for(
+            lambda: _row_backgrounds(pilot.app, 0) == {selected()}, pilot=pilot, description="the row follows the theme"
+        )
+
+
+async def test_a_theme_change_while_the_list_is_hidden_paints_it_only_once_it_shows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _ListApp(_Source(_record("a", number=1), _record("b", number=2)))
+    async with app.run_test(size=(60, 20)) as pilot:
+        await _shown(pilot, 2)
+        hooks = pilot.app.query_one(HookRunList)
+
+        def selected() -> object:
+            return hooks.get_component_rich_style("hook-runs--selected").bgcolor
+
+        hooks.select("a")
+        await wait_for(lambda: _row_backgrounds(pilot.app, 0) == {selected()}, pilot=pilot, description="marked")
+        rows = pilot.app.query_one("#hook-runs-rows", Static)
+        updates: list[object] = []
+        original: Callable[..., None] = rows.update
+
+        def counting(*args: object, **kwargs: object) -> None:
+            updates.append(args)
+            original(*args, **kwargs)
+
+        monkeypatch.setattr(rows, "update", counting)
+        holder = pilot.app.query_one("#holder")
+        holder.display = False
+        await wait_for(lambda: not hooks.is_on_screen, pilot=pilot, description="hidden")
+        before = selected()
+        pilot.app.theme = "textual-dark" if pilot.app.theme == "textual-light" else "textual-light"
+        await wait_for(lambda: selected() != before, pilot=pilot, description="the theme's color resolved")
+        # A widget the screen cannot show, repainted, makes it lay the whole screen out again.
+        assert not await wait_until(lambda: bool(updates), timeout=0.5, pilot=pilot), "painted while hidden"
+        holder.display = True
+        await _shown(pilot, 2)
+        await wait_for(
+            lambda: _row_backgrounds(pilot.app, 0) == {selected()}, pilot=pilot, description="painted once shown"
+        )

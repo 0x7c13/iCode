@@ -84,6 +84,9 @@ def test_session_ready_during_restore_refreshes_memory_file_status() -> None:
     panel = _FakePanel()
     input_bar = _FakeInputBar()
     status = _FakeStatusBar()
+    # The Hooks tab is told when the number of configured hooks changes.
+    hook_runs: list[None] = []
+    sidebar = SimpleNamespace(hooks_panel=SimpleNamespace(runs_changed=lambda: hook_runs.append(None)))
 
     def _query_one(cls):
         if cls.__name__ == "ChatPanel":
@@ -92,6 +95,8 @@ def test_session_ready_during_restore_refreshes_memory_file_status() -> None:
             return input_bar
         if cls.__name__ == "StatusBar":
             return status
+        if cls.__name__ == "SidebarPanel":
+            return sidebar
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     services = MainScreenServices(bus=EventBus(), active_model_profile_id="old-model")
@@ -129,6 +134,7 @@ def test_session_ready_during_restore_refreshes_memory_file_status() -> None:
     assert "tooltip" not in tool_info
     assert flash_calls == []
     assert services.active_model_profile_id == "ready-model"
+    assert hook_runs == [None]
 
 
 def _run_existing_session_ready(
@@ -289,9 +295,15 @@ def test_agent_runtime_updated_refreshes_resource_counts_without_model_trail() -
         def set_tool_info(self, trail: str) -> None:
             tool_info["trail"] = trail
 
+    # The Hooks tab is told when the number of configured hooks changes.
+    hook_runs: list[None] = []
+    sidebar = SimpleNamespace(hooks_panel=SimpleNamespace(runs_changed=lambda: hook_runs.append(None)))
+
     def _query_one(cls):
         if cls.__name__ == "StatusBar":
             return _FakeStatusBar()
+        if cls.__name__ == "SidebarPanel":
+            return sidebar
         raise AssertionError(f"unexpected query_one({cls.__name__})")
 
     screen = SimpleNamespace(
@@ -315,6 +327,7 @@ def test_agent_runtime_updated_refreshes_resource_counts_without_model_trail() -
     assert handler._state.runtime.details is runtime_details
     trail = status_trail(tool_info["trail"])
     assert trail == "2 tools · 1 skill · 1 hook · 1 file"
+    assert hook_runs == [None], "the disabled hook is not counted, the enabled one is"
     assert "DeepSeek-V4-Flash" not in trail
     assert "deepseek-v4-flash" not in trail
     assert "1m" not in trail

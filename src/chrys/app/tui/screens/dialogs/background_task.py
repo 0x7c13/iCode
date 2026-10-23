@@ -14,6 +14,7 @@ import codecs
 import contextlib
 import dataclasses
 import os
+import re
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
 
 _TAIL_BYTES = 256 * 1024
 """How much of the log's end the modal shows at most."""
+_LINE_BREAK = re.compile(rb"\r\n|\r|\n")
 _MAX_LINES = 10_000
 _POLL_SECONDS = 1.0
 
@@ -164,9 +166,16 @@ class LogTail:
         self._file: tuple[int, int] | None = None
         """The (device, inode) read last: a rotated log is a new file."""
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._held_cr = ""
+        """A CR the last read ended on, given with the next read, where an LF may complete it."""
 
     def read(self) -> tuple[str, bool]:
-        """The text added since the last read, and whether it replaces what was read before; blocks."""
+        """The text added since the last read, made safe to show, and whether it replaces what was read before; blocks."""
+        text, restart = self.read_raw()
+        return sanitize_source_text(text, tab_size=8), restart
+
+    def read_raw(self) -> tuple[str, bool]:
+        """``read``, with the text as the log has it: what a copy takes."""
         with open(self._path, "rb") as file:
             stat = os.fstat(file.fileno())
             size = stat.st_size
@@ -180,10 +189,19 @@ class LogTail:
         self._offset = start + len(data)
         if restart:
             self._decoder.reset()
+            self._held_cr = ""
             if start > 0:
-                data = data.partition(b"\n")[2]
-        # The log holds whole lines with no CR (TaskLog cleans them), so only a character can split.
-        return sanitize_source_text(self._decoder.decode(data), tab_size=8), restart
+                # Cut into a line: it starts after the first break, CR included (a hook's log keeps them).
+                first = _LINE_BREAK.search(data)
+                data = data[first.end() :] if first else b""
+        # A read can end inside a character: the decoder keeps its first bytes for the next read.
+        text = self._held_cr + self._decoder.decode(data)
+        # Or between the CR and the LF of one break, which shown apart would end two lines.
+        if text.endswith("\r"):
+            text, self._held_cr = text[:-1], "\r"
+        else:
+            self._held_cr = ""
+        return text, restart
 
 
 def _read_log(path: str) -> str:

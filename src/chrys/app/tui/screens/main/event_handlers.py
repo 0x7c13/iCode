@@ -33,7 +33,7 @@ from chrys.app.tui.screens.main.ports import (
     StatusMessage,
     StatusTrail,
 )
-from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider
+from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider, enabled_hook_count
 from chrys.app.tui.screens.main.session_title import QUESTION_MARK, RETRY_MARK, AttentionMark
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import (
@@ -423,7 +423,11 @@ class BackendEventHandler:
 
     @runtime_metadata.setter
     def runtime_metadata(self, value: AgentRuntimeDetails) -> None:
+        configured = enabled_hook_count(self._state.runtime.details)
         self._state.runtime.details = value
+        # The Hooks tab's empty state says whether any hook is configured.
+        if enabled_hook_count(value) != configured:
+            self._ui().hook_runs_changed()
 
     @property
     def approval_mode(self) -> ApprovalMode:

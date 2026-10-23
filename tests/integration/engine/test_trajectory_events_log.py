@@ -1059,9 +1059,14 @@ async def test_a_rollback_that_opens_the_inherited_log_still_records_the_branch(
     original_run = HookRunner.run_and_wait
 
     async def held_result(
-        self: HookRunner, hook: HookConfig, payload: dict[str, Any], *, payload_text: str | None = None
+        self: HookRunner,
+        hook: HookConfig,
+        payload: dict[str, Any],
+        *,
+        payload_text: str | None = None,
+        result: HookResult | None = None,
     ) -> HookResult:
-        result = await original_run(self, hook, payload, payload_text=payload_text)
+        result = await original_run(self, hook, payload, payload_text=payload_text, result=result)
         background_result_ready.set()
         await release_background_result.wait()
         return result

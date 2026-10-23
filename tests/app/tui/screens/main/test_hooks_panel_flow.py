@@ -38,7 +38,9 @@ from chrys.app.tui.widgets.sidebar.panel import SIDEBAR_HOOKS_TAB, SidebarPanel
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AgentRuntimeDetails,
+    AgentRuntimeUpdated,
     HookRunsChanged,
+    ProfileSwitched,
     RuntimeHookDetails,
     RuntimeHookSourceDetails,
     SessionReady,
@@ -137,6 +139,12 @@ async def _show_hooks_tab(pilot: Pilot, main: MainScreen) -> HookRunList:
     sidebar.focus_tab(SIDEBAR_HOOKS_TAB)
     hooks = sidebar.hooks_panel
     await wait_for(lambda: hooks.is_on_screen and hooks.size.width > 0, pilot=pilot, description="Hooks tab shown")
+    # Showing the tab scrolls the tab strip to it on a timer, which lays the screen out once more:
+    # a spy armed before it stops would count that.
+    strip = sidebar.query_one("#tabs-scroll")
+    await wait_for(
+        lambda: not main.app.animator.is_being_animated(strip, "scroll_x"), pilot=pilot, description="tab strip still"
+    )
     return hooks
 
 
@@ -148,6 +156,11 @@ def _rows(main: MainScreen) -> list[str]:
     lines = [strip.text.rstrip() for strip in rows.render_lines(Region(0, 0, width, height)) if strip.text.strip()]
     # From the icon on: drop the run number before it.
     return [re.sub(r"^\s*\d+ ", "", line) for line in lines]
+
+
+def _is_running(row: str) -> bool:
+    """A running row starts with a spinner frame or its resting glyph, all Braille cells."""
+    return 0x2800 <= ord(row[0]) < 0x2900
 
 
 def _empty(main: MainScreen) -> str:
@@ -202,7 +215,7 @@ async def test_real_runs_appear_running_then_ended(tmp_path: Path) -> None:
         fire = asyncio.create_task(manager.fire(HookEvent.BEFORE_TOOL_CALL, _payload()))
         try:
             await wait_for(
-                lambda: bool(_rows(main)) and _rows(main)[0].endswith("running"),
+                lambda: bool(_rows(main)) and _is_running(_rows(main)[0]),
                 timeout=ENGINE_TURN_TIMEOUT,
                 pilot=pilot,
                 description="the running row",
@@ -234,7 +247,7 @@ async def test_a_cancelled_run_shows_cancelled_without_waiting_for_idle(tmp_path
         fire = asyncio.create_task(manager.fire(HookEvent.BEFORE_TOOL_CALL, _payload()))
         try:
             await wait_for(
-                lambda: bool(_rows(main)) and _rows(main)[0].endswith("running"),
+                lambda: bool(_rows(main)) and _is_running(_rows(main)[0]),
                 timeout=ENGINE_TURN_TIMEOUT,
                 pilot=pilot,
                 description="running",
@@ -244,7 +257,7 @@ async def test_a_cancelled_run_shows_cancelled_without_waiting_for_idle(tmp_path
             with contextlib.suppress(asyncio.CancelledError):
                 await fire
             await wait_for(
-                lambda: bool(_rows(main)) and _rows(main)[0].endswith("cancelled"),
+                lambda: bool(_rows(main)) and re.search(r" cancelled +\d+m?s$", _rows(main)[0]) is not None,
                 pilot=pilot,
                 description="shown cancelled",
             )
@@ -316,6 +329,28 @@ async def test_no_configured_hook_shows_no_hooks_configured(tmp_path: Path) -> N
         await wait_for(lambda: _empty(main) == "No hooks configured", pilot=pilot, description="unconfigured")
 
 
+def _runtime_changed(kind: str, details: AgentRuntimeDetails) -> AgentRuntimeUpdated | ProfileSwitched:
+    if kind == "runtime-updated":
+        return AgentRuntimeUpdated(session_id=_SESSION, runtime_details=details)
+    # A settings reload: the same profile, rebuilt.
+    return ProfileSwitched(session_id=_SESSION, from_profile="Code", to_profile="Code", runtime_details=details)
+
+
+@pytest.mark.parametrize("kind", ["runtime-updated", "profile-reloaded"])
+async def test_the_empty_state_follows_the_hooks_the_runtime_details_name(tmp_path: Path, kind: str) -> None:
+    bus = EventBus()
+    app = _make_app(tmp_path, bus, HookRunLog(), configured=0)
+    async with app.run_test(size=(160, 40)) as pilot:
+        main = await _ready(pilot)
+        await _show_hooks_tab(pilot, main)
+        await wait_for(lambda: _empty(main) == "No hooks configured", pilot=pilot, description="unconfigured")
+        # A hook was configured since, and nothing has run.
+        await bus.publish(_runtime_changed(kind, _runtime(1)), raise_handler_errors=True)
+        await wait_for(
+            lambda: _empty(main) == "No hook has run since iCode started", pilot=pilot, description="configured"
+        )
+
+
 # --- Entry and workflow mode (section 2) ----------------------------------------
 
 
@@ -338,6 +373,29 @@ async def test_clicking_the_indicator_opens_a_closed_sidebar_on_the_hooks_tab(tm
             pilot=pilot,
             description="open on Hooks",
         )
+
+
+async def test_clicking_the_idle_indicator_while_the_sidebar_is_held_closed_shows_the_configured_hooks(
+    tmp_path: Path,
+) -> None:
+    from chrys.app.tui.screens.dialogs.runtime_details import RUNTIME_DETAILS_HOOKS_TAB, RuntimeDetailsDialog
+
+    bus = EventBus()
+    app = _make_app(tmp_path, bus, HookRunLog())
+    async with app.run_test(size=(160, 40)) as pilot:
+        main = await _ready(pilot)
+        sidebar = main.query_one(SidebarPanel)
+        # As the theme editor holds it while it is open in a narrow terminal: no toggle shows it.
+        sidebar.suppress_visibility("theme-editor", True)
+        await wait_for(lambda: not sidebar.is_visible, pilot=pilot, description="held closed")
+        main.post_message(HookIndicator.Clicked(""))
+        await wait_for(
+            lambda: isinstance(app.screen, RuntimeDetailsDialog) and app.screen.is_mounted,
+            pilot=pilot,
+            description="the configured hooks",
+        )
+        assert app.screen.query_one("#runtime-details-tabs", TabbedContent).active == RUNTIME_DETAILS_HOOKS_TAB
+        assert not sidebar.is_visible
 
 
 async def test_clicking_the_indicator_while_it_shows_a_run_opens_that_runs_details(tmp_path: Path) -> None:
@@ -536,12 +594,12 @@ async def test_a_hidden_tab_neither_reads_nor_renders_on_a_change(tmp_path: Path
 # --- Under a modal (section 6) --------------------------------------------------
 
 
-_ELAPSED_RUNNING = re.compile(r"(\d+)s\s+running$")
+_ELAPSED = re.compile(r" (\d+)s$")
 
 
 def _running_seconds(main: MainScreen) -> int | None:
     rows = _rows(main)
-    match = _ELAPSED_RUNNING.search(rows[0]) if rows else None
+    match = _ELAPSED.search(rows[0]) if rows and _is_running(rows[0]) else None
     return int(match.group(1)) if match else None
 
 
@@ -619,6 +677,42 @@ async def test_a_change_under_a_modal_is_read_once_it_closes(tmp_path: Path) -> 
         await _close_modal(pilot, app, main)
         await wait_for(lambda: _rows(main)[0].startswith("✓"), pilot=pilot, description="the ended run shown")
         assert log.reads == reads + 1
+
+
+async def test_an_empty_list_on_a_long_transcript_does_not_relayout_when_a_modal_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _make_app(tmp_path, EventBus(), _FixedLog(()))
+    async with app.run_test(size=(160, 40)) as pilot:
+        main = await _ready(pilot)
+        await _populate(pilot, main)
+        hooks = await _show_hooks_tab(pilot, main)
+        await wait_for(lambda: _empty(main) == "No hook has run since iCode started", pilot=pilot, description="empty")
+        await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled underlay")
+        seen: dict[str, list[object]] = {"styles": [], "layout": [], "footer": []}
+        monkeypatch.setattr(main, "update_node_styles", lambda animate=True: seen["styles"].append(animate))
+        monkeypatch.setattr(main, "_refresh_layout", lambda *_a, **_k: seen["layout"].append(None))
+
+        async def footer_recompose() -> None:
+            seen["footer"].append(None)
+
+        monkeypatch.setattr(main.query_one(ChrysFooter), "recompose", footer_recompose)
+        paints: list[None] = []
+        paint = hooks._paint
+
+        def counted_paint() -> None:
+            paints.append(None)
+            paint()
+
+        monkeypatch.setattr(hooks, "_paint", counted_paint)
+        # Every close resumes MainScreen, which paints the shown list again.
+        for closes in (1, 2):
+            await _open_modal(pilot, app, main)
+            await _close_modal(pilot, app, main)
+            await wait_for(lambda closes=closes: len(paints) >= closes, pilot=pilot, description="painted on resume")
+        await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled after")
+        assert _empty(main) == "No hook has run since iCode started"
+        assert seen == {"styles": [], "layout": [], "footer": []}
 
 
 # --- Where the list stands ------------------------------------------------------

@@ -6,6 +6,10 @@ The run's details come from the engine's run log, which keeps them in memory
 only. While the run is queued or running, the modal reads it again once a
 second and fills in the output when it ends; the output is collected when the
 hook's process exits, so nothing streams before that.
+
+Every block of a section holds its text as the run has it: the widgets show it
+sanitized (``_shown``), and a copy takes it as it is, a long block whole though
+its widgets show only its ends (``_ends``).
 """
 
 from __future__ import annotations
@@ -13,10 +17,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import shlex
 import time
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from itertools import islice
 from typing import TYPE_CHECKING, ClassVar
 
 from rich.style import Style
@@ -42,24 +49,36 @@ from chrys.app.tui.screens.dialogs.tool_view import (
     copy_and_notify,
 )
 from chrys.app.tui.util.removal import remove_children_shielded
+from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets.chat.tool_call import fmt_duration
 from chrys.app.tui.widgets.chat.tool_view_builders import build_code_view
 from chrys.app.tui.widgets.sidebar.hooks import run_duration, run_icon, run_outcome
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.service.hooks.run_log import indented_json
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from textual.app import ComposeResult
     from textual.events import Click
+    from textual.timer import Timer
     from textual.widget import Widget
 
     from chrys.foundation.models.hook_runs import HookRunDetail
 
 _POLL_SECONDS = 1.0
 _MAX_LOG_LINES = 10_000
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+"""Where the ``Log`` widget ends a line of the sanitized text, found in the text as read."""
+_FINAL_LINE_BREAK = re.compile(r"(?:\r\n|\r|\n)\Z")
+_SHOWN_LINES = 500
+"""Lines a long block shows at each end: opening the dialog lays out every line its blocks show."""
+_SHOWN_CHARS = 32 * 1024
+"""Characters a long block shows at most at each end, for lines that wrap."""
+_LOG_LINE_SHOWN_CHARS = 64 * 1024
+"""Characters a line of the detached log shows: the ``Log`` widget measures a line again on each write to it."""
 _QUEUED_SHOWN_AFTER_SECONDS = 0.01
 """A shorter wait for a slot is no queueing worth naming."""
 
@@ -92,7 +111,7 @@ _DETAILS_GONE = msg("tui.hook_run.details_gone", fallback="Details are no longer
 _NO_RESULT_FILE = msg("tui.hook_run.no_result_file", fallback="No result file")
 _INVALID_RESULT_FILE = msg("tui.hook_run.invalid_result_file", fallback="The result file was invalid and was ignored")
 _APPLIED_NOTHING = msg("tui.hook_run.applied.nothing", fallback="Nothing")
-_APPLIED_BLOCKED = msg("tui.hook_run.applied.blocked", fallback="Blocked the action: {reason}")
+_APPLIED_BLOCKED = msg("tui.hook_run.applied.blocked", fallback="Blocked the action:")
 _APPLIED_ARGS = msg("tui.hook_run.applied.args", fallback="Changed the tool arguments to:")
 _APPLIED_REMINDER = msg("tui.hook_run.applied.reminder", fallback="Added a reminder for the model:")
 _APPLIED_CONTEXT = msg("tui.hook_run.applied.context", fallback="Added to the tool result:")
@@ -107,6 +126,10 @@ _NOT_APPLIED_FAILED_BLOCKED = msg(
 )
 _TRUNCATED = msg("tui.hook_run.truncated", fallback="{bytes} bytes from the middle were not kept")
 _PAYLOAD_TRUNCATED = msg("tui.hook_run.payload_truncated", fallback="Payload cut at 64 KB of {size}")
+_ARGS_TRUNCATED = msg("tui.hook_run.args_truncated", fallback="Arguments cut at 64 KB of {size}")
+_NOT_SHOWN = msg(
+    "tui.hook_run.not_shown", fallback="{chars} characters from the middle are not shown; a copy includes them"
+)
 _SHARED_LOG = msg(
     "tui.hook_run.shared_log",
     fallback="Another run of this hook started in the same second and writes to this log too",
@@ -139,20 +162,45 @@ def _size(count: int) -> str:
 
 def _pretty_json(text: str) -> str:
     try:
-        return json.dumps(json.loads(text), indent=2, ensure_ascii=False)
-    except ValueError:
+        return indented_json(json.loads(text))
+    except ValueError, RecursionError:
         return text
+
+
+def _ends(text: str) -> tuple[str, int, str] | None:
+    """The start and the end a long *text* shows, and how many characters between them it
+    leaves out; None for a text shown whole."""
+    if len(text) <= 2 * _SHOWN_CHARS and len(_LINE_BREAK.findall(text)) < 2 * _SHOWN_LINES:
+        return None
+    head = text[:_SHOWN_CHARS]
+    if (cut := next(islice(_LINE_BREAK.finditer(head), _SHOWN_LINES - 1, None), None)) is not None:
+        head = head[: cut.start()]
+    tail = text[-_SHOWN_CHARS:]
+    breaks = deque(_LINE_BREAK.finditer(tail), maxlen=_SHOWN_LINES)
+    if len(breaks) == _SHOWN_LINES:
+        tail = tail[breaks[0].end() :]
+    # The ends never overlap: a text long by its characters holds more than both ends take,
+    # and one long by its lines more breaks than both ends end at.
+    return head, len(text) - len(head) - len(tail), tail
+
+
+def _shown(text: str) -> Text:
+    """*text* as a widget shows it: lines and indents kept, controls and lone surrogates made visible."""
+    return Text(sanitize_source_text(surrogate_safe_text(text)))
 
 
 @dataclass(frozen=True, slots=True)
 class _Fields:
-    rows: tuple[tuple[str, Text], ...]
+    rows: tuple[tuple[str, str], ...]
+    """Each row's label, and its value as the run has it."""
     id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class _Note:
     text: str
+    """Localized prose. The run's own text goes in a ``_Code`` block instead: a note's
+    arguments are rendered on one line, sanitized, and its copy would not keep them."""
     copied: bool = True
     """False for a remark about the section, left out of what it copies."""
 
@@ -176,6 +224,50 @@ class _LogPath:
 @dataclass(frozen=True, slots=True)
 class _LogTail:
     pass
+
+
+class _LogText:
+    """The detached log as read, as it is, in the lines the ``Log`` widget keeps: what a copy takes.
+
+    Sanitized for the widget, CR and CRLF end a line as LF does, so lines end at each of them here
+    too, and as many are kept as the widget keeps, the line still open counted. The widget is
+    given a line's first ``_LOG_LINE_SHOWN_CHARS`` characters, and a mark where the rest goes.
+    """
+
+    def __init__(self) -> None:
+        self._lines: deque[str] = deque(maxlen=_MAX_LOG_LINES)
+        """Each line with the break that ended it; the last is still open."""
+
+    def clear(self) -> None:
+        self._lines.clear()
+
+    def write(self, text: str) -> str:
+        """Add *text*; what the widget is given of it."""
+        if not text:
+            return ""
+        if not self._lines:
+            self._lines.append("")
+        shown: list[str] = []
+        start = 0
+        for end in _LINE_BREAK.finditer(text):
+            shown.extend((self._extend(text[start : end.start()]), end.group()))
+            self._lines[-1] += end.group()
+            self._lines.append("")
+            start = end.end()
+        shown.append(self._extend(text[start:]))
+        return "".join(shown)
+
+    def _extend(self, part: str) -> str:
+        """Add *part* to the open line; what the widget is given of it."""
+        room = _LOG_LINE_SHOWN_CHARS - len(self._lines[-1])
+        self._lines[-1] += part
+        if len(part) <= room:
+            return part
+        return part[:room] + "…" if room >= 0 else ""
+
+    def text(self) -> str:
+        # The widget shows the empty line the last break opens; the copy ends at that break.
+        return _FINAL_LINE_BREAK.sub("", "".join(self._lines), count=1)
 
 
 _Block = _Fields | _Line | _Note | _Code | _LogPath | _LogTail
@@ -221,7 +313,7 @@ class _CopySection(VerticalGroup):
 def _fields_plain(fields: _Fields) -> str:
     lines = []
     for label, value in fields.rows:
-        first, *rest = value.plain.split("\n")
+        first, *rest = value.split("\n")
         lines.append(f"{label}: {first}")
         lines.extend(" " * (len(label) + 2) + line for line in rest)
     return "\n".join(lines)
@@ -241,11 +333,17 @@ class HookRunModal(BaseDialog[None]):
     def __init__(self, detail: HookRunDetail, *, latest: Callable[[str], HookRunDetail | None]) -> None:
         super().__init__()
         self._shown = detail
+        self._payload_io = detail.io
+        """The details the Input tab's payload was built from, once: kept when the run log drops them later."""
         self._latest = latest
         """The run as the run log has it now; None once the log no longer keeps it."""
         self._tail = LogTail(detail.log_path) if detail.log_path else None
+        self._log_text = _LogText()
         self._reading = False
         self._rebuilding = False
+        self._timer: Timer | None = None
+        self._gone = False
+        """The run log dropped the run before it ended here: nothing more comes of it."""
 
     # ── layout ───────────────────────────────────────────────────────
 
@@ -277,7 +375,7 @@ class HookRunModal(BaseDialog[None]):
         if self._shown.record.state == "ended":
             self.call_after_refresh(self._open_output)
         if self._shown.record.state != "ended" or self._tail is not None:
-            self.set_interval(_POLL_SECONDS, self._poll)
+            self._timer = self.set_interval(_POLL_SECONDS, self._poll)
         if self._tail is not None:
             self._read_log()
 
@@ -288,13 +386,8 @@ class HookRunModal(BaseDialog[None]):
     def _text(self, reference: MessageRef) -> str:
         return render_str(widget_localizer(self), reference)
 
-    def _fields(self, rows: list[tuple[MessageRef, Text | str]], *, id: str | None = None) -> _Fields:
-        return _Fields(
-            tuple(
-                (self._text(label), value if isinstance(value, Text) else Text(value)) for label, value in rows if value
-            ),
-            id=id,
-        )
+    def _fields(self, rows: list[tuple[MessageRef, str]], *, id: str | None = None) -> _Fields:
+        return _Fields(tuple((self._text(label), value) for label, value in rows if value), id=id)
 
     def _note(self, label: MessageRef, *, copied: bool = True) -> _Note:
         return _Note(self._text(label), copied=copied)
@@ -305,7 +398,7 @@ class HookRunModal(BaseDialog[None]):
         grid.add_column(style="dim", no_wrap=True)
         grid.add_column(overflow="fold")
         for label, value in fields.rows:
-            grid.add_row(label, value)
+            grid.add_row(label, _shown(value))
         return grid
 
     def _widgets(self, tab: str, sections: list[_Section]) -> list[Widget]:
@@ -319,19 +412,31 @@ class HookRunModal(BaseDialog[None]):
                     case _Line():
                         children.append(Static(block.text))
                     case _Note():
-                        children.append(Static(Text(block.text), classes="hook-run-note"))
+                        children.append(Static(_shown(block.text), classes="hook-run-note"))
                     case _Code():
-                        children.append(
-                            build_code_view(
-                                block.language, block.text, dark=self.app.current_theme.dark, render_message=self._text
-                            )
-                        )
+                        children.extend(self._code_views(block))
                     case _LogPath():
-                        children.append(Static(Text(surrogate_safe_text(block.path)), classes="hook-run-note"))
+                        children.append(Static(_shown(block.path), classes="hook-run-note", id="hook-run-log-path"))
                     case _LogTail():
                         children.append(Log(max_lines=_MAX_LOG_LINES, id="hook-run-log"))
             widgets.append(_CopySection(*children, title=section.name, key=f"{tab}:{index}"))
         return widgets
+
+    def _code_views(self, block: _Code) -> list[Widget]:
+        """*block*'s view, or a long block's two ends around a note of what they leave out."""
+        # The view clears controls but not lone surrogates, which no terminal can be sent.
+        text = surrogate_safe_text(block.text)
+        dark = self.app.current_theme.dark
+        if (ends := _ends(text)) is None:
+            return [build_code_view(block.language, text, dark=dark, render_message=self._text)]
+        # Plain: a cut can fall inside a token, which would colour everything after it.
+        head, left_out, tail = ends
+        note = self._text(_NOT_SHOWN.bind(chars=str(left_out)))
+        return [
+            build_code_view("text", head, dark=dark, render_message=self._text),
+            Static(_shown(note), classes="hook-run-note"),
+            build_code_view("text", tail, dark=dark, render_message=self._text),
+        ]
 
     def _section_text(self, section: _Section) -> str:
         """What the section shows, in plain text, but its title."""
@@ -347,11 +452,9 @@ class HookRunModal(BaseDialog[None]):
                 case _Code():
                     parts.append(block.text)
                 case _LogPath():
-                    parts.append(surrogate_safe_text(block.path))
+                    parts.append(block.path)
                 case _LogTail():
-                    with contextlib.suppress(NoMatches):
-                        # The log keeps the empty line its last newline opens.
-                        parts.append("\n".join(self.query_one("#hook-run-log", Log).lines).rstrip("\n"))
+                    parts.append(self._log_text.text())
         return "\n".join(part for part in parts if part)
 
     def _plain(self, sections: list[_Section]) -> str:
@@ -375,31 +478,36 @@ class HookRunModal(BaseDialog[None]):
         mode.append(f"on_error: {detail.on_error}")
         if detail.delivery == "durable":
             mode.append("delivery: durable")
-        triggered = [sanitize_legacy_scalar(record.sub_agent) if record.sub_agent else self._text(_MAIN_AGENT.bind())]
+        triggered = [record.sub_agent or self._text(_MAIN_AGENT.bind())]
         if record.tool_name:
-            tool = sanitize_legacy_scalar(record.tool_name)
-            triggered.append(f"{tool} ({sanitize_legacy_scalar(detail.tool_call_id)})" if detail.tool_call_id else tool)
+            tool = record.tool_name
+            triggered.append(f"{tool} ({detail.tool_call_id})" if detail.tool_call_id else tool)
         if record.retry:
             triggered.append(self._text(_RETRY.bind()))
         started = queued = ""
-        now = time.monotonic()
         if record.started_at is not None:
             started = _wall_time(record.registered_wall + (record.started_at - record.registered_at))
             waited = record.started_at - record.registered_at
+        elif record.outcome == "detached":
+            # Recorded once handed off, when its worker starts it; nothing of it is heard after.
+            started = _wall_time(record.registered_wall)
+            waited = 0.0
         else:
-            waited = (now if record.state == "queued" else record.registered_at) - record.registered_at
+            # Never took a slot: queued until now, or until it ended there.
+            end = record.ended_at if record.ended_at is not None else time.monotonic()
+            waited = end - record.registered_at
         if waited >= _QUEUED_SHOWN_AFTER_SECONDS:
             queued = fmt_duration(int(waited * 1000))
-        source = " · ".join(part for part in (detail.source, surrogate_safe_text(detail.source_path)) if part)
+        source = " · ".join(part for part in (detail.source, detail.source_path) if part)
         if detail.run_type == "shell":
             command = detail.run_argv[0] if detail.run_argv else ""
         else:
             command = shlex.join(detail.run_argv)
-        run_lines = [f"{detail.run_type}: {sanitize_legacy_scalar(command)}"]
+        run_lines = [f"{detail.run_type}: {command}"]
         if detail.run_cwd:
-            run_lines.append(f"cwd: {surrogate_safe_text(detail.run_cwd)}")
+            run_lines.append(f"cwd: {detail.run_cwd}")
         if detail.run_env_names:
-            run_lines.append(f"env: {', '.join(sanitize_legacy_scalar(name) for name in detail.run_env_names)}")
+            run_lines.append(f"env: {', '.join(detail.run_env_names)}")
         return self._fields(
             [
                 (_EVENT.bind(), record.hook_event),
@@ -416,10 +524,11 @@ class HookRunModal(BaseDialog[None]):
 
     def _payload_section(self) -> _Section:
         name = self._text(_PAYLOAD.bind())
-        io = self._shown.io
+        io = self._payload_io
         if io is None:
             return _Section(name, (self._note(_DETAILS_GONE.bind()),))
-        if io.payload_size > len(io.payload.encode("utf-8")):
+        # The payload is ASCII JSON: its characters are its bytes.
+        if io.payload_size > len(io.payload):
             return _Section(
                 name,
                 (
@@ -444,6 +553,8 @@ class HookRunModal(BaseDialog[None]):
     def _output_sections(self) -> list[_Section]:
         detail = self._shown
         result = self._text(_RESULT.bind())
+        if self._gone:
+            return [_Section(result, (self._note(_DETAILS_GONE.bind()),))]
         if detail.record.state != "ended":
             return [_Section(result, (self._note(_RUNNING.bind()),))]
         io = detail.io
@@ -479,17 +590,27 @@ class HookRunModal(BaseDialog[None]):
         if applied is None:
             return [self._note(_APPLIED_NOTHING.bind())]
         widgets: list[_Block] = []
+        # The texts go with the rest of the details, once those are no longer kept.
+        gone = detail.io is None
         if effect == "blocked":
-            widgets.append(self._note(_APPLIED_BLOCKED.bind(reason=sanitize_legacy_scalar(applied.block_reason))))
+            # Kept when the other details go: a run that blocked an action still says why.
+            widgets.append(self._note(_APPLIED_BLOCKED.bind()))
+            widgets.append(_Code("text", applied.block_reason))
         elif effect == "modified_args":
             widgets.append(self._note(_APPLIED_ARGS.bind()))
-            widgets.append(_Code("json", applied.args))
-        elif effect == "added_reminder":
-            widgets.append(self._note(_APPLIED_REMINDER.bind()))
-            widgets.append(_Code("text", applied.reminder))
-        elif effect == "added_context":
-            widgets.append(self._note(_APPLIED_CONTEXT.bind()))
-            widgets.append(_Code("text", applied.extra_context))
+            if gone:
+                widgets.append(self._note(_DETAILS_GONE.bind(), copied=False))
+            elif applied.args_size:
+                widgets.append(self._note(_ARGS_TRUNCATED.bind(size=_size(applied.args_size)), copied=False))
+                widgets.append(_Code("text", applied.args))
+            else:
+                widgets.append(_Code("json", applied.args))
+        elif effect in ("added_reminder", "added_context"):
+            widgets.append(self._note((_APPLIED_REMINDER if effect == "added_reminder" else _APPLIED_CONTEXT).bind()))
+            if gone:
+                widgets.append(self._note(_DETAILS_GONE.bind(), copied=False))
+            else:
+                widgets.append(_Code("text", applied.reminder if effect == "added_reminder" else applied.extra_context))
         reason = {
             "nonblocking": _NOT_APPLIED_NONBLOCKING.bind(),
             "unsupported": _NOT_APPLIED_UNSUPPORTED.bind(event=detail.record.hook_event),
@@ -511,38 +632,70 @@ class HookRunModal(BaseDialog[None]):
 
     def _show_state(self) -> None:
         with contextlib.suppress(NoMatches):
-            self.query_one("#hook-run-container").border_subtitle = self._result_text()
+            # Dropped before it ended here: how it ended is not known.
+            self.query_one("#hook-run-container").border_subtitle = "" if self._gone else self._result_text()
 
     async def _poll(self) -> None:
         if self._tail is not None and not self._reading:
             self._read_log()
-        if self._shown.record.state == "ended":
+        if self._rebuilding:
+            return
+        if self._shown.record.state == "ended" or self._gone:
+            if self._tail is not None and not self._shown.shared_log:
+                await self._note_shared_log()
             return
         latest = self._latest(self._shown.record.run_id)
         if latest is None:
+            # Ended, then dropped from the run log past its cap, between two reads.
+            self._gone = True
+        elif latest.record == self._shown.record:
+            self._shown = latest
+            self._show_state()
+            if latest.record.state == "queued":
+                # Queued until now: the time counts up, as the border's result does.
+                self._show_input_fields()
             return
-        changed = latest.record != self._shown.record
-        self._shown = latest
+        else:
+            self._shown = latest
+            self._show_input_fields()
         self._show_state()
-        if not changed or self._rebuilding:
+        if not self._gone and self._shown.record.state != "ended":
             return
-        with contextlib.suppress(NoMatches):
-            self.query_one("#hook-run-input-fields", Static).update(self._grid(self._input_fields()))
-        if latest.record.state != "ended":
-            return
-        # Ended: its output arrived. The tab stays where the user is.
+        # Nothing more to read, without a log to tail. Paused, not stopped: this
+        # runs on the timer's own task, which stopping cancels.
+        if self._tail is None and not self._shown.log_path and self._timer is not None:
+            self._timer.pause()
+        # Ended, or dropped: its output arrived, or never will. The tab stays where the user is.
         self._rebuilding = True
         try:
             body = self.query_one("#hook-run-output-body", ScrollableContainer)
-            await remove_children_shielded(body)
-            await body.mount(*self._widgets("output", self._output_sections()))
+            with self.app.batch_update():
+                await remove_children_shielded(body)
+                await body.mount(*self._widgets("output", self._output_sections()))
         except NoMatches:
             return
         finally:
             self._rebuilding = False
-        if latest.log_path and self._tail is None:
-            self._tail = LogTail(latest.log_path)
+        if self._shown.log_path and self._tail is None:
+            self._tail = LogTail(self._shown.log_path)
             self._read_log()
+
+    def _show_input_fields(self) -> None:
+        with contextlib.suppress(NoMatches):
+            self.query_one("#hook-run-input-fields", Static).update(self._grid(self._input_fields()))
+
+    async def _note_shared_log(self) -> None:
+        """Say the log is shared once another run of the hook writes to it too, which can follow this run's end."""
+        latest = self._latest(self._shown.record.run_id)
+        if latest is None or not latest.shared_log:
+            return
+        # Only the flag: the run log may have dropped details this dialog still shows.
+        self._shown = replace(self._shown, shared_log=True)
+        with contextlib.suppress(NoMatches):
+            path = self.query_one("#hook-run-log-path", Static)
+            if isinstance(section := path.parent, _CopySection):
+                # Beside the path, not by a rebuild, which would empty the log shown.
+                await section.mount(Static(_shown(self._text(_SHARED_LOG.bind())), classes="hook-run-note"), after=path)
 
     def _read_log(self) -> None:
         self._reading = True
@@ -554,17 +707,20 @@ class HookRunModal(BaseDialog[None]):
             self._reading = False
             return
         try:
-            text, restart = await asyncio.to_thread(tail.read)
+            text, restart = await asyncio.to_thread(tail.read_raw)
         except OSError:
             return
         finally:
             self._reading = False
+        if restart:
+            self._log_text.clear()
+        shown = self._log_text.write(text)
         with contextlib.suppress(NoMatches):
             log = self.query_one("#hook-run-log", Log)
             if restart:
                 log.clear()
-            if text:
-                log.write(text, scroll_end=log.is_vertical_scroll_end)
+            if shown:
+                log.write(sanitize_source_text(shown, tab_size=8), scroll_end=log.is_vertical_scroll_end)
 
     # ── actions ──────────────────────────────────────────────────────
 
