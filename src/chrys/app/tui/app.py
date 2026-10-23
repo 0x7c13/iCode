@@ -15,6 +15,7 @@ import contextlib
 import inspect
 import logging
 import os
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -34,16 +35,11 @@ from textual.widget import Widget
 from chrys import __version__
 from chrys.app.cli.launch_cwd import launch_cwd_missing_message
 from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_successful_turn
-from chrys.app.features.session_title import SessionTitleUpdater
 from chrys.app.parsing import SanitizingArgumentParser
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, copy_with_insert, paste_with_insert
 from chrys.app.tui.binding_display import QUIT_BINDING, localized_binding
 from chrys.app.tui.i18n import LocaleController, render_str
 from chrys.app.tui.notifications import NotificationService, NotificationSettings
-from chrys.app.tui.screens.dialogs.background_task import confirm_stopping_left_behind
-from chrys.app.tui.screens.main import MainScreen
-from chrys.app.tui.screens.settings import SettingsDialog
-from chrys.app.tui.screens.settings.dialog import THEME_PREVIEW_HINT
 from chrys.app.tui.support.gc_freeze import (
     GC_FREEZE_ENABLED,
     GC_FREEZE_WATCHDOG_PERIOD_SECONDS,
@@ -69,7 +65,6 @@ from chrys.app.tui.theme import (
 )
 from chrys.app.tui.theme_loader import load_user_themes, user_theme_warning
 from chrys.app.tui.theme_stylesheet import ThemeStylesheet
-from chrys.app.tui.themes.preview import ThemePreview
 from chrys.app.tui.toasts import TEXTUAL_TOAST_RACK_FORK_VERSION, refresh_newest_first
 from chrys.app.tui.util.debug_log import configure_debug_logging, stop_debug_logging
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_AGENT_STARTUP_FAILED
@@ -91,8 +86,6 @@ from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.signals import HANGUP_SIGNALS
 from chrys.foundation.util.session_ids import session_short_id
-from chrys.orchestration.engine.assembly import assemble_agent_engine
-from chrys.orchestration.engine.engine import AgentEngine
 from chrys.orchestration.startup import catalog_load_warning
 from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_profile_selector
 from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -103,7 +96,6 @@ from chrys.service.profiles.models.resolver import (
 from chrys.service.profiles.models.resolver import (
     resolve_profile_selector as resolve_model_profile_selector,
 )
-from chrys.service.state.store import JsonFileStateStore
 from chrys.service.tools.background.crash import find_left_behind, forget_left_behind, stop_left_behind
 
 logger = logging.getLogger(__name__)
@@ -164,11 +156,18 @@ _TERMINAL_MODE_RESET = (
     "\x1b[=0;1u"  # Hard-reset Kitty keyboard flags
 )
 if TYPE_CHECKING:
+    from textual.app import ComposeResult
     from textual.timer import Timer
 
+    from chrys.app.features.session_title import SessionTitleUpdater
+    from chrys.app.tui.screens.main import MainScreen
+    from chrys.app.tui.themes.preview import ThemePreview
+    from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
     from chrys.app.tui.widgets.markdown.diagram.messages import DiagramOpenRequested
     from chrys.app.update_check import UpdateCheck
+    from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.state.store import JsonFileStateStore
 
 
 def _resolve_startup_profile(registry: AgentProfileRegistry, preferred_name: str) -> AgentProfile | None:
@@ -285,7 +284,12 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         gc_freeze_enabled: bool | None = None,
         gc_freeze_measure_counts: bool = False,
         update_check: UpdateCheck | None = None,
+        show_startup_loading: bool = False,
     ) -> None:
+        from chrys.service.state.store import JsonFileStateStore
+
+        self._show_startup_loading = show_startup_loading
+        self._startup_loading_indicator: ChrysLoadingIndicator | None = None
         self._bus = event_bus
         self._engine = engine
         if settings_handle is not None and settings is not None and settings is not settings_handle.settings:
@@ -460,6 +464,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     def freeze_block_reason(self) -> GcFreezeBlockReason | None:
         """Return the App-owned top-screen gate for GC freeze dispatch."""
+        from chrys.orchestration.engine.engine import AgentEngine
+
         if self._gc_pointer_buttons_down:
             return GcFreezeBlockReason.POINTER_BUTTON_HELD
         # Tests use deliberately tiny engine stand-ins.  Production always
@@ -580,7 +586,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         if (
             TEXTUAL_VERSION != _TEXTUAL_LOAD_SCREEN_CSS_FORK_VERSION
             or running_under_textual_web_driver()
-            or isinstance(screen, MainScreen)
+            or self._main_screen is None
+            or screen is self._main_screen
         ):
             super()._load_screen_css(screen)
             return
@@ -706,6 +713,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         return super().get_css_variables()
 
     def begin_theme_preview(self, theme: Theme) -> bool:
+        from chrys.app.tui.themes.preview import ThemePreview
+
         if self.theme_preview is not None:
             return False
         self._theme_preview_source = self.theme
@@ -760,6 +769,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
     def unregister_user_theme(self, name: str) -> None:
         """Forget a deleted file and repair its applied selection, including previews."""
         from chrys.app.tui.theme_loader import theme_is_read_only
+        from chrys.app.tui.themes.preview import ThemePreview
 
         if theme_is_read_only(name):
             raise ValueError("Built-in themes are read-only")
@@ -856,6 +866,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         fire on an equal value, so the persist/overlay pair runs directly.
         """
         if self.theme_preview is not None:
+            from chrys.app.tui.screens.settings.dialog import THEME_PREVIEW_HINT
+
             self.notify(render_str(self.localizer, THEME_PREVIEW_HINT.bind()), severity="warning", markup=False)
             return False
         if theme_name not in self.available_themes:
@@ -877,10 +889,15 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         The dialog may sit under another modal (a confirmation, a file picker),
         so the whole stack is checked rather than the top screen alone.
         """
-        for screen in self.screen_stack:
-            if isinstance(screen, SettingsDialog):
-                screen.commit_pending()
         main = self._main_screen
+        if main is not None:
+            # Only the main screen opens Settings. Before it exists there is nothing to
+            # commit, and importing here could race the main screen's import on its thread.
+            from chrys.app.tui.screens.settings import SettingsDialog
+
+            for screen in self.screen_stack:
+                if isinstance(screen, SettingsDialog):
+                    screen.commit_pending()
         if main is not None and main in self.screen_stack and main.background_tasks_running:
             main.action_quit()  # It asks whether the background commands may stop.
             return
@@ -920,6 +937,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         Subclasses can override this factory to provide a MainScreen variant
         while reusing the standard app bootstrap.
         """
+        from chrys.app.tui.screens.main import MainScreen
+
         return MainScreen(
             self._bus,
             state_store=self._state_store,
@@ -940,13 +959,65 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             reset_program_status=self._program_status_reporter.reset_context,
         )
 
+    def compose(self) -> ComposeResult:
+        """Paint the native app shell before importing the main screen."""
+        if self._show_startup_loading:
+            from rich.text import Text
+            from textual.containers import Center, Vertical
+            from textual.widgets import Static
+
+            from chrys.app.tui.util.logo import TUI_LOGO
+            from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
+
+            self._startup_loading_indicator = ChrysLoadingIndicator(id="startup-loading")
+            # Each row centers itself (the indicator centers its dots); the shell centers the rows.
+            with Vertical(id="startup-shell"):
+                with Center():
+                    yield Static(Text(TUI_LOGO.strip("\n")), id="startup-logo")
+                yield self._startup_loading_indicator
+
     async def on_mount(self) -> None:
-        """Push the main screen and start the engine."""
+        """Start the main screen after the optional loading shell paints."""
         await self._program_status_reporter.subscribe()
         self._set_terminal_title_for_cwd()
         # Closing the terminal or SIGTERM quits without asking, so the session's background commands stop.
         for signum in HANGUP_SIGNALS:
             asyncio.get_running_loop().add_signal_handler(signum, self.exit)
+        if self._show_startup_loading:
+            self._startup_task = asyncio.create_task(self._mount_main_after_refresh())
+            return
+        screen, profile = await self._prepare_main_screen()
+        if profile is not None:
+            self._startup_task = asyncio.create_task(self._start_engine_after_refresh(profile, screen))
+        self._left_behind_task = asyncio.create_task(self._offer_to_stop_left_behind(screen))
+
+    async def _mount_main_after_refresh(self) -> None:
+        """Own deferred screen construction and agent startup as one task."""
+        try:
+            if not await self._wait_for_startup_refresh():
+                return
+            # Importing is most of the wait; off the event loop, the loading dots keep moving.
+            await asyncio.to_thread(import_module, "chrys.app.tui.screens.main")
+            if not self._startup_still_wanted():
+                return
+            indicator = self._startup_loading_indicator
+            if indicator is not None:
+                indicator.pause_animation()
+            screen, profile = await self._prepare_main_screen()
+            self._left_behind_task = asyncio.create_task(self._offer_to_stop_left_behind(screen))
+            if profile is not None:
+                await self._start_engine_after_refresh(profile, screen)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._handle_exception(error)
+        finally:
+            indicator = self._startup_loading_indicator
+            if indicator is not None:
+                indicator.pause_animation()
+
+    async def _prepare_main_screen(self) -> tuple[MainScreen, AgentProfile | None]:
+        """Mount the main screen and prepare its subscriptions and loading state."""
         screen = self._build_main_screen()
         await self.push_screen(screen)
         self._main_screen = screen
@@ -974,12 +1045,34 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
         if profile is not None:
             screen.set_startup_agent_loading(True)
-            self._startup_task = asyncio.create_task(self._start_engine(profile, screen))
         else:
             # No engine start means no restore either: the bootstrap settings
             # stay in force, so their warnings are due after all.
             await self._flush_deferred_settings_warnings()
-        self._left_behind_task = asyncio.create_task(self._offer_to_stop_left_behind(screen))
+        return screen, profile
+
+    async def _start_engine_after_refresh(self, profile: AgentProfile, screen: MainScreen) -> None:
+        """Let the main screen paint before agent construction imports its tools."""
+        if await self._wait_for_startup_refresh():
+            await self._start_engine(profile, screen)
+
+    async def _wait_for_startup_refresh(self) -> bool:
+        """Wait for a paint while tolerating shutdown and a late callback."""
+        painted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+        def on_painted() -> None:
+            if not painted.done():
+                painted.set_result(None)
+
+        if not self.call_after_refresh(on_painted):
+            return False
+        await painted
+        return self._startup_still_wanted()
+
+    def _startup_still_wanted(self) -> bool:
+        """Whether deferred startup may go on: no exit requested and the pump still open."""
+        # exit() records its request before ExitApp closes the message pump.
+        return not self._exit and self.is_running and not self._closing
 
     async def _run_update_check(self, check: UpdateCheck, screen: MainScreen) -> None:
         # A check that fails in any way just leaves the welcome screen as it is.
@@ -992,6 +1085,8 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def _offer_to_stop_left_behind(self, screen: MainScreen) -> None:
         """Ask whether to stop the background commands launches that crashed left running."""
+        from chrys.app.tui.screens.dialogs.background_task import confirm_stopping_left_behind
+
         try:
             # After the startup session: what it asks comes first.
             if self._startup_task is not None:
@@ -1266,9 +1361,12 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
     """
     import logging
 
+    from chrys.app.features.session_title import SessionTitleUpdater
     from chrys.app.update_check import for_this_copy
     from chrys.foundation.config.warnings import settings_warning_events
+    from chrys.orchestration.engine.assembly import assemble_agent_engine
     from chrys.orchestration.startup import bootstrap_runtime, configure_utf8_stdio
+    from chrys.service.state.store import JsonFileStateStore
 
     configure_utf8_stdio()
 
@@ -1352,6 +1450,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             apply_saved_model_on_restore=not bool(args.model.strip()),
             session_title_updater=session_title_updater,
             update_check=for_this_copy(enabled=loaded.settings.update_check, served=running_under_textual_web_driver()),
+            show_startup_loading=True,
         )
         try:
             # On Windows, the ProactorEventLoop shutdown can raise KeyboardInterrupt

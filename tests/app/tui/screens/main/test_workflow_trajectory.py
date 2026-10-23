@@ -135,6 +135,28 @@ async def test_f12_waits_for_completion_and_lease_release(
         assert main._workflow.workflow_mode is workflow
 
 
+async def test_agent_loading_hides_f12_and_its_end_restores_the_footer_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(make_project(tmp_path))
+    app = make_chrys_app(tmp_path / "sessions", engine=WorkflowEngine())
+    async with app.run_test(size=(140, 45)) as pilot:
+        main = app._main_screen
+        assert main is not None
+
+        def footer_has_f12() -> bool:
+            return any(key.key == "f12" for key in main.query(FooterKey))
+
+        await wait_for(lambda: not main.is_startup_agent_loading() and footer_has_f12(), pilot=pilot)
+        # The loading state alone changes: no other binding refresh moves the key.
+        main.set_startup_agent_loading(True)
+        await wait_for(lambda: not footer_has_f12(), pilot=pilot, description="F12 hidden while loading")
+        assert "f12" not in main.active_bindings
+        main.set_startup_agent_loading(False)
+        await wait_for(footer_has_f12, pilot=pilot, description="F12 back once the agent is ready")
+        assert "f12" in main.active_bindings
+
+
 @pytest.mark.parametrize("view", ["graph", "code", "output"])
 async def test_workflow_hides_f12_and_switching_back_to_chat_restores_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, view: Literal["graph", "code", "output"]

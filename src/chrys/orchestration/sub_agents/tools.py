@@ -64,8 +64,6 @@ from chrys.kernel import (
     Message,
     StallExhaustedAction,
 )
-from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker
-from chrys.orchestration.invoker.acp_spec import resolve_acp_spec
 from chrys.orchestration.invoker.attempts import AgentRunKwargs, WireRecipe
 from chrys.orchestration.invoker.child_history import service_storage_side
 from chrys.orchestration.invoker.contracts import SubAgentFailureReason, SubAgentStatus, Unbind
@@ -85,9 +83,7 @@ from chrys.orchestration.invoker.runtime import (
     create_runtime,
     create_validation,
 )
-from chrys.orchestration.sub_agents.acp_policy import AcpSubAgentPolicy
 from chrys.orchestration.sub_agents.kernel_policy import KernelSubAgentPolicy
-from chrys.service.acp_client import AcpConfigError
 from chrys.service.agent_middleware import (
     ApprovalMiddleware,
     SleepMiddleware,
@@ -133,6 +129,8 @@ if TYPE_CHECKING:
     from chrys.foundation.config.settings import Settings
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.session_env import SessionEnvironment
+    from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker
+    from chrys.orchestration.sub_agents.acp_policy import AcpSubAgentPolicy
     from chrys.service.approval.judge import ApprovalJudge
     from chrys.service.context.compaction import PreCompactInfo
     from chrys.service.context.compaction.last_words import CompactionStatus
@@ -878,7 +876,13 @@ class SubAgentTools:
         profile: AgentProfile,
         runtime: SessionEnvironment,
     ) -> FunctionTool:
+        from chrys.orchestration.invoker.acp_protocol import AcpPermissionBroker
+        from chrys.orchestration.sub_agents.acp_policy import AcpSubAgentPolicy
+        from chrys.service.acp_client import AcpConfigError
+
         async def _invoke_acp(prompt: str) -> str:
+            from chrys.orchestration.invoker.acp_spec import resolve_acp_spec
+
             if self._total_active >= self._max_total:
                 return tool_error(
                     "sub_agent_concurrency_limit",

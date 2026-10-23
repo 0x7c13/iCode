@@ -97,7 +97,10 @@ def _missing_winpty(cols: int, rows: int) -> WinPTYProtocol:
     raise RuntimeError("WinPTY is unavailable on this platform")
 
 
-def _load_winpty() -> tuple[WinPTYFactory, tuple[type[BaseException], ...]]:
+def load_winpty() -> tuple[WinPTYFactory, tuple[type[BaseException], ...]]:
+    """Import pywinpty: its PTY factory and error types, or a factory that raises off Windows."""
+    if not IS_WINDOWS:
+        return _missing_winpty, ()
     module = cast(Any, importlib.import_module("winpty"))
     error_type: type[BaseException] | None = None
     with suppress(AttributeError):
@@ -106,9 +109,3 @@ def _load_winpty() -> tuple[WinPTYFactory, tuple[type[BaseException], ...]]:
     if error_type is not None:
         errors = (error_type,)
     return cast("WinPTYFactory", module.PTY), errors
-
-
-WINPTY_FACTORY: WinPTYFactory = _missing_winpty
-WINPTY_ERRORS: tuple[type[BaseException], ...] = ()
-if IS_WINDOWS:
-    WINPTY_FACTORY, WINPTY_ERRORS = _load_winpty()

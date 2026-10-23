@@ -4,6 +4,24 @@
  * fallbacks follow each theme's palette and are saved with custom overrides.
  */
 
+#startup-shell {
+    align-vertical: middle;
+}
+
+/* Styled like the welcome logo; sized to the art, so a narrow terminal crops it rather than wrapping it. */
+#startup-logo {
+    width: auto;
+    color: $foreground;
+    text-style: bold;
+}
+
+/* The dots take the logo's color. */
+#startup-loading {
+    height: 1;
+    margin-top: 1;
+    color: $foreground;
+}
+
 MainScreen {
     background: $background;
 }

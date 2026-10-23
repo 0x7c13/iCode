@@ -2,12 +2,11 @@
 
 """External ACP agent client core."""
 
-from .client import (
-    AcpAgentClient,
-    AcpClientCallbacks,
-    AcpClientWaitController,
-    AcpUpdateSink,
-)
+from __future__ import annotations
+
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
+
 from .errors import (
     AcpAuthRequiredError,
     AcpClientError,
@@ -36,6 +35,22 @@ from .spec import (
     PermissionDecision,
 )
 
+if TYPE_CHECKING:
+    from .client import (
+        AcpAgentClient,
+        AcpClientCallbacks,
+        AcpClientWaitController,
+        AcpUpdateSink,
+    )
+
+# The client loads on first use; specs and errors above stay light.
+_EXPORTS = {
+    "AcpAgentClient": "client",
+    "AcpClientCallbacks": "client",
+    "AcpClientWaitController": "client",
+    "AcpUpdateSink": "client",
+}
+
 __all__ = [
     "AcpAgentClient",
     "AcpAgentSpec",
@@ -63,3 +78,18 @@ __all__ = [
     "validate_json_rpc_envelope",
     "validate_json_scalar_tree",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily resolve the ACP client."""
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(f"{__name__}.{_EXPORTS[name]}")
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    """Return the default module attributes plus facade exports."""
+    return sorted({*globals(), *__all__})

@@ -24,7 +24,6 @@ from textual.message import Message
 from textual.notifications import SeverityLevel
 
 import chrys.app.tui.terminal.panel as panel_module
-import chrys.app.tui.terminal.shell as shell_module
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.support.gc_freeze import GcFreezeBlockReason
 from chrys.app.tui.terminal.panel import ShellPanel
@@ -395,7 +394,7 @@ async def test_shell_that_cannot_start_is_reported_as_literal_error_text(
     async def spawn(argv: Sequence[str], *, env: Mapping[str, str], cwd: str, columns: int, lines: int) -> PtyProcess:
         raise OSError("[Errno 2] no [such/] shell")
 
-    monkeypatch.setattr(shell_module, "spawn_pty_process", spawn)
+    monkeypatch.setattr("chrys.app.tui.terminal.pty_process.spawn_pty_process", spawn)
     app = PanelApp(locale=locale)
     async with app.run_test(size=(60, 20), notifications=True) as pilot:
         app.panel.show()

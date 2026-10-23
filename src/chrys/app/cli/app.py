@@ -24,8 +24,24 @@ _PLURAL_ALIASES: Final = {
 """Noun commands are shown in the singular and also accepted in the plural; neither form is deprecated."""
 
 
+def _show_startup_notice(argv: list[str]) -> None:
+    """Flush one complete line without taking ownership of terminal modes."""
+    import contextlib
+    import os
+
+    if any(arg in {"--help", "-h", "--version", "-v"} for arg in argv) or os.environ.get("TEXTUAL_DRIVER"):
+        return
+    # Complete the line before imports or argument parsing can print diagnostics.
+    # No later cleanup may erase a parser error, log line, or traceback.
+    with contextlib.suppress(OSError, ValueError):
+        if sys.stderr.isatty():
+            sys.stderr.write(f"Starting {APP_DISPLAY_NAME}...\n")
+            sys.stderr.flush()
+
+
 def _run_tui(argv: list[str]) -> int:
     """Run the TUI with *argv* as its argument list."""
+    _show_startup_notice(argv)
     from chrys.app.tui.app import main as tui_main
 
     old_argv = sys.argv

@@ -119,6 +119,8 @@ icode
 
 Replace `<project-directory>` with the actual path to your project. To switch directories after startup, see [Working directory](../guides/daily-use/workspaces.md).
 
+iCode first prints `Starting iCode...` and shows a loading screen while it gets ready. When the main screen appears, it keeps showing that it is loading until the agent is ready.
+
 ## 3. Configure a model
 
 1. Press **F4** or click `f4 Models` at the bottom of the screen to open the **Model Configuration** dialog.

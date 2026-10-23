@@ -119,14 +119,14 @@ async def test_session_new_permission_and_update_survive_in_owned_pause_audit(
     tools = engine.current.loaded.sub_agent_tools
     assert tools is not None
     tools.set_approval_mode(ApprovalMode.BYPASS)
-    from chrys.orchestration.sub_agents import tools as tools_module
+    from chrys.orchestration.invoker import acp_spec as acp_spec_module
 
-    original_spec = tools_module.resolve_acp_spec
+    original_spec = acp_spec_module.resolve_acp_spec
 
     def with_mode(*args, **kwargs):
         return replace(original_spec(*args, **kwargs), session_mode="review")
 
-    monkeypatch.setattr(tools_module, "resolve_acp_spec", create_autospec(original_spec, side_effect=with_mode))
+    monkeypatch.setattr(acp_spec_module, "resolve_acp_spec", create_autospec(original_spec, side_effect=with_mode))
     try:
         await bus.publish(UserMessage(text="delegate"))
         await wait_for(

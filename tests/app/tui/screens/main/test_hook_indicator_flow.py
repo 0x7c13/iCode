@@ -163,9 +163,19 @@ async def _ready(pilot: Pilot) -> MainScreen:
 
     def ready() -> bool:
         screen = app._main_screen
-        return screen is not None and app.screen is screen and not screen._state.run.agent_loading
+        if screen is None or app.screen is not screen or screen._state.run.agent_loading:
+            return False
+        # The main screen paints while the agent loads, so the footer recomposes
+        # once it is ready: keys queried before that recompose lands are stale.
+        footer = screen.query_one(ChrysFooter)
 
-    await wait_for(ready, pilot=pilot, description="session ready")
+        return (
+            not footer._binding_recompose_in_progress
+            and not footer._binding_recompose_dirty
+            and footer._visible_binding_signature == footer._binding_signature(screen)
+        )
+
+    await wait_for(ready, pilot=pilot, description="session ready with its footer keys")
     main = app._main_screen
     assert main is not None
     return main

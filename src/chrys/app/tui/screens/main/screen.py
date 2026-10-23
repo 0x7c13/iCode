@@ -31,9 +31,7 @@ from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.binding_display import QUIT_BINDING, localized_binding
 from chrys.app.tui.i18n import render_content, render_str
 from chrys.app.tui.language import LANGUAGE_OPTIONS, LANGUAGE_UNKNOWN_LOCALE
-from chrys.app.tui.screens.dialogs.app_mode import AppModeDialog
 from chrys.app.tui.screens.dialogs.background_task import ROLLBACK_NOTE, BackgroundTaskModal, confirm_stopping
-from chrys.app.tui.screens.dialogs.editor import EditorDialog, EditorDialogResult
 from chrys.app.tui.screens.main.action_availability import check_main_action
 from chrys.app.tui.screens.main.commands import INVALID_COMMAND_TITLE_REF, SlashCommandActions
 from chrys.app.tui.screens.main.config_actions import (
@@ -74,8 +72,6 @@ from chrys.app.tui.screens.main.workflow_controller import WorkflowController
 from chrys.app.tui.screens.main.workspace_actions import WorkspaceCallbacks, WorkspaceController
 from chrys.app.tui.screens.main.workspace_branch import WorkspaceBranchController
 from chrys.app.tui.screens.settings import GENERAL_TAB_ID
-from chrys.app.tui.screens.settings.dialog import THEME_PREVIEW_HINT
-from chrys.app.tui.screens.themes import ThemeEditorPanel
 from chrys.app.tui.support.gc_freeze import (
     GcFreezeBlockReason,
     GcFreezeParticipant,
@@ -144,7 +140,9 @@ if TYPE_CHECKING:
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.tui.notifications import NotificationService
     from chrys.app.tui.notifications.settings import NotificationSettings
+    from chrys.app.tui.screens.dialogs.editor import EditorDialogResult
     from chrys.app.tui.screens.sessions import WorkflowSessionPick
+    from chrys.app.tui.screens.themes import ThemeEditorPanel
     from chrys.app.tui.screens.themes.picker import ThemesScreen
     from chrys.app.tui.themes.store import ThemeFileRevision, UserThemeStore
     from chrys.app.update_check import UpdateNotice
@@ -1446,6 +1444,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     @on(InputBar.EditorRequested)
     def _on_editor_requested(self, _event: InputBar.EditorRequested) -> None:
+        from chrys.app.tui.screens.dialogs.editor import EditorDialog
+
         if isinstance(self.app.screen, EditorDialog):
             return
         input_bar = self.query_one(InputBar)
@@ -1923,6 +1923,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         input_bar = self.query_one(InputBar)
         if not loading and input_bar.locked and not self._state.run.agent_running:
             input_bar.unlock_and_keep()
+        # Loading hides the trajectory key; nothing else refreshes the footer when it ends.
+        self._sync_main_bindings()
 
     def _set_has_messages(self, has: bool) -> None:
         if MainScreen._reactive_state_ready(self):
@@ -2088,6 +2090,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def action_pick_theme(self) -> None:
         """Open the theme picker modal."""
         if self.theme_editor is not None:
+            from chrys.app.tui.screens.settings.dialog import THEME_PREVIEW_HINT
+
             self.notify(
                 render_str(self._language_localizer(), THEME_PREVIEW_HINT.bind()), severity="warning", markup=False
             )
@@ -2102,6 +2106,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         revision: ThemeFileRevision | None = None,
     ) -> None:
         """Reserve a left dock before the header, transcript and input bar."""
+        from chrys.app.tui.screens.themes import ThemeEditorPanel
+
         if self.theme_editor is not None:
             self.theme_editor.editor.focus_first_swatch()
             return
@@ -2244,6 +2250,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     @on(AppHeader.ModeClicked)
     def _on_mode_clicked(self) -> None:
+        from chrys.app.tui.screens.dialogs.app_mode import AppModeDialog
+
         if not self._can_switch_app_mode():
             # Shell mode is the one block with no run to name; it stays silent.
             if (notice := self._app_mode_busy_notice()) is not None:
