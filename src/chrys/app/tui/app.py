@@ -962,14 +962,18 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
     def compose(self) -> ComposeResult:
         """Paint the native app shell before importing the main screen."""
         if self._show_startup_loading:
-            from textual.containers import Vertical
+            from rich.text import Text
+            from textual.containers import Center, Vertical
             from textual.widgets import Static
 
+            from chrys.app.tui.util.logo import TUI_LOGO
             from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
 
+            self._startup_loading_indicator = ChrysLoadingIndicator(id="startup-loading")
+            # Each row centers itself (the indicator centers its dots); the shell centers the rows.
             with Vertical(id="startup-shell"):
-                yield Static(APP_DISPLAY_NAME, id="startup-brand", markup=False)
-                self._startup_loading_indicator = ChrysLoadingIndicator(id="startup-loading")
+                with Center():
+                    yield Static(Text(TUI_LOGO.strip("\n")), id="startup-logo")
                 yield self._startup_loading_indicator
 
     async def on_mount(self) -> None:

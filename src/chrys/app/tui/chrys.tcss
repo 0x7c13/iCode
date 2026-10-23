@@ -4,21 +4,22 @@
  * fallbacks follow each theme's palette and are saved with custom overrides.
  */
 
-ChrysApp #startup-shell {
-    width: 100%;
-    height: 100%;
-    align: center middle;
+#startup-shell {
+    align-vertical: middle;
 }
 
-ChrysApp #startup-brand {
+/* Styled like the welcome logo; sized to the art, so a narrow terminal crops it rather than wrapping it. */
+#startup-logo {
     width: auto;
-    height: 1;
-    color: $primary;
+    color: $foreground;
+    text-style: bold;
 }
 
-ChrysApp #startup-loading {
-    width: 24;
+/* The dots take the logo's color. */
+#startup-loading {
     height: 1;
+    margin-top: 1;
+    color: $foreground;
 }
 
 MainScreen {

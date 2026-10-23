@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from rich.cells import cell_len
 
 from chrys.app.tui import app as tui_module
 from chrys.app.tui.app import ChrysApp
+from chrys.app.tui.util.logo import TUI_LOGO
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -42,6 +44,51 @@ def _startup_app(
     )
 
 
+def _held_startup() -> tuple[type[StartupApp], asyncio.Event, asyncio.Event]:
+    """An app whose loading shell stays up until the returned release event is set."""
+    preparing = asyncio.Event()
+    release = asyncio.Event()
+
+    class HeldStartup(StartupApp):
+        async def _prepare_main_screen(self):
+            preparing.set()
+            await release.wait()
+            return await super()._prepare_main_screen()
+
+    return HeldStartup, preparing, release
+
+
+@pytest.mark.parametrize(("width", "height"), [(100, 30), (20, 12)], ids=["wide", "narrower-than-the-logo"])
+async def test_loading_shell_centers_the_logo_over_its_dots(tmp_path: Path, width: int, height: int) -> None:
+    held, preparing, release = _held_startup()
+    app = _startup_app(tmp_path, held)
+    async with app.run_test(size=(width, height)):
+        task = app._startup_task
+        assert task is not None
+        await wait_for(lambda: preparing.is_set() or task.done(), description="the loading shell held on screen")
+        if task.done():
+            await task
+        rows = [strip.text.rstrip() for strip in app.screen._compositor.render_strips()]
+        logo_color = app.screen.query_one("#startup-logo").styles.color
+        dots_color = app.screen.query_one("#startup-loading").styles.color
+        release.set()
+        await wait_for(task.done, description="the main screen after the loading shell")
+        await task
+
+    logo = TUI_LOGO.strip("\n").splitlines()
+    left = max(0, (width - max(cell_len(line) for line in logo)) // 2)
+    top = next(y for y, row in enumerate(rows) if row)
+    # The art keeps its rows whole: a narrow terminal crops it instead of wrapping it.
+    assert rows[top : top + len(logo)] == [(" " * left + line)[:width].rstrip() for line in logo]
+    blank, dots, *below = rows[top + len(logo) :]
+    assert blank == ""
+    assert dots.strip()
+    assert abs(2 * (len(dots) - len(dots.lstrip())) + cell_len(dots.lstrip()) - width) <= 1
+    assert not any(below)
+    assert abs(top - len(below)) <= 1
+    assert dots_color == logo_color
+
+
 async def test_loading_shell_finishes_without_an_available_profile(tmp_path: Path) -> None:
     app = _startup_app(tmp_path)
     async with app.run_test():
@@ -58,16 +105,8 @@ async def test_loading_shell_finishes_without_an_available_profile(tmp_path: Pat
 
 
 async def test_exit_during_loading_drains_the_startup_task(tmp_path: Path) -> None:
-    preparing = asyncio.Event()
-    release = asyncio.Event()
-
-    class HeldStartup(StartupApp):
-        async def _prepare_main_screen(self):
-            preparing.set()
-            await release.wait()
-            return await super()._prepare_main_screen()
-
-    app = _startup_app(tmp_path, HeldStartup)
+    held, preparing, _release = _held_startup()
+    app = _startup_app(tmp_path, held)
     async with app.run_test():
         task = app._startup_task
         assert task is not None
