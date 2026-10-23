@@ -748,9 +748,11 @@ async def test_quit_commits_a_settings_dialog_that_sits_under_another_modal() ->
     exits: list[bool] = []
     dialog = SettingsDialog.__new__(SettingsDialog)
     dialog.commit_pending = lambda: committed.append("settings")  # type: ignore[method-assign]
+    # Only the main screen opens Settings, so it sits at the bottom of the stack.
+    main = SimpleNamespace(background_tasks_running=False)
     fake_app = SimpleNamespace(
-        screen_stack=[object(), dialog, SimpleNamespace(name="confirm-on-top")],
-        _main_screen=None,
+        screen_stack=[main, dialog, SimpleNamespace(name="confirm-on-top")],
+        _main_screen=main,
         exit=lambda: exits.append(True),
     )
 

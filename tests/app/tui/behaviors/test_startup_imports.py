@@ -99,27 +99,26 @@ def test_lazy_acp_exports_preserve_public_api() -> None:
 
 
 def test_production_loading_frame_precedes_main_screen_import(tmp_path) -> None:
+    # The child quits at its first frame, so the deferred startup never builds the
+    # main screen: that work proves nothing here (test_app_startup.py covers the
+    # engine order in process) and stretches a child far on loaded runners.
     script = """
 import sys
 from pathlib import Path
 from chrys.app.tui import app as tui
 sys.argv = ['icode']
-frames = []
+first_frame = []
 class Probe(tui.ChrysApp):
     CSS_PATH = [Path(tui.__file__).parent / path for path in tui.ChrysApp.CSS_PATH]
     def _display(self, screen, renderable):
-        if not frames:
-            assert screen.id == '_default'
-            assert 'chrys.app.tui.screens.main.screen' not in sys.modules
         super()._display(screen, renderable)
-        frames.append(screen)
-    async def _start_engine(self, profile, screen):
-        assert screen in frames
-        self.call_after_refresh(self.exit)
+        if not first_frame:
+            first_frame.append((screen.id, 'chrys.app.tui.screens.main.screen' in sys.modules))
+            self.exit()
     def run(self):
         return super().run(headless=True, size=(100, 30))
 tui.main(app_cls=Probe)
-assert len(frames) >= 2
+assert first_frame == [('_default', False)], first_frame
 """
     result = subprocess.run(
         [sys.executable, "-c", script],

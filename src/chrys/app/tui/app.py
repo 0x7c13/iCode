@@ -15,6 +15,7 @@ import contextlib
 import inspect
 import logging
 import os
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -285,10 +286,10 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         update_check: UpdateCheck | None = None,
         show_startup_loading: bool = False,
     ) -> None:
-        self._show_startup_loading = show_startup_loading
-        self._startup_loading_indicator: ChrysLoadingIndicator | None = None
         from chrys.service.state.store import JsonFileStateStore
 
+        self._show_startup_loading = show_startup_loading
+        self._startup_loading_indicator: ChrysLoadingIndicator | None = None
         self._bus = event_bus
         self._engine = engine
         if settings_handle is not None and settings is not None and settings is not settings_handle.settings:
@@ -888,12 +889,15 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         The dialog may sit under another modal (a confirmation, a file picker),
         so the whole stack is checked rather than the top screen alone.
         """
-        from chrys.app.tui.screens.settings import SettingsDialog
-
-        for screen in self.screen_stack:
-            if isinstance(screen, SettingsDialog):
-                screen.commit_pending()
         main = self._main_screen
+        if main is not None:
+            # Only the main screen opens Settings. Before it exists there is nothing to
+            # commit, and importing here could race the main screen's import on its thread.
+            from chrys.app.tui.screens.settings import SettingsDialog
+
+            for screen in self.screen_stack:
+                if isinstance(screen, SettingsDialog):
+                    screen.commit_pending()
         if main is not None and main in self.screen_stack and main.background_tasks_running:
             main.action_quit()  # It asks whether the background commands may stop.
             return
@@ -988,6 +992,10 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         try:
             if not await self._wait_for_startup_refresh():
                 return
+            # Importing is most of the wait; off the event loop, the loading dots keep moving.
+            await asyncio.to_thread(import_module, "chrys.app.tui.screens.main")
+            if not self._startup_still_wanted():
+                return
             indicator = self._startup_loading_indicator
             if indicator is not None:
                 indicator.pause_animation()
@@ -1055,6 +1063,10 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         if not self.call_after_refresh(on_painted):
             return False
         await painted
+        return self._startup_still_wanted()
+
+    def _startup_still_wanted(self) -> bool:
+        """Whether deferred startup may go on: no exit requested and the pump still open."""
         # exit() records its request before ExitApp closes the message pump.
         return not self._exit and self.is_running and not self._closing
 
