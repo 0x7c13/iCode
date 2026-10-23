@@ -4,10 +4,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
-    from chrys.app.tui.screens.settings.dialog import SettingsDialog
 from chrys.app.tui.screens.settings.layout import (
     DEFERRED_KEYS,
     GENERAL_TAB_ID,
@@ -18,6 +17,12 @@ from chrys.app.tui.screens.settings.layout import (
     rendered_keys,
 )
 from chrys.app.tui.screens.settings.ports import NotificationPorts, SessionStoragePorts, SettingsPanelPorts
+
+if TYPE_CHECKING:
+    from chrys.app.tui.screens.settings.dialog import SettingsDialog
+
+# The modal loads on first use; its layout and ports above stay light.
+_EXPORTS = {"SettingsDialog": "dialog"}
 
 __all__ = [
     "DEFERRED_KEYS",
@@ -34,16 +39,16 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str) -> object:
-    """Load the settings modal independently of its layout and ports."""
-    if name == "SettingsDialog":
-        from chrys.app.tui.screens.settings.dialog import SettingsDialog
-
-        globals()[name] = SettingsDialog
-        return SettingsDialog
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+def __getattr__(name: str) -> Any:
+    """Lazily resolve the settings modal."""
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(f"{__name__}.{_EXPORTS[name]}")
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
 
 
 def __dir__() -> list[str]:
-    """Expose the settings API before its modal is imported."""
+    """Return the default module attributes plus facade exports."""
     return sorted({*globals(), *__all__})

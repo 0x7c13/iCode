@@ -24,11 +24,9 @@ from typing import Final, Protocol
 
 from chrys.app.tui.terminal._pty_backend import (
     IS_WINDOWS,
-    WinPTYFactory,
     WinPTYProtocol,
-    _load_winpty,
-    _missing_winpty,
     kill_posix_process,
+    load_winpty,
     open_pty,
     prepare_child_pty,
     resize_pty,
@@ -44,10 +42,8 @@ _BURST_WINDOW: Final = 1 / 60
 _READ_SIZE: Final = 64 * 1024
 
 
-WINPTY_FACTORY: WinPTYFactory = _missing_winpty
-WINPTY_ERRORS: tuple[type[BaseException], ...] = ()
-if IS_WINDOWS:
-    WINPTY_FACTORY, WINPTY_ERRORS = _load_winpty()
+# pywinpty loads with this module, which only a starting shell imports.
+WINPTY_FACTORY, WINPTY_ERRORS = load_winpty()
 
 
 _CONPTY_ERRORS: Final = (OSError, RuntimeError, *WINPTY_ERRORS)

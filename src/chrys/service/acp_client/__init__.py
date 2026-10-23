@@ -7,15 +7,6 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
-    from .client import (
-        AcpAgentClient,
-        AcpClientCallbacks,
-        AcpClientWaitController,
-        AcpUpdateSink,
-    )
-
-
 from .errors import (
     AcpAuthRequiredError,
     AcpClientError,
@@ -44,13 +35,21 @@ from .spec import (
     PermissionDecision,
 )
 
-_EXPORTS = {
-    "AcpAgentClient": "chrys.service.acp_client.client",
-    "AcpClientCallbacks": "chrys.service.acp_client.client",
-    "AcpClientWaitController": "chrys.service.acp_client.client",
-    "AcpUpdateSink": "chrys.service.acp_client.client",
-}
+if TYPE_CHECKING:
+    from .client import (
+        AcpAgentClient,
+        AcpClientCallbacks,
+        AcpClientWaitController,
+        AcpUpdateSink,
+    )
 
+# The client loads on first use; specs and errors above stay light.
+_EXPORTS = {
+    "AcpAgentClient": "client",
+    "AcpClientCallbacks": "client",
+    "AcpClientWaitController": "client",
+    "AcpUpdateSink": "client",
+}
 
 __all__ = [
     "AcpAgentClient",
@@ -82,15 +81,15 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Resolve public feature exports only when requested."""
-    module_name = _EXPORTS.get(name)
-    if module_name is None:
+    """Lazily resolve the ACP client."""
+    if name not in _EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = vars(import_module(module_name))[name]
+    module = import_module(f"{__name__}.{_EXPORTS[name]}")
+    value = getattr(module, name)
     globals()[name] = value
     return value
 
 
 def __dir__() -> list[str]:
-    """Include public exports without importing their implementations."""
+    """Return the default module attributes plus facade exports."""
     return sorted({*globals(), *__all__})

@@ -4,30 +4,29 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from chrys.app.tui.terminal.shell import Shell as Shell
     from chrys.app.tui.terminal.widget import Terminal as Terminal
 
-__all__ = ["Shell", "Terminal"]
+# Title and launcher helpers import this package without loading the terminal itself.
+_EXPORTS = {"Shell": "shell", "Terminal": "widget"}
+
+__all__ = sorted(_EXPORTS)
 
 
-def __getattr__(name: str) -> object:
-    """Keep title and launcher helpers independent of the embedded terminal."""
-    if name == "Shell":
-        from chrys.app.tui.terminal.shell import Shell
-
-        globals()[name] = Shell
-        return Shell
-    if name == "Terminal":
-        from chrys.app.tui.terminal.widget import Terminal
-
-        globals()[name] = Terminal
-        return Terminal
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+def __getattr__(name: str) -> Any:
+    """Lazily resolve the shell or the terminal widget."""
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(f"{__name__}.{_EXPORTS[name]}")
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
 
 
 def __dir__() -> list[str]:
-    """Include public exports without loading the terminal implementation."""
+    """Return the default module attributes plus facade exports."""
     return sorted({*globals(), *__all__})
