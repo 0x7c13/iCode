@@ -1348,6 +1348,12 @@ msgstr "仅在自动审查标记后弹出审批对话框"
 msgid "settings.ui.chat.file_snapshot_inline_chars.label"
 msgstr "内联文件快照上限（字符）"
 
+#. English: Show model thinking
+#. chrys-meta={"fingerprint":"009db1db6b24ef8953ec841eb4ac172e471351f342f9207b47e638425f480839","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.ui.chat.show_thinking.label"
+msgstr "显示模型思考"
+
 #. English: Expand tool details by default
 #. chrys-meta={"fingerprint":"79644eefc7d4277f1f44569d63fa5be51591030d7d8fc4ed2ccf9ad44d6c5e70","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -4876,6 +4882,18 @@ msgstr "会话 JSON"
 #: src/chrys/app/tui/widgets/chat/chrome.py
 msgid "tui.chat.session_title"
 msgstr "会话：{session_id}"
+
+#. English: Thinking
+#. chrys-meta={"fingerprint":"035935186d9026b49ead3077c1b3018b71e54f9bbee3e2a1276b907b14516ca3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_label"
+msgstr "思考"
+
+#. English: Thinking summary
+#. chrys-meta={"fingerprint":"3320160e453e56c223cebb0e8aff29fd57844ebf3f13b67b4213cfc28bbdec55","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_summary_label"
+msgstr "思考摘要"
 
 #. English: New version found: {version} Run: {command} to upgrade
 #. chrys-meta={"fingerprint":"90536f5c417bc9fa28c317d37799b2f2f652d50ea96f7d2aa2dccc898e3aee61","multiline":true,"placeholders":["command","version"]}
@@ -10498,6 +10516,14 @@ msgstr "智能体未指定数量时每次搜索返回的结果数；默认 {defa
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.tools.web_search.private_origins"
 msgstr "JSON 列表，列出网络搜索可以访问的私有网络或本地网络来源。"
+
+#. English: Show the model's thinking in the chat as it arrives, when the model
+#. service returns it as readable text. Applies to new replies and to sessions
+#. opened afterwards.
+#. chrys-meta={"fingerprint":"391e08f5e1bb84088e4f7704b2ae10abc823bd841874dfd85ea49ef5c1bde5f7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.ui.chat.show_thinking"
+msgstr "模型服务以可读文本返回思考内容时，在对话中实时显示模型的思考。对之后的新回复和之后打开的会话生效。"
 
 #. English: Expand new tool groups by default. When off, click the tool status
 #. at any time to view details.

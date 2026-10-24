@@ -25,7 +25,7 @@ from textual.widgets import Button, Static
 from chrys.app.tui.clipboard import copy_text_to_clipboards
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.util.removal import remove_shielded
+from chrys.app.tui.util.removal import remove_all_shielded
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets.chat.image_preview import ChatImagePreview, ImagePreviewGrid, extract_image_previews
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
@@ -37,6 +37,8 @@ from chrys.foundation.util.time import parse_created_at
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+
+    from chrys.foundation.models.invocations import ContentChannel
 
 
 INTERRUPTED_ERROR_HEADER_MESSAGE = msg(
@@ -81,6 +83,8 @@ busy and the garbage collector behind it.
 _USER_MESSAGE_COPIED = msg("tui.copy.user_message", fallback="Copied your message")
 _USER_MESSAGE_COPY_TOOLTIP = msg("tui.chat.copy_user_message_tooltip", fallback="Copy your raw message")
 _AGENT_FALLBACK_LABEL = msg("tui.chat.agent_fallback_label", fallback="Agent")
+_THINKING_LABEL = msg("tui.chat.thinking_label", fallback="Thinking")
+_THINKING_SUMMARY_LABEL = msg("tui.chat.thinking_summary_label", fallback="Thinking summary")
 _RETRY_MESSAGE = msg(
     "tui.chat.retry_message",
     fallback="{message} Retrying in {delay_seconds}s ({attempt}/{max_attempts})...",
@@ -392,7 +396,7 @@ class UserMessage(Widget):
 
 
 class _AgentHeader(Static):
-    """Clickable header for AgentMessage — posts Clicked on click."""
+    """Clickable header of an AgentMessage or ThinkingMessage — posts Clicked on click."""
 
     class Clicked(Message):
         """Posted when the header is clicked."""
@@ -830,12 +834,74 @@ class AgentMessage(StreamedMarkdownMessage):
         self.stream_update(self._source_text, is_final=True)
 
 
+class ThinkingMessage(StreamedMarkdownMessage):
+    """The model's readable thinking, muted, above what it led to.
+
+    It streams like an answer and stays open once complete; its header folds
+    it then. It is not part of the answer: it has no copy button, and copying
+    the agent's responses leaves it out.
+    """
+
+    DEFAULT_CSS = """
+    ThinkingMessage {
+        margin: 1 0;
+        padding: 0 0 0 1;
+        border-left: thick $tui-border-neutral-gray $border-opacity;
+        height: auto;
+        color: $text-muted;
+    }
+    ThinkingMessage > VirtualizedMarkdown {
+        padding: 0;
+        height: auto;
+        min-height: 1;
+        background: transparent;
+        color: $text-muted;
+        /* As an answer's body: sized by its text, it never scrolls. */
+        overflow-y: hidden;
+    }
+    """
+
+    def __init__(
+        self,
+        text: str = "",
+        *,
+        channel: ContentChannel = "reasoning",
+        segment_id: str = "",
+        is_final: bool = True,
+    ) -> None:
+        self.segment_id = segment_id
+        """The content segment this message shows, for a retry that gives up its response to remove."""
+        self._channel = channel
+        super().__init__(text, is_final=is_final)
+
+    def _label(self) -> str:
+        label = _THINKING_SUMMARY_LABEL if self._channel == "reasoning_summary" else _THINKING_LABEL
+        return render_str(widget_localizer(self), label.bind())
+
+    def _header_text(self) -> Text:
+        arrow = "▶" if self.collapsed else "◇"
+        return Text(f"{arrow} {self._label()}", style="bold")
+
+    def compose(self) -> ComposeResult:
+        with MessageHeaderRow():
+            yield _AgentHeader(self._label(), self._header_text())
+        yield self._new_body()
+
+    def _refresh_header(self) -> None:
+        with contextlib.suppress(Exception):
+            self.query_one(_AgentHeader).update(self._header_text())
+
+    def on__agent_header_clicked(self) -> None:
+        if self._is_final:
+            self.collapsed = not self.collapsed
+
+
 async def remove_withdrawn_answer(container: Widget, segment_ids: Iterable[str]) -> None:
     """Remove *container*'s agent messages that show any of *segment_ids*: an answer a retry asks for again."""
     withdrawn = frozenset(segment_ids)
-    for child in list(container.children):
-        if isinstance(child, AgentMessage) and child.segment_ids & withdrawn:
-            await remove_shielded(child)
+    await remove_all_shielded(
+        child for child in container.children if isinstance(child, AgentMessage) and child.segment_ids & withdrawn
+    )
 
 
 class SystemMessage(Static):

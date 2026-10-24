@@ -20,7 +20,7 @@ import contextlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Iterable
 
     from textual.widget import Widget
 
@@ -45,3 +45,13 @@ async def remove_shielded(widget: Widget) -> None:
 async def remove_children_shielded(container: Widget) -> None:
     """Remove *container*'s children to the end, even when the caller is cancelled."""
     await finish_shielded(container.remove_children())
+
+
+async def remove_all_shielded(widgets: Iterable[Widget]) -> None:
+    """Remove each of *widgets* in turn, every one to the end, even when the caller is cancelled."""
+    await finish_shielded(_remove_each(list(widgets)))
+
+
+async def _remove_each(widgets: list[Widget]) -> None:
+    for widget in widgets:
+        await widget.remove()

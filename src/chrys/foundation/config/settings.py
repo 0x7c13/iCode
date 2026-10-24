@@ -682,6 +682,7 @@ _LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
     "settings.ui.chat.tool_groups_expanded.label",
     fallback="Expand tool details by default",
 )
+_LABEL_UI_CHAT_SHOW_THINKING = msg("settings.ui.chat.show_thinking.label", fallback="Show model thinking")
 _LABEL_UI_EDITOR_KEYMAP = msg("settings.ui.editor.keymap.label", fallback="Editor keymap")
 _LABEL_WORKSPACE_MRU_MAX_ENTRIES = msg("settings.workspace.mru_max_entries.label", fallback="Recent workspaces to keep")
 _LABEL_APPROVAL_TIMEOUT_SECONDS = msg(
@@ -1479,6 +1480,21 @@ class Settings:
         metadata=spec(
             key="ui.chat.tool_groups_expanded",
             label=_LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED,
+            coerce=bool_coercer(),
+            apply=Apply.LIVE,
+            group="ui",
+            kind=Kind.BOOL,
+            project_merge=ProjectMerge.DENY,
+        ),
+    )
+
+    # TUI presentation only: the main chat shows the model's readable thinking
+    # above its answer. The backend sends it either way; ACP shows it always.
+    chat_show_thinking: bool = field(
+        default=True,
+        metadata=spec(
+            key="ui.chat.show_thinking",
+            label=_LABEL_UI_CHAT_SHOW_THINKING,
             coerce=bool_coercer(),
             apply=Apply.LIVE,
             group="ui",

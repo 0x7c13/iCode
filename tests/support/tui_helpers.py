@@ -636,14 +636,20 @@ class PlaceholderHostApp(App):
 
 
 class ChatPanelApp(LocalizedApp):
-    """App whose only widget is a :class:`ChatPanel` (optionally with a localization port)."""
+    """App whose only widget is a :class:`ChatPanel` (optionally with a localization port and thinking shown)."""
 
-    def __init__(self, localization: TranscriptLocalizationPort | None = None) -> None:
+    def __init__(
+        self,
+        localization: TranscriptLocalizationPort | None = None,
+        *,
+        show_thinking: Callable[[], bool] | None = None,
+    ) -> None:
         self._localization = localization
+        self._show_thinking = show_thinking
         super().__init__()
 
     def compose(self) -> ComposeResult:
-        yield ChatPanel(localization=self._localization)
+        yield ChatPanel(localization=self._localization, show_thinking=self._show_thinking)
 
 
 class GcMessageChatPanelApp(ChatPanelApp):

@@ -57,6 +57,14 @@ def test_tool_group_display_preference_lives_in_tools_display_section() -> None:
     assert [row.key for row in display.rows] == ["ui.chat.tool_groups_expanded"]
 
 
+def test_the_thinking_display_preference_sits_with_the_appearance_rows() -> None:
+    general = tab_by_id(GENERAL_TAB_ID)
+
+    assert general is not None
+    appearance = next(section for section in general.sections if section.title.fallback == "Appearance")
+    assert [row.key for row in appearance.rows] == ["ui.theme", "ui.locale", "ui.chat.show_thinking"]
+
+
 def test_tools_tab_lists_each_tool_category_as_its_own_section() -> None:
     tools = tab_by_id("tools")
 

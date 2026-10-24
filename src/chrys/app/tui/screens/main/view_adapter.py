@@ -88,6 +88,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.widgets.chrome.commands import ManPageSpec
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_executions import HookExecutionView
+    from chrys.foundation.models.invocations import ContentChannel
     from chrys.foundation.models.session_surface import SessionSurface
     from chrys.foundation.models.todos import TodoItem
     from chrys.service.approval.judge import JudgeVerdict
@@ -809,6 +810,15 @@ class MainScreenViewAdapter:
 
     def finish_answer_segment(self, segment_id: str, *, completed: bool) -> None:
         self._screen.query_one(ChatPanel).finish_answer_segment(segment_id, completed=completed)
+
+    async def add_thinking_delta(self, segment_id: str, channel: ContentChannel, text: str) -> None:
+        await self._screen.query_one(ChatPanel).add_thinking_delta(segment_id, channel, text)
+
+    def finish_thinking_segment(self, segment_id: str) -> None:
+        self._screen.query_one(ChatPanel).finish_thinking_segment(segment_id)
+
+    async def abandon_thinking(self, segment_ids: tuple[str, ...]) -> None:
+        await self._screen.query_one(ChatPanel).abandon_thinking(segment_ids)
 
     async def add_agent_message(
         self,

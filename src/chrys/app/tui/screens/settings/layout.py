@@ -51,6 +51,13 @@ _HINT_UI_LOCALE = msg(
     "tui.settings.hint.ui.locale",
     fallback="Language of menus, hints and messages; changes apply immediately.",
 )
+_HINT_UI_CHAT_SHOW_THINKING = msg(
+    "tui.settings.hint.ui.chat.show_thinking",
+    fallback=(
+        "Show the model's thinking in the chat as it arrives, when the model service returns it as readable "
+        "text. Applies to new replies and to sessions opened afterwards."
+    ),
+)
 _HINT_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
     "tui.settings.hint.ui.chat.tool_groups_expanded",
     fallback="Expand new tool groups by default. When off, click the tool status at any time to view details.",
@@ -300,6 +307,7 @@ TABS: tuple[SettingsTab, ...] = (
                 (
                     SettingRowSpec("ui.theme", hint=_HINT_UI_THEME),
                     SettingRowSpec("ui.locale", hint=_HINT_UI_LOCALE),
+                    SettingRowSpec("ui.chat.show_thinking", hint=_HINT_UI_CHAT_SHOW_THINKING),
                 ),
             ),
             SettingsSection(

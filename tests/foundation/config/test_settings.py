@@ -39,7 +39,7 @@ from chrys.foundation.config.settings import (
     persist_tool_groups_expanded,
 )
 from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle, load_settings
-from chrys.foundation.config.spec import Source, kind_accepts, specs_by_field, specs_by_key
+from chrys.foundation.config.spec import Apply, ProjectMerge, Source, kind_accepts, specs_by_field, specs_by_key
 
 # ── Settings.max_transient_retries env loading ──────────────────────
 
@@ -820,6 +820,13 @@ def test_persist_locale_writes_the_settings_document_without_an_env_mirror(fake_
 
     assert _read_setting(fake_config_dir, "ui.locale") == "zh-Hans"
     assert "CHRYS_LOCALE" not in os.environ
+
+
+def test_thinking_shows_by_default_and_only_the_user_settings_change_it_live() -> None:
+    found = specs_by_key(Settings)["ui.chat.show_thinking"]
+
+    assert Settings().chat_show_thinking is True
+    assert (found.apply, found.env, found.project_merge) == (Apply.LIVE, None, ProjectMerge.DENY)
 
 
 def test_tool_groups_default_collapsed_and_persist_native_bool(fake_config_dir: Path) -> None:

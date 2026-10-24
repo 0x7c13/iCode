@@ -54,6 +54,7 @@ The "Takes effect" column in the following tables describes each setting's usual
 | --- | --- | --- |
 | Theme | Changes the TUI theme. To adjust colors or create a custom theme, see [Customize themes](themes.md). | Immediately |
 | UI Language | Changes only iCode interface text, not conversation content, the model's output language, or existing records. You can also switch the interface language with `/language`. | Immediately |
+| Show model thinking | Shows the model's thinking above its reply as it arrives, when the model service returns it as readable text. Thinking the service returns only in encrypted form is never shown. Thinking already in the conversation stays as it is when you change this. | New replies |
 
 #### Input
 

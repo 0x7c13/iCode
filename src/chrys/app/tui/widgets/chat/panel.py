@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.widgets import PromptDraft
     from chrys.app.update_check import UpdateNotice
     from chrys.foundation.models.ask_user import AskUserQuestion
+    from chrys.foundation.models.invocations import ContentChannel
     from chrys.service.context.providers.history import CompressedBlock
     from chrys.service.session.sub_agent_transcript import PersistedSubAgentTranscript
 
@@ -125,6 +126,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         localization: TranscriptLocalizationPort | None = None,
         locale_controller: LocaleController | None = None,
         tool_groups_expanded: Callable[[], bool] | None = None,
+        show_thinking: Callable[[], bool] | None = None,
         sub_agent_transcript_loader: Callable[[str], Awaitable[PersistedSubAgentTranscript | None]] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -155,6 +157,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             self._toc,
             self._tool_registry,
             localization=localization,
+            show_thinking=show_thinking,
         )
         self._replay_renderer = HistoryReplayRenderer(
             self,
@@ -1139,6 +1142,18 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     def finish_answer_segment(self, segment_id: str, *, completed: bool) -> None:
         """Close a streamed answer segment; a failed or interrupted one keeps its partial text."""
         self._live_renderer.finish_answer_segment(segment_id, completed=completed)
+
+    async def add_thinking_delta(self, segment_id: str, channel: ContentChannel, text: str) -> None:
+        """Stream new thinking text into its segment's message, when thinking is shown."""
+        await self._live_renderer.add_thinking_delta(segment_id, channel, text)
+
+    def finish_thinking_segment(self, segment_id: str) -> None:
+        """Close a streamed thinking segment; a failed or interrupted one keeps its partial text."""
+        self._live_renderer.finish_thinking_segment(segment_id)
+
+    async def abandon_thinking(self, segment_ids: tuple[str, ...]) -> None:
+        """Remove the thinking a retry gave up with its response."""
+        await self._live_renderer.abandon_thinking(segment_ids)
 
     async def add_agent_message(
         self,

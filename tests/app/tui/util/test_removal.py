@@ -5,11 +5,15 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from chrys.app.tui.util.removal import finish_shielded
+from chrys.app.tui.util.removal import finish_shielded, remove_all_shielded
 from tests.support.waiting import wait_for, wait_until
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
 
 
 class _Operation:
@@ -27,6 +31,16 @@ class _Operation:
         self.finished = True
         if self._error is not None:
             raise self._error
+
+
+class _Removable:
+    """A widget whose removal is *operation*."""
+
+    def __init__(self, operation: _Operation) -> None:
+        self._operation = operation
+
+    def remove(self) -> Awaitable[None]:
+        return self._operation.run()
 
 
 async def _caller_inside(operation: _Operation) -> asyncio.Task[None]:
@@ -86,3 +100,18 @@ async def test_a_caller_that_is_not_cancelled_sees_the_operation_error() -> None
 
     with pytest.raises(ValueError, match="removal failed"):
         await finish_shielded(operation.run())
+
+
+@pytest.mark.asyncio
+async def test_a_caller_cancelled_while_the_first_widget_goes_still_removes_every_widget() -> None:
+    first, second = _Operation(), _Operation()
+    second.release.set()
+    removables: list[Any] = [_Removable(first), _Removable(second)]
+    caller = asyncio.create_task(remove_all_shielded(removables))
+    await wait_for(first.started.is_set, description="the first removal starts")
+
+    caller.cancel()
+    first.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert (first.finished, second.finished) == (True, True)

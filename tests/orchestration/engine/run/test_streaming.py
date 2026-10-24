@@ -79,7 +79,8 @@ _EVENT_TYPES: tuple[type, ...] = (
 class _HeldStreamClient(MockChatClient):
     """Holds its first stream after the first text update until released, then continues or fails.
 
-    *then* streams right after that text, before the hold.
+    *then* streams right after that text, before the hold. *hold_after* names
+    the content type whose first update the stream holds after.
     """
 
     def __init__(
@@ -88,12 +89,14 @@ class _HeldStreamClient(MockChatClient):
         *,
         failure: BaseException | None = None,
         then: tuple[Content, ...] = (),
+        hold_after: str = "text",
     ) -> None:
         super().__init__(responses=responses)
         self.shown = asyncio.Event()
         self.release = asyncio.Event()
         self._failure = failure
         self._then = then
+        self._hold_after = hold_after
         self._held = False
 
     async def _stream_updates(
@@ -102,7 +105,7 @@ class _HeldStreamClient(MockChatClient):
         hold, self._held = not self._held, True
         async for update in super()._stream_updates(resp, model_id, finish_reason):
             yield update
-            if hold and any(content.type == "text" for content in update.contents):
+            if hold and any(content.type == self._hold_after for content in update.contents):
                 if self._then:
                     yield ChatResponseUpdate(role="assistant", contents=list(self._then), model=model_id)
                 # Resumed only once the caller asks for the next update: the first one was handled.
@@ -471,6 +474,41 @@ async def test_an_interrupt_mid_stream_keeps_the_partial_answer(
     assert _texts(answer) == ["Partial "]
     assert _marker(interrupted_marker) == HistoryMarkerKind.INTERRUPTED
     assert _marker(turn_marker) == HistoryMarkerKind.TURN
+
+
+async def test_an_interrupt_mid_thinking_keeps_nothing_and_the_next_prompt_drops_the_one_it_followed(
+    tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Thinking cut off is not kept, so the prompt it followed got no response: the next prompt drops it.
+
+    The TUI removes that prompt, with the thinking it showed, when the next one is sent.
+    """
+    client = _HeldStreamClient(
+        [MockResponse(reasoning_text="Weighing the options", text="never"), MockResponse(text="Second answer")],
+        hold_after="text_reasoning",
+    )
+    started = await _start(agent_engine, tmp_path, monkeypatch, client)
+    try:
+        await started.bus.publish(UserMessage(text="first question"))
+        await _wait_shown(started, client)
+        await started.bus.publish(UserInterrupt())
+        await await_run_task_chain(started.engine, turn_state=started.engine.turns.turn_state)
+    finally:
+        client.release.set()
+    (delta,) = _turn_events(started.events, InvocationContentDelta)
+    assert (delta.channel, delta.text) == ("reasoning", "Weighing the options")
+    # Only the turn's status markers follow the prompt.
+    assert [message for message in await _saved_assistant_messages(started) if _marker(message) is None] == []
+
+    await started.bus.publish(UserMessage(text="second question"))
+    await await_run_task_chain(started.engine, turn_state=started.engine.turns.turn_state)
+
+    saved = await started.store.load_session_raw(started.engine.session.session_id)
+    assert saved is not None
+    prompts = [_texts(message) for message in saved if message["role"] == "user" and _marker(message) is None]
+    assert prompts == [["second question"]]
+    answers = [_texts(message) for message in saved if message["role"] == "assistant" and _marker(message) is None]
+    assert answers == [["Second answer"]]
 
 
 async def test_a_later_turn_that_runs_no_pass_keeps_no_earlier_partial_answer(

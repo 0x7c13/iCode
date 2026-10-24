@@ -16,6 +16,7 @@ from chrys.app.tui.widgets.chrome.input_bar import INPUT_CONTINUE
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_RESUMING, STATUS_THINKING
 from chrys.foundation.events.types import (
     Error,
+    InvocationContentAbandoned,
     InvocationContentDelta,
     InvocationContentFinished,
     InvocationMessage,
@@ -41,7 +42,9 @@ class InputFlowController:
         view: InputFlowView,
         start_worker: StartWorker,
         handle_agent_message: Callable[[InvocationMessage], Awaitable[None]],
-        handle_agent_content: Callable[[InvocationContentDelta | InvocationContentFinished], Awaitable[None]],
+        handle_agent_content: Callable[
+            [InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned], Awaitable[None]
+        ],
         handle_error: Callable[[Error], Awaitable[None]],
         set_agent_running: Callable[[bool], None],
         set_has_messages: Callable[[bool], None],
@@ -222,7 +225,7 @@ class InputFlowController:
     async def _replay_deferred(self, event: DeferredTurnEvent) -> None:
         if isinstance(event, InvocationMessage):
             await self._handle_agent_message(event)
-        elif isinstance(event, InvocationContentDelta | InvocationContentFinished):
+        elif isinstance(event, InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned):
             await self._handle_agent_content(event)
         elif isinstance(event, Error):
             await self._handle_error(event)

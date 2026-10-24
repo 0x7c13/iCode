@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
 
-from chrys.app.tui.util.removal import remove_shielded
+from chrys.app.tui.util.removal import remove_all_shielded, remove_shielded
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard
 from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
 from chrys.app.tui.widgets.chat.messages import (
@@ -17,6 +18,7 @@ from chrys.app.tui.widgets.chat.messages import (
     InterruptedMessage,
     RetryMessage,
     SystemMessage,
+    ThinkingMessage,
     UserMessage,
     format_message_created_at,
     resolve_interrupted_message_copy,
@@ -32,6 +34,9 @@ from chrys.app.tui.widgets.chat.toc_model import TurnTocModel
 from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
 from chrys.foundation.i18n.formatting import format_message
 
+if TYPE_CHECKING:
+    from chrys.foundation.models.invocations import ContentChannel
+
 
 class LiveTranscriptRenderer:
     """Render live user, agent, system, status, and context messages."""
@@ -46,6 +51,7 @@ class LiveTranscriptRenderer:
         tools: ToolGroupRegistry,
         *,
         localization: TranscriptLocalizationPort | None = None,
+        show_thinking: Callable[[], bool] | None = None,
     ) -> None:
         self._mount = mount
         self._ui = ui
@@ -63,6 +69,14 @@ class LiveTranscriptRenderer:
         self._blank_segment_text = ""
         self._answer_streamed = False
         """Whether answer text streamed since the turn opened."""
+        self._show_thinking = show_thinking or (lambda: False)
+        # The thinking segment being streamed, as the answer's: its message,
+        # and its text while it is still blank. One that opened while thinking
+        # was not shown stays hidden to its end.
+        self._thinking_msg: ThinkingMessage | None = None
+        self._thinking_segment_id = ""
+        self._blank_thinking_text = ""
+        self._thinking_hidden = False
 
     @property
     def current_agent_msg(self) -> AgentMessage | None:
@@ -93,9 +107,14 @@ class LiveTranscriptRenderer:
         self._segment_id = ""
         self._blank_segment_text = ""
         self._answer_streamed = False
+        self._thinking_msg = None
+        self._thinking_segment_id = ""
+        self._blank_thinking_text = ""
+        self._thinking_hidden = False
 
     def _finalize_current_agent_message(self) -> None:
-        """Terminate and release the active streamed-message presentation."""
+        """Terminate and release the active streamed-message presentations: the answer's and the thinking's."""
+        self._finalize_thinking()
         if self._current_agent_msg is None:
             return
         self._current_agent_msg.stream_update(
@@ -111,7 +130,11 @@ class LiveTranscriptRenderer:
         self._finalize_current_agent_message()
 
     def settle_answer_before_tools(self) -> None:
-        """The streamed answer text is followed by more of the turn (tool calls, another segment): show it as intermediate text."""
+        """The streamed answer text is followed by more of the turn (tool calls, another segment): show it as intermediate text.
+
+        Streamed thinking ends there too.
+        """
+        self._finalize_thinking()
         if self._current_agent_msg is None:
             return
         self._current_agent_msg.settle_intermediate()
@@ -154,11 +177,18 @@ class LiveTranscriptRenderer:
         # appended after the failure must not change its predecessor; a notice
         # or output before the status remains a boundary against older input.
         prompt = self._status.preceding_content(status)
+        # Thinking alone leaves nothing in history: a response that landed
+        # with no more than thinking is rejected, and a stream cut off is not
+        # kept. The prompt it followed is dropped as if the model wrote nothing.
+        thinking: list[ThinkingMessage] = []
+        while isinstance(prompt, ThinkingMessage):
+            thinking.append(prompt)
+            prompt = self._status.preceding_content(prompt)
         await remove_shielded(status)
         if isinstance(prompt, UserMessage):
             # Drop the entry first: a cancelled removal still takes the prompt away.
             self._toc.remove_failed_prompt(prompt.id)
-            await remove_shielded(prompt)
+            await remove_all_shielded([prompt, *thinking])
         else:
             self._toc.remember_failed_turn_without_user_removal()
 
@@ -179,12 +209,7 @@ class LiveTranscriptRenderer:
         if not self._blank_segment_text.strip():
             return
         await self._status.remove_trailing_status()
-        group = self._tools.current_tool_group
-        folded = (0, 0)
-        if group is not None:
-            folded = (group.rows_folding_gives_up(), group.styles.margin.bottom)
-            group.collapsed = True
-        self._tools.end_group()
+        folded = self._fold_tool_group()
         message = AgentMessage(
             self._blank_segment_text, is_final=False, profile_name=self._profile_name, segment_ids=(segment_id,)
         )
@@ -193,6 +218,21 @@ class LiveTranscriptRenderer:
         self._current_agent_msg = message
         await self._mount.mount_transcript_widget(message)
         self._ui.schedule_anchor_sync()
+
+    def _fold_tool_group(self) -> tuple[int, int]:
+        """End the current tool group, folded, for streamed text to start below it.
+
+        Returns the rows folding gave up and the group's bottom margin, for the
+        new message's :meth:`StreamedMarkdownMessage.take_rows_folded_above`;
+        both are measured before the fold hides the group's content.
+        """
+        group = self._tools.current_tool_group
+        folded = (0, 0)
+        if group is not None:
+            folded = (group.rows_folding_gives_up(), group.styles.margin.bottom)
+            group.collapsed = True
+        self._tools.end_group()
+        return folded
 
     def finish_answer_segment(self, segment_id: str, *, completed: bool) -> None:
         """Close a streamed answer segment; a failed or interrupted one keeps its partial text."""
@@ -204,6 +244,61 @@ class LiveTranscriptRenderer:
             # A completed segment stays current: it is the final answer
             # unless tool calls follow it.
             self._finalize_current_agent_message()
+
+    async def add_thinking_delta(self, segment_id: str, channel: ContentChannel, text: str) -> None:
+        """Stream new thinking text into its segment's message, mounting it once the text is not blank.
+
+        Whether thinking shows is read as its segment opens. An answer that
+        streamed before stays as it is: thinking does not tell whether the
+        turn goes on past it.
+        """
+        if segment_id != self._thinking_segment_id:
+            self._finalize_thinking()
+            self._thinking_segment_id = segment_id
+            self._thinking_hidden = not self._show_thinking()
+        if self._thinking_hidden:
+            return
+        if self._thinking_msg is not None:
+            self._thinking_msg.append_text(text)
+            self._ui.schedule_anchor_sync()
+            return
+        self._blank_thinking_text += text
+        if not self._blank_thinking_text.strip():
+            return
+        await self._status.remove_trailing_status()
+        folded = self._fold_tool_group()
+        message = ThinkingMessage(self._blank_thinking_text, channel=channel, segment_id=segment_id, is_final=False)
+        message.take_rows_folded_above(*folded)
+        self._blank_thinking_text = ""
+        self._thinking_msg = message
+        await self._mount.mount_transcript_widget(message)
+        self._ui.schedule_anchor_sync()
+
+    def finish_thinking_segment(self, segment_id: str) -> None:
+        """Close a streamed thinking segment; one that failed or was interrupted keeps its partial text."""
+        if segment_id == self._thinking_segment_id:
+            self._finalize_thinking()
+
+    def _finalize_thinking(self) -> None:
+        if self._thinking_msg is not None:
+            self._thinking_msg.stream_update(self._thinking_msg.text, is_final=True)
+        self._thinking_msg = None
+        self._thinking_segment_id = ""
+        self._blank_thinking_text = ""
+        self._thinking_hidden = False
+
+    async def abandon_thinking(self, segment_ids: Iterable[str]) -> None:
+        """Remove the thinking a retry gave up with its response: the retry thinks again."""
+        abandoned = frozenset(segment_ids)
+        if self._thinking_segment_id in abandoned:
+            # Its closing event that follows finds no segment to close.
+            self._thinking_msg = None
+            self._finalize_thinking()
+        await remove_all_shielded(
+            child
+            for child in self._query.direct_children()
+            if isinstance(child, ThinkingMessage) and child.segment_id in abandoned
+        )
 
     async def add_agent_message(
         self,
@@ -227,6 +322,7 @@ class LiveTranscriptRenderer:
         self._tools.end_group()
         self._segment_id = ""
         self._blank_segment_text = ""
+        self._finalize_thinking()
         if streamed and self._current_agent_msg is not None:
             self._current_agent_msg.stream_update(self._current_agent_msg.text, is_final=True, timestamp=timestamp)
             self._current_agent_msg = None

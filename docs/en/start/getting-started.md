@@ -215,6 +215,8 @@ For example, `$x^{n+1}$` displays as xⁿ⁺¹ and `$90^\circ$` as 90°.
 
 Mermaid code blocks appear as diagrams; choose **Open full diagram** to view and scroll the full result. Some diagrams are simplified with a notice; unsupported diagrams stay as source.
 
+When the model service returns the model's thinking as readable text, it appears in grey under **Thinking** above the reply, as the model writes it. Once it is complete, click **Thinking** to fold or unfold it. Thinking has no **copy** button, and copying replies leaves it out. To stop showing it, turn off **Show model thinking** in the Settings dialog (**General** → **Appearance**).
+
 Mouse selection copies what is displayed, without adding newlines for screen wrapping. Use **copy** beside the message header to copy the original Markdown and LaTeX. Reopening an older conversation uses the current rendering.
 
 ## 5. End the session
