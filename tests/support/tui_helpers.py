@@ -19,7 +19,7 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.errors import NoWidget
-from textual.events import Click
+from textual.events import Click, MouseScrollDown, MouseScrollUp
 from textual.message import Message
 from textual.messages import Prune
 from textual.widget import Widget
@@ -728,6 +728,13 @@ def make_click(
         ctrl=False,
         screen_x=widget.region.x + x if screen_x is None else screen_x,
         screen_y=widget.region.y + y if screen_y is None else screen_y,
+    )
+
+
+def make_wheel(widget: Widget, *, up: bool) -> MouseScrollUp | MouseScrollDown:
+    """Build one mouse-wheel notch over *widget*, scrolling it up or down."""
+    return (MouseScrollUp if up else MouseScrollDown)(
+        widget, x=1, y=1, delta_x=0, delta_y=-1 if up else 1, button=0, shift=False, meta=False, ctrl=False
     )
 
 

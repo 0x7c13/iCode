@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
 from textual import on
@@ -19,11 +19,16 @@ from chrys.app.tui.clipboard import copy_text_to_clipboards
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
+from chrys.app.tui.util.bottom_follow import BottomFollow
 from chrys.app.tui.widgets import HatchedEmptyState
 from chrys.foundation.i18n import msg
 
 if TYPE_CHECKING:
+    from typing import Self
+
+    from rich.console import RenderableType
     from textual.app import ComposeResult
+    from textual.events import Resize
 
 
 _NO_ACTIVE_TAB = msg("tui.logs.copy.no_active_tab", fallback="No active tab to copy from")
@@ -195,14 +200,58 @@ def install_log_handler() -> _TuiLogHandler:
     return _handler
 
 
+class _ModuleLog(RichLog):
+    """One module's log: new lines keep it at the bottom while the user leaves it there."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._bottom_follow = BottomFollow(self)
+
+    def _scroll_to(self, x: float | None = None, y: float | None = None, **kwargs: Any) -> bool:
+        with self._bottom_follow.scroll(y):
+            return super()._scroll_to(x, y, **kwargs)
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        self._bottom_follow.scrolled(old_value, new_value)
+
+    def watch_virtual_size(self) -> None:
+        self._bottom_follow.resized()
+
+    def on_resize(self, event: Resize) -> None:
+        # No super(): Textual runs RichLog's own handler next in the same MRO walk.
+        self._bottom_follow.resized()
+
+    def write(
+        self,
+        content: RenderableType | object,
+        width: int | None = None,
+        expand: bool = False,
+        shrink: bool = True,
+        scroll_end: bool | None = None,
+        animate: bool = False,
+    ) -> Self:
+        start = self._start_line
+        super().write(content, width, expand, shrink, scroll_end, animate)
+        dropped = self._start_line - start
+        if dropped and not self._bottom_follow.following:
+            # Past ``max_lines`` the oldest lines go and the rest move up: keep the
+            # lines the user is reading where they were. A scroll still animating
+            # (Page Up, Home) lands where it was headed first, or the move would
+            # cut it short.
+            self.app.animator.force_stop_animation(self, "scroll_y")
+            self.scroll_to(y=max(0.0, self.scroll_y - dropped), animate=False, immediate=True)
+        return self
+
+
 def _make_log_widget(module: str) -> RichLog:
-    widget = RichLog(
+    widget = _ModuleLog(
         id=f"lv-log-{module}",
         max_lines=MAX_DISPLAY_LINES,
         wrap=False,
         highlight=True,
         markup=False,
-        auto_scroll=True,
+        auto_scroll=False,
     )
     widget.display = False
     return widget
@@ -339,10 +388,8 @@ class LogViewerScreen(BaseDialog[None]):
     def _flush_module(self, module: str) -> None:
         """Write any new lines for *module* into its RichLog widget.
 
-        Only scrolls to the bottom when at least one new line was actually
-        written — idle tabs with no activity stay at their current
-        scroll position so the user isn't yanked back to the tail every
-        refresh tick.
+        New lines keep a log scrolled to its bottom there; one the user
+        scrolled up stays where they put it.
         """
         try:
             # Guard before advancing the flushed marker; the actual write path
@@ -399,7 +446,6 @@ class LogViewerScreen(BaseDialog[None]):
             log_widget.write(line, scroll_end=False)
         self._rendered_any_lines[module] = True
         self._sync_empty_state(module)
-        log_widget.scroll_end(animate=False)
         if pending:
             self._schedule_drain()
 

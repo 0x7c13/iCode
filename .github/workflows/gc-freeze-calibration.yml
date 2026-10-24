@@ -15,7 +15,9 @@ on:
     paths:
       - ".github/workflows/gc-freeze-calibration.yml"
       - "scripts/calibrate_gc_freeze.py"
+      - "scripts/chat_panel_workloads.py"
       - "scripts/gc_freeze_calibration_math.py"
+      - "scripts/profile_chat_panel.py"
       - "src/chrys/app/tui/support/gc_freeze.py"
       - "tests/app/tui/support/test_gc_freeze_calibration.py"
 

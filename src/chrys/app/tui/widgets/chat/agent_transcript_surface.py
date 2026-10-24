@@ -17,6 +17,7 @@ from textual.scrollbar import ScrollTo
 from textual.widget import Widget
 
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.util.bottom_follow import BottomFollow
 from chrys.app.tui.util.removal import remove_shielded
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
@@ -484,7 +485,11 @@ class _TranscriptLocalization:
 
 
 class AgentTranscriptSurface(VerticalScroll, can_focus=True):
-    """A nested transcript using the main live renderer and tool registry."""
+    """A nested transcript using the main live renderer and tool registry.
+
+    It opens at its newest content and, as the chat does, keeps up with what
+    lands below while the user leaves it at the bottom.
+    """
 
     DEFAULT_CSS = """
     AgentTranscriptSurface {
@@ -514,6 +519,7 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
 
         super().__init__(**kwargs)
         self._scroll_gc_guard = ManualScrollGcGuard(self)
+        self._bottom_follow = BottomFollow(self)
         self._journal = journal
         self._profile_name = profile_name
         self._opening_prompt = opening_prompt
@@ -632,11 +638,37 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
     def _on_scrollbar_grabbed_changed(self, grabbed: object) -> None:
         self._scroll_gc_guard.set_scrollbar_grabbed(grabbed is not None)
 
+    def scroll_to(self, x: float | None = None, y: float | None = None, **kwargs: Any) -> None:
+        """Let the bottom follow wait for a scroll Textual runs after the next refresh.
+
+        A key's or the scrollbar's scroll heads for a row worked out from where
+        the view is now: were the follow to take the view to new content first,
+        Down at the bottom would scroll back up.
+        """
+        deferred = y is not None and not kwargs.get("immediate", False)
+        if deferred:
+            self._bottom_follow.defer()
+        super().scroll_to(x, y, **kwargs)
+        # Posted after Textual's own deferred scroll, so it runs once that has.
+        if deferred and not self.call_after_refresh(self._bottom_follow.deferred_ran):
+            self._bottom_follow.deferred_ran()
+
+    def _scroll_to(self, x: float | None = None, y: float | None = None, **kwargs: Any) -> bool:
+        with self._bottom_follow.scroll(y):
+            return super()._scroll_to(x, y, **kwargs)
+
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
-        """Keep cyclic GC out of manual and animated scroll frames."""
+        """Keep cyclic GC out of manual and animated scroll frames, but for the moves that follow the bottom."""
         super().watch_scroll_y(old_value, new_value)
-        if round(old_value) != round(new_value):
+        self._bottom_follow.scrolled(old_value, new_value)
+        if round(old_value) != round(new_value) and not self._bottom_follow.pinning:
             self._scroll_gc_guard.pause()
+
+    def watch_virtual_size(self) -> None:
+        self._bottom_follow.resized()
+
+    def on_resize(self) -> None:
+        self._bottom_follow.resized()
 
     def _on_mouse_scroll_up(self, event: textual_events.MouseScrollUp) -> None:
         """Pause GC before Textual starts the wheel scroll."""

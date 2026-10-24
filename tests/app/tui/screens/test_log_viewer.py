@@ -5,8 +5,11 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 import pytest
+from textual import events
 from textual.app import App, ComposeResult
 from textual.widgets import RichLog, Static, TabbedContent
 
@@ -23,6 +26,13 @@ from chrys.app.tui.screens.logs.screen import (
 )
 from chrys.app.tui.widgets.hatch import HatchedEmptyState
 from chrys.foundation.config.settings import Settings
+from tests.support.tui_helpers import make_wheel, resize_when_settled
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from textual.pilot import Pilot
 
 
 def _record(name: str, msg: str, level: int = logging.INFO) -> logging.LogRecord:
@@ -250,6 +260,431 @@ async def test_every_log_tab_scrollbar_is_one_cell_and_flush_right() -> None:
             assert log_widget.show_vertical_scrollbar is True
             assert log_widget.styles.scrollbar_size_vertical == 1
             assert log_widget.vertical_scrollbar.region.right == container.content_region.right
+
+
+def _at_bottom(log_widget: RichLog) -> bool:
+    return log_widget.max_scroll_y > 0 and log_widget.scroll_y == log_widget.max_scroll_y
+
+
+class _OpenLog:
+    """The log viewer opened on its ``chrys`` log, which new lines can land in."""
+
+    def __init__(self, pilot: Pilot[None], handler: _TuiLogHandler, screen: LogViewerScreen) -> None:
+        self.pilot = pilot
+        self.widget = screen.query_one("#lv-log-chrys", RichLog)
+        self._handler = handler
+        self._screen = screen
+        self._landed = 0
+
+    def animating(self) -> bool:
+        return self.pilot.app.animator.is_being_animated(self.widget, "scroll_y")
+
+    def land(self, count: int = 20) -> None:
+        """Log *count* new lines and show them, as the viewer's refresh does."""
+        for _ in range(count):
+            self._handler.emit(_record("chrys", f"new-{self._landed}"))
+            self._landed += 1
+        self._screen._refresh_logs()
+
+    async def assert_followed(self) -> None:
+        """Land new lines: the log goes to its new bottom."""
+        bottom = self.widget.max_scroll_y
+        self.land()
+        await wait_for(
+            lambda: self.widget.max_scroll_y > bottom and _at_bottom(self.widget),
+            pilot=self.pilot,
+            description="new lines are followed",
+        )
+
+    async def assert_not_followed(self) -> None:
+        """Land new lines: the log stays on the row it shows."""
+        reading, bottom = self.widget.scroll_y, self.widget.max_scroll_y
+        self.land()
+        assert self.widget.max_scroll_y > bottom
+        assert not await wait_until(lambda: self.widget.scroll_y != reading, pilot=self.pilot, timeout=0.5)
+
+
+@asynccontextmanager
+async def _open_log(*, lines: int = 100, size: tuple[int, int] = (120, 20)) -> AsyncIterator[_OpenLog]:
+    """Open the log viewer on a ``chrys`` log of *lines* lines, at its newest."""
+    handler = _TuiLogHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    for index in range(lines):
+        handler.emit(_record("chrys", f"line-{index}"))
+    screen = LogViewerScreen()
+    screen._handler = handler
+    async with _LogViewerApp().run_test(size=size) as pilot:
+        await pilot.app.push_screen(screen)
+        log = _OpenLog(pilot, handler, screen)
+        await wait_for(lambda: _at_bottom(log.widget), pilot=pilot, description="the log opens at its newest line")
+        yield log
+
+
+def _drag_selection(log: _OpenLog, *, row: int, delta_y: int) -> None:
+    """Move the mouse that holds a selection to *row* of the log, as the terminal reports a drag."""
+    region = log.widget.content_region
+    x, y = region.x + 3, region.y + row
+    log.pilot.app.post_message(events.MouseMove(None, x, y, 0, delta_y, 1, False, False, False, screen_x=x, screen_y=y))
+
+
+@pytest.mark.asyncio
+async def test_new_lines_follow_a_log_only_while_it_is_scrolled_to_the_bottom() -> None:
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        await log.assert_followed()
+
+        log_widget.post_message(make_wheel(log_widget, up=True))
+        await wait_for(
+            lambda: 0 < log_widget.scroll_y < log_widget.max_scroll_y, pilot=pilot, description="scrolled up"
+        )
+        await log.assert_not_followed()
+
+        # A scroll heading to the bottom follows again from the first frame of its move.
+        log_widget.scroll_to(y=log_widget.max_scroll_y, duration=1.0)
+        await wait_for(log.animating, pilot=pilot, description="a scroll heading to the bottom")
+        await log.assert_followed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("thumb_pressed", [False, True], ids=["home", "home-then-thumb-press"])
+async def test_a_scroll_up_cut_short_by_a_taller_view_does_not_follow_new_lines(thumb_pressed: bool) -> None:
+    """A taller view clamps a scroll heading up to the new bottom: that is no return to it, the scroll goes on up.
+
+    Its frames stay at that bottom until the scroll passes it: lines that land meanwhile are not followed. A
+    press on the scrollbar as it goes, which sets Textual's scroll target to where the scroll has got to, changes
+    nothing.
+    """
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        bottom = log_widget.max_scroll_y
+
+        log_widget.scroll_home(duration=ENGINE_TURN_TIMEOUT, easing="linear", immediate=True)
+        # Before its first frame: a line that lands now must not take the view back down.
+        assert not log_widget._bottom_follow.following
+        await wait_for(log.animating, pilot=pilot, description="Home animating")
+        if thumb_pressed:
+            # As ``ScrollBar`` does when the mouse captures its thumb.
+            log_widget.release_anchor()
+        await resize_when_settled(pilot, 120, 35)
+        await wait_for(
+            lambda: log_widget.max_scroll_y < bottom and log_widget.scroll_y == log_widget.max_scroll_y,
+            pilot=pilot,
+            description="the taller view clamped the scroll to its bottom",
+        )
+        assert log.animating()
+
+        log.land()
+        assert not await wait_until(lambda: _at_bottom(log_widget), pilot=pilot, timeout=0.5)
+        assert log.animating()
+        pilot.app.animator.force_stop_animation(log_widget, "scroll_y")
+        assert log_widget.scroll_y == 0
+        await log.assert_not_followed()
+
+
+@pytest.mark.asyncio
+async def test_page_down_from_the_bottom_a_taller_view_holds_home_at_follows_new_lines() -> None:
+    """Page Down stops Home, which lands at the top, and heads back to the bottom the taller view held Home at.
+
+    Its target repeats the one Textual's ``release_anchor()`` set as Page Down started.
+    """
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        bottom = log_widget.max_scroll_y
+        log_widget.scroll_home(duration=ENGINE_TURN_TIMEOUT, easing="linear", immediate=True)
+        await wait_for(log.animating, pilot=pilot, description="Home animating")
+        await resize_when_settled(pilot, 120, 35)
+        await wait_for(
+            lambda: log_widget.max_scroll_y < bottom and log_widget.scroll_y == log_widget.max_scroll_y,
+            pilot=pilot,
+            description="the taller view clamped Home to its bottom",
+        )
+
+        log_widget.scroll_page_down(duration=ENGINE_TURN_TIMEOUT, easing="linear")
+        assert log.animating()
+        assert log_widget.scroll_y == 0
+        assert log_widget.scroll_target_y == log_widget.max_scroll_y
+        await log.assert_followed()
+
+
+@pytest.mark.asyncio
+async def test_a_scroll_to_the_bottom_cut_short_by_another_scroll_lands_there_and_follows() -> None:
+    """A sideways scroll (Right) stops End where it was headed, but leaves Textual's scroll target where End had got to."""
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        log_widget.scroll_home(animate=False, immediate=True)
+
+        log_widget.scroll_end(duration=ENGINE_TURN_TIMEOUT, easing="linear")
+        await wait_for(log.animating, pilot=pilot, description="End animating")
+        log_widget.scroll_to(x=0, animate=False, immediate=True)
+        assert _at_bottom(log_widget)
+        assert log_widget.scroll_target_y < log_widget.max_scroll_y
+        await log.assert_followed()
+
+
+@pytest.mark.asyncio
+async def test_a_wheel_up_as_end_scrolls_stops_the_following() -> None:
+    """The wheel stops End at the bottom, then scrolls up from there: a scroll up, though from a target End had not reached."""
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        log_widget.scroll_home(animate=False, immediate=True)
+
+        log_widget.scroll_end(duration=ENGINE_TURN_TIMEOUT, easing="linear")
+        await wait_for(log.animating, pilot=pilot, description="End animating")
+        log_widget.post_message(make_wheel(log_widget, up=True))
+        await wait_for(
+            lambda: not log.animating() and 0 < log_widget.scroll_y < log_widget.max_scroll_y,
+            pilot=pilot,
+            description="the wheel scrolled up from the bottom",
+        )
+        await log.assert_not_followed()
+
+
+@pytest.mark.asyncio
+async def test_a_scroll_up_from_where_end_is_headed_stops_the_following_before_its_first_frame() -> None:
+    """The wheel asks for rows above End's target, below where End has got to: End lands first, so it scrolls up.
+
+    Lines that land before its first frame must not take the view back down.
+    """
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        log_widget.scroll_home(animate=False, immediate=True)
+
+        log_widget.scroll_end(duration=ENGINE_TURN_TIMEOUT, easing="linear")
+        await wait_for(log.animating, pilot=pilot, description="End animating")
+        wheel_target = log_widget.scroll_target_y - pilot.app.scroll_sensitivity_y
+        assert log_widget.scroll_y < wheel_target
+        # As the wheel's notch up does, from Textual's scroll target.
+        log_widget.scroll_to(y=wheel_target, duration=ENGINE_TURN_TIMEOUT, easing="linear")
+        assert _at_bottom(log_widget)
+        assert not log_widget._bottom_follow.following
+
+        log.land()
+        assert not await wait_until(lambda: _at_bottom(log_widget), pilot=pilot, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_a_scroll_to_the_row_end_has_got_to_stops_the_following() -> None:
+    """End lands at the bottom first, so a scroll to where it had got to is a scroll up, as the wheel late in End asks."""
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        log_widget.scroll_home(animate=False, immediate=True)
+
+        log_widget.scroll_end(duration=ENGINE_TURN_TIMEOUT, easing="linear")
+        await wait_for(log.animating, pilot=pilot, description="End animating")
+        reading = round(log_widget.scroll_y)
+        log_widget.scroll_to(y=reading, animate=False, immediate=True)
+        assert log_widget.scroll_y == reading < log_widget.max_scroll_y
+        await log.assert_not_followed()
+
+
+@pytest.mark.asyncio
+async def test_a_scroll_down_a_taller_view_cuts_short_at_its_bottom_follows() -> None:
+    """The scroll was headed past the new bottom: it ends there, though it was not aimed at the bottom when it started."""
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        log_widget.scroll_to(y=50, animate=False, immediate=True)
+
+        log_widget.scroll_to(y=60, duration=ENGINE_TURN_TIMEOUT, easing="linear")
+        await wait_for(log.animating, pilot=pilot, description="the scroll down animating")
+        await resize_when_settled(pilot, 120, 70)
+        await wait_for(
+            lambda: log_widget.max_scroll_y < 50 and _at_bottom(log_widget),
+            pilot=pilot,
+            description="the taller view clamped the scroll to its bottom",
+        )
+        pilot.app.animator.force_stop_animation(log_widget, "scroll_y")
+        assert _at_bottom(log_widget)
+        await log.assert_followed()
+
+
+@pytest.mark.asyncio
+async def test_a_press_on_the_scrollbar_as_end_scrolls_keeps_it_following() -> None:
+    """The press marks where End has got to as Textual's scroll target, and End goes on: lines that land are followed."""
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        log_widget.scroll_home(animate=False, immediate=True)
+
+        log_widget.scroll_end(duration=ENGINE_TURN_TIMEOUT, easing="linear")
+        await wait_for(log.animating, pilot=pilot, description="End animating")
+        # As ``ScrollBar`` does when the mouse captures its thumb.
+        log_widget.release_anchor()
+        assert log.animating()
+        await log.assert_followed()
+
+
+@pytest.mark.asyncio
+async def test_a_selection_dragged_past_the_edge_of_a_log_follows_only_back_at_its_bottom() -> None:
+    """Textual scrolls the log a row at a time while a selection is held past its edge, asking for no scroll."""
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        height = log_widget.content_region.height
+        bottom = log_widget.max_scroll_y
+
+        await pilot.mouse_down(log_widget, offset=(3, height - 2))
+        _drag_selection(log, row=0, delta_y=2 - height)
+        await wait_for(lambda: log_widget.scroll_y < bottom - 3, pilot=pilot, description="the selection scrolls up")
+        await pilot.mouse_up(log_widget, offset=(3, 0))
+        await log.assert_not_followed()
+
+        await pilot.mouse_down(log_widget, offset=(3, 1))
+        _drag_selection(log, row=height - 1, delta_y=height - 2)
+        await wait_for(lambda: _at_bottom(log_widget), pilot=pilot, description="the selection scrolls to the bottom")
+        await pilot.mouse_up(log_widget, offset=(3, height - 1))
+        await log.assert_followed()
+
+
+@pytest.mark.asyncio
+async def test_lines_that_land_before_a_taller_view_settles_a_following_log_are_followed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A taller view clamps a following log to its new bottom, which is no scroll up of the user's.
+
+    The viewer's refresh may write lines before the follow settles that size change, after the refresh.
+    """
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        bottom = log_widget.max_scroll_y
+        follow = log_widget._bottom_follow
+        settle = follow._settle
+        landed: list[bool] = []
+
+        def land_then_settle() -> None:
+            if not landed and log_widget.max_scroll_y < bottom:
+                landed.append(True)
+                log.land(5)
+            settle()
+
+        monkeypatch.setattr(follow, "_settle", land_then_settle)
+        await resize_when_settled(pilot, 120, 35)
+        await wait_for(
+            lambda: bool(landed) and _at_bottom(log_widget),
+            pilot=pilot,
+            description="the lines that landed meanwhile are followed",
+        )
+        assert log_widget.max_scroll_y < bottom
+
+
+@pytest.mark.asyncio
+async def test_a_log_follows_while_it_shows_its_bottom_row_through_moves_of_part_of_a_row() -> None:
+    """A selection's auto-scroll moves part of a row a frame, and Textual shows the rounded row."""
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+
+        def auto_scroll(rows: float) -> None:
+            # As Screen's auto-scroll does each frame while a selection is held past the log's edge.
+            log_widget.scroll_y += rows
+            log_widget.scroll_target_y = log_widget.scroll_y
+
+        auto_scroll(-1 / 3)
+        assert log_widget.scroll_offset.y == log_widget.max_scroll_y
+        await log.assert_followed()
+
+        auto_scroll(-4 / 3)
+        assert log_widget.scroll_offset.y == log_widget.max_scroll_y - 1
+        assert not log_widget._bottom_follow.following
+        auto_scroll(1)
+        assert log_widget.scroll_offset.y == log_widget.max_scroll_y
+        await log.assert_followed()
+
+        # Home's first frames still show the bottom row: they are no move back to it.
+        bottom = log_widget.max_scroll_y
+        log_widget.scroll_home(duration=40 * ENGINE_TURN_TIMEOUT, easing="linear", immediate=True)
+        await wait_for(lambda: log_widget.scroll_y < bottom, pilot=pilot, description="Home's first frame")
+        assert log_widget.scroll_offset.y == bottom
+        assert not log_widget._bottom_follow.following
+        log.land()
+        assert not await wait_until(lambda: _at_bottom(log_widget), pilot=pilot, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_a_taller_view_that_ends_exactly_at_a_scrolled_up_log_bottom_follows_new_lines() -> None:
+    """The view grows by just the rows it was scrolled up: no scroll moves, and the newest line shows at the bottom."""
+    async with _open_log(size=(120, 23)) as log:
+        log_widget, pilot = log.widget, log.pilot
+        taller_bottom = log_widget.max_scroll_y
+        await resize_when_settled(pilot, 120, 20)
+        await wait_for(
+            lambda: log_widget.max_scroll_y > taller_bottom and _at_bottom(log_widget),
+            pilot=pilot,
+            description="the shorter view keeps to the bottom",
+        )
+        log_widget.scroll_to(y=taller_bottom, animate=False, immediate=True)
+        assert not log_widget._bottom_follow.following
+
+        await resize_when_settled(pilot, 120, 23)
+        await wait_for(
+            lambda: log_widget.max_scroll_y == taller_bottom and log_widget._bottom_follow.following,
+            pilot=pilot,
+            description="the taller view ends at the line being read, and follows",
+        )
+        assert log_widget.scroll_y == taller_bottom
+        await log.assert_followed()
+
+
+@pytest.mark.asyncio
+async def test_a_log_a_taller_view_pushes_to_its_bottom_follows_though_the_scroll_target_was_left_above() -> None:
+    """A sideways scroll that stops Page Down leaves Textual's scroll target where Page Down had got to."""
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        log_widget.scroll_home(animate=False, immediate=True)
+
+        log_widget.scroll_to(y=60, duration=ENGINE_TURN_TIMEOUT, easing="linear")
+        await wait_for(log.animating, pilot=pilot, description="the scroll down animating")
+        log_widget.scroll_to(x=0, animate=False, immediate=True)
+        assert log_widget.scroll_y == 60
+        assert log_widget.scroll_target_y < 60
+        assert not log_widget._bottom_follow.following
+
+        await resize_when_settled(pilot, 120, 60)
+        await wait_for(
+            lambda: log_widget.max_scroll_y < 60 and _at_bottom(log_widget),
+            pilot=pilot,
+            description="the taller view pushed the log to its bottom",
+        )
+        assert log_widget.scroll_target_y < log_widget.max_scroll_y
+        await log.assert_followed()
+
+
+@pytest.mark.asyncio
+async def test_a_following_log_scrolled_down_before_it_reaches_new_lines_keeps_following() -> None:
+    """A scroll down while the follow's move to the new bottom waits for a refresh heads on toward it."""
+    async with _open_log() as log:
+        log_widget, pilot = log.widget, log.pilot
+        bottom = log_widget.max_scroll_y
+        log.land()
+        assert log_widget.max_scroll_y > bottom
+        log_widget.scroll_to(y=log_widget.scroll_y + 1, animate=False, immediate=True)
+        assert log_widget.scroll_y < log_widget.max_scroll_y
+        await wait_for(lambda: _at_bottom(log_widget), pilot=pilot, description="the log reached its new bottom")
+
+
+@pytest.mark.asyncio
+async def test_a_scrolled_up_full_log_keeps_its_lines_in_place_as_the_oldest_go() -> None:
+    """Past ``MAX_DISPLAY_LINES`` each new line drops the oldest; the lines being read must not move up."""
+    async with _open_log(lines=MAX_DISPLAY_LINES + 50) as log:
+        log_widget, pilot = log.widget, log.pilot
+        await wait_for(
+            lambda: len(log_widget.lines) == MAX_DISPLAY_LINES and _at_bottom(log_widget),
+            pilot=pilot,
+            description="the full log opens at its newest line",
+        )
+
+        log_widget.post_message(make_wheel(log_widget, up=True))
+        await wait_for(
+            lambda: 0 < log_widget.scroll_y < log_widget.max_scroll_y, pilot=pilot, description="scrolled up"
+        )
+        reading = log_widget.lines[int(log_widget.scroll_y)].text
+        log.land()
+        assert log_widget.lines[-1].text.startswith("new-19")
+        assert log_widget.lines[int(log_widget.scroll_y)].text == reading
+
+        # A scroll still animating lands where it was headed, as the lines it was headed to move up.
+        log_widget.scroll_page_up(duration=1.0)
+        await wait_for(log.animating, pilot=pilot, description="Page Up animating")
+        headed = log_widget.lines[int(log_widget.scroll_target_y)].text
+        log.land(1)
+        assert not log.animating()
+        assert log_widget.lines[int(log_widget.scroll_y)].text == headed
 
 
 @pytest.mark.asyncio
