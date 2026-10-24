@@ -230,7 +230,7 @@ def test_oversized_result_file_is_rejected_before_json_parse(
     with caplog.at_level(logging.WARNING, logger="chrys.service.hooks.runner"):
         result = runner_mod._read_result_file(path)
 
-    assert result == {}
+    assert result == ({}, "invalid")
     assert "exceeded the 100-byte limit" in caplog.text
 
 
@@ -240,7 +240,7 @@ def test_result_file_at_byte_limit_is_parsed(tmp_path: Path, monkeypatch: pytest
     path = tmp_path / "at-limit.json"
     path.write_bytes(payload)
 
-    assert runner_mod._read_result_file(path) == {"action": "allow"}
+    assert runner_mod._read_result_file(path) == ({"action": "allow"}, "ok")
 
 
 @pytest.mark.asyncio
@@ -301,6 +301,7 @@ async def test_stopped_grandchild_hook_returns_and_cleans_group(runner: HookRunn
     result = await runner.run_and_wait(hook, {})
 
     assert result.timed_out is True
+    assert result.stopped is True
     assert "stopped state" in result.stderr
     child_pid = int(pid_file.read_text(encoding="ascii"))
     for _ in range(20):

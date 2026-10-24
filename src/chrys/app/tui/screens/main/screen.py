@@ -40,6 +40,7 @@ from chrys.app.tui.screens.main.config_actions import (
 )
 from chrys.app.tui.screens.main.copy_actions import CopyActionController
 from chrys.app.tui.screens.main.diff_controller import DiffController, LiveDiffOwner, LiveDiffTracker
+from chrys.app.tui.screens.main.engine_read_model import EngineReadModel
 from chrys.app.tui.screens.main.event_handlers import BackendEventCallbacks, BackendEventHandler
 from chrys.app.tui.screens.main.input_flow import InputFlowController
 from chrys.app.tui.screens.main.model_indicator import (
@@ -49,7 +50,7 @@ from chrys.app.tui.screens.main.model_indicator import (
 from chrys.app.tui.screens.main.navigation import MainNavigationController
 from chrys.app.tui.screens.main.ports import StatusMessage
 from chrys.app.tui.screens.main.rollback_controller import RollbackController
-from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider
+from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider, enabled_hook_count
 from chrys.app.tui.screens.main.session_handlers import RestoreRequest, SessionCallbacks, SessionHandler
 from chrys.app.tui.screens.main.session_title import SessionTitleController
 from chrys.app.tui.screens.main.settings_coordinator import (
@@ -102,7 +103,8 @@ from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 from chrys.app.tui.widgets.editor import MESSAGE_EDITOR_MAX_CHARACTERS, EditorBufferSnapshot, EditorMode
 from chrys.app.tui.widgets.sidebar.background_tasks import BackgroundTaskList
 from chrys.app.tui.widgets.sidebar.context import ContextUsageState
-from chrys.app.tui.widgets.sidebar.panel import SidebarPanel
+from chrys.app.tui.widgets.sidebar.hooks import HookRunList
+from chrys.app.tui.widgets.sidebar.panel import SIDEBAR_HOOKS_TAB, SidebarPanel
 from chrys.app.tui.widgets.sidebar.tasks import TodoListState
 from chrys.app.tui.widgets.sidebar.toc import ConversationToc
 from chrys.app.tui.widgets.trajectory import TrajectoryDashboard
@@ -149,6 +151,7 @@ if TYPE_CHECKING:
     from chrys.foundation.config.settings_store import PersistResult, SettingsHandle
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.background_tasks import BackgroundTaskView
+    from chrys.foundation.models.hook_runs import HookRunDetail, HookRunRecord
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -1096,6 +1099,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self.query_one(InputBar).sync_deferred_button_geometry()
         self.sync_footer_bindings()
         self.query_one(HookIndicator).screen_resumed()
+        self.query_one(HookRunList).screen_resumed()
         self.query_one(SuggestionList).resume_marquee()
         if self.theme_editor is not None:
             self.theme_editor.resume()
@@ -1284,6 +1288,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         )
         self._suggestions.build_slash_commands()
 
+        self.query_one(SidebarPanel).hooks_panel.bind_source(
+            self._hook_runs, self._configured_hook_count, self._hook_runs_dropped
+        )
         await self._subscriptions.subscribe_all()
         await self._workflow.subscribe()
         self._sync_execution_chrome()
@@ -1786,11 +1793,56 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Open the active runtime details modal."""
         self._config_actions.open_runtime_details()
 
-    def on_hook_indicator_clicked(self, _event: HookIndicator.Clicked) -> None:
-        """Show the session's hooks: the runtime details' Hooks tab."""
-        from chrys.app.tui.screens.dialogs.runtime_details import RUNTIME_DETAILS_HOOKS_TAB
+    def on_hook_indicator_clicked(self, event: HookIndicator.Clicked) -> None:
+        """Show the sidebar's Hooks tab, and over it the run the indicator shows, if any.
 
-        self._config_actions.open_runtime_details(initial_tab=RUNTIME_DETAILS_HOOKS_TAB)
+        The tab opens the sidebar if it is closed, so closing the run's details
+        lands on the list, scrolled to that run's row and marking it. A workflow hides that tab, and the sidebar
+        stays closed while an agent loads or the theme editor holds it hidden: there, with no run shown, the
+        configured hooks show instead.
+        """
+        detail = self._hook_run_detail(event.run_id) if event.run_id else None
+        listed = False
+        if not self._workflow.workflow_mode:
+            sidebar = self.query_one(SidebarPanel)
+            if not sidebar.is_visible:
+                self._navigation.toggle_sidebar()
+            sidebar.focus_tab(SIDEBAR_HOOKS_TAB)
+            if detail is not None:
+                sidebar.hooks_panel.select(event.run_id)
+            listed = sidebar.is_visible
+        if detail is not None:
+            from chrys.app.tui.screens.dialogs.hook_run import HookRunModal
+
+            self.app.push_screen(HookRunModal(detail, latest=self._hook_run_detail))
+        elif not listed:
+            from chrys.app.tui.screens.dialogs.runtime_details import RUNTIME_DETAILS_HOOKS_TAB
+
+            self._config_actions.open_runtime_details(initial_tab=RUNTIME_DETAILS_HOOKS_TAB)
+
+    def _hook_runs(self) -> tuple[HookRunRecord, ...]:
+        provider = self._services.engine_provider
+        return EngineReadModel(provider()).hook_runs() if provider is not None else ()
+
+    def _hook_runs_dropped(self) -> int:
+        provider = self._services.engine_provider
+        return EngineReadModel(provider()).hook_runs_dropped() if provider is not None else 0
+
+    def _hook_run_detail(self, run_id: str) -> HookRunDetail | None:
+        provider = self._services.engine_provider
+        return EngineReadModel(provider()).hook_run_detail(run_id) if provider is not None else None
+
+    def _configured_hook_count(self) -> int:
+        return enabled_hook_count(self._state.runtime.details)
+
+    @on(HookRunList.Opened)
+    def _open_hook_run(self, event: HookRunList.Opened) -> None:
+        event.stop()
+        detail = self._hook_run_detail(event.run_id)
+        if detail is not None:
+            from chrys.app.tui.screens.dialogs.hook_run import HookRunModal
+
+            self.app.push_screen(HookRunModal(detail, latest=self._hook_run_detail))
 
     def _open_settings(self, initial_tab: str = GENERAL_TAB_ID) -> None:
         """Open the Settings dialog at *initial_tab*."""

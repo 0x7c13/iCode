@@ -503,8 +503,9 @@ class SubAgentTools:
             # tools (compress_context, recall_context, list_compressed_contexts)
             # are disabled — sub-agents are single-turn and don't need cross-turn
             # context management.
+            # The registered template runs no invocation of its own, so no origin to name.
             async def _on_pre_compact(info: PreCompactInfo) -> None:
-                await self._fire_pre_compact_hook(tool_name, info)
+                await self._fire_pre_compact_hook(tool_name, info, origin=None)
 
             def _publish_context_pressure(
                 reason: str,
@@ -690,7 +691,7 @@ class SubAgentTools:
                 )
 
                 async def _on_pre_compact(info: PreCompactInfo, *, _tool_name: str = tool_name) -> None:
-                    await self._fire_pre_compact_hook(_tool_name, info)
+                    await self._fire_pre_compact_hook(_tool_name, info, origin=emitter.origin)
 
                 def _publish_invocation_context_pressure(
                     reason: str,
@@ -2012,7 +2013,9 @@ class SubAgentTools:
             payload["result_summary"] = result_summary
         await self._hook_manager.fire(event, payload, target_operation_id=target_operation_id)
 
-    async def _fire_pre_compact_hook(self, tool_name: str, info: PreCompactInfo) -> None:
+    async def _fire_pre_compact_hook(
+        self, tool_name: str, info: PreCompactInfo, *, origin: InvocationOrigin | None
+    ) -> None:
         if self._hook_manager is None:
             return
         if not self._hook_manager.has_hooks_for(HookEvent.PRE_COMPACT):
@@ -2032,6 +2035,7 @@ class SubAgentTools:
                 },
             },
             target_operation_id=info.trajectory_operation_id,
+            origin=origin,
         )
 
     async def _publish_sub_agent_compaction_status(

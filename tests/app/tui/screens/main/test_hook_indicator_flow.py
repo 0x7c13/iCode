@@ -19,7 +19,7 @@ from textual.pilot import Pilot
 from textual.widgets import TabbedContent
 
 from chrys.app.tui.app import ChrysApp
-from chrys.app.tui.screens.dialogs.runtime_details import RUNTIME_DETAILS_HOOKS_TAB, RuntimeDetailsDialog
+from chrys.app.tui.screens.dialogs.runtime_details import RuntimeDetailsDialog
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.widgets.chat.messages import AgentMessage
 from chrys.app.tui.widgets.chat.messages import UserMessage as UserMessageWidget
@@ -29,6 +29,7 @@ from chrys.app.tui.widgets.chrome.footer import ChrysFooter
 from chrys.app.tui.widgets.chrome.hook_indicator import HOOK_INDICATOR_WIDTH, HookIndicator
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
+from chrys.app.tui.widgets.sidebar.panel import SIDEBAR_HOOKS_TAB, SidebarPanel
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     ExecutionChanged,
@@ -81,6 +82,9 @@ class _Registry:
 
 
 class _Engine(SessionGenerationEngine):
+    # The sidebar's Hooks tab reads it once the indicator opens that tab.
+    hook_runs = None
+
     def __init__(self, bus: EventBus, cwd: Path, *, start_session: bool = True) -> None:
         self._bus = bus
         self._cwd = cwd
@@ -646,15 +650,19 @@ async def test_clicking_the_indicator_opens_the_hooks_tab(tmp_path: Path) -> Non
         await _shows(pilot, "Hooks")
         indicator = main.query_one(HookIndicator)
         _start, end = _label_span(app)
-        # Clicking the label (its last text cell) opens the dialog.
+        sidebar = main.query_one(SidebarPanel)
+        if sidebar.is_visible:
+            sidebar.toggle()
+        await wait_for(lambda: not sidebar.is_visible, pilot=pilot, description="the sidebar closed")
+        # Clicking the label (its last text cell) opens the sidebar on its Hooks tab.
         await click_when_settled(pilot, indicator, offset=(end - 1 - indicator.region.x, 0))
+        tabs = sidebar.query_one(TabbedContent)
         await wait_for(
-            lambda: isinstance(app.screen, RuntimeDetailsDialog) and app.screen.is_mounted,
+            lambda: sidebar.is_visible and tabs.active == SIDEBAR_HOOKS_TAB,
             pilot=pilot,
-            description="the runtime details dialog",
+            description="the sidebar open on its Hooks tab",
         )
-        tabs = app.screen.query_one("#runtime-details-tabs", TabbedContent)
-        await wait_for(lambda: tabs.active == RUNTIME_DETAILS_HOOKS_TAB, pilot=pilot, description="the Hooks tab")
+        assert app.screen is main
 
 
 async def test_ctrl_q_still_quits(tmp_path: Path) -> None:
@@ -1014,11 +1022,12 @@ async def test_the_footer_keys_keep_every_cell_the_label_does_not_take(tmp_path:
         await wait_for(keys_whole, pilot=pilot, description="the keys whole again")
 
         # The whole box is the label: its first cell opens the hooks too.
+        sidebar = main.query_one(SidebarPanel)
         await click_when_settled(pilot, indicator, offset=(0, 0))
         await wait_for(
-            lambda: isinstance(app.screen, RuntimeDetailsDialog) and app.screen.is_mounted,
+            lambda: sidebar.is_visible and sidebar.query_one(TabbedContent).active == SIDEBAR_HOOKS_TAB,
             pilot=pilot,
-            description="the runtime details dialog",
+            description="the sidebar open on its Hooks tab",
         )
 
 
@@ -1420,9 +1429,9 @@ async def test_on_a_terminal_narrower_than_the_box_the_indicator_fits_and_cuts_t
 
 
 async def _open_runtime_details(pilot: Pilot, app: ChrysApp) -> None:
-    indicator = app.screen.query_one(HookIndicator)
-    _start, end = _label_span(app)
-    await click_when_settled(pilot, indicator, offset=(end - 2 - indicator.region.x, 0))
+    main = app.screen
+    assert isinstance(main, MainScreen)
+    main.action_runtime_details()
     await wait_for(
         lambda: isinstance(app.screen, RuntimeDetailsDialog) and app.screen.is_mounted,
         pilot=pilot,
@@ -1536,14 +1545,7 @@ async def test_a_mouse_that_left_under_a_dialog_drops_the_highlight_when_it_clos
         await _ready(pilot)
         await _shows(pilot, "Hooks")
         hover, _label = await _hover_label(pilot, app)
-        indicator = app.screen.query_one(HookIndicator)
-        _start, end = _label_span(app)
-        await click_when_settled(pilot, indicator, offset=(end - 2 - indicator.region.x, 0))
-        await wait_for(
-            lambda: isinstance(app.screen, RuntimeDetailsDialog) and app.screen.is_mounted,
-            pilot=pilot,
-            description="the runtime details dialog",
-        )
+        await _open_runtime_details(pilot, app)
         # The mouse moves to the dialog, far from the bottom-right corner, while it covers MainScreen.
         dialog = app.screen
         await pilot.hover(dialog, offset=(2, 2))
@@ -1565,15 +1567,8 @@ async def test_a_mouse_that_stayed_on_the_label_keeps_the_highlight_after_a_dial
         await _ready(pilot)
         await _shows(pilot, "Hooks")
         hover, label = await _hover_label(pilot, app)
-        indicator = app.screen.query_one(HookIndicator)
-        _start, end = _label_span(app)
-        # The click leaves the mouse where it is, on the label.
-        await click_when_settled(pilot, indicator, offset=(end - 2 - indicator.region.x, 0))
-        await wait_for(
-            lambda: isinstance(app.screen, RuntimeDetailsDialog) and app.screen.is_mounted,
-            pilot=pilot,
-            description="the runtime details dialog",
-        )
+        # Opened from the keyboard: the mouse stays where it is, on the label.
+        await _open_runtime_details(pilot, app)
         await pilot.press("escape")
         await wait_for(
             lambda: app._main_screen is not None and app.screen is app._main_screen,

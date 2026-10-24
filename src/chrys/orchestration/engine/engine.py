@@ -82,6 +82,7 @@ from chrys.service.trajectory.state import TurnRecord, turn_records
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.execution import ExecutionSnapshot
+    from chrys.service.hooks.run_log import HookRunLog
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.profiles.models.schema import ModelProfile
@@ -162,6 +163,7 @@ class AgentEngine:
         history: SessionHistoryManager,
         trajectory_recorder: trajectory_recorder.TrajectoryRecorder,
         workflows: WorkflowCoordinator,
+        hook_runs: HookRunLog | None = None,
     ) -> None:
         self._bus = bus
         self._session = session
@@ -180,6 +182,7 @@ class AgentEngine:
         self._history = history
         self._trajectory_recorder = trajectory_recorder
         self._workflows = workflows
+        self._hook_runs = hook_runs
         self._subscribed = False
         self._release_task: asyncio.Task[None] | None = None
 
@@ -187,6 +190,11 @@ class AgentEngine:
     def turns(self) -> TurnCoordinator:
         """Turn orchestration and runtime state."""
         return self._turns
+
+    @property
+    def hook_runs(self) -> HookRunLog | None:
+        """Every main-session hook run since the engine was built; None unless it records them."""
+        return self._hook_runs
 
     @property
     def workflows(self) -> WorkflowCoordinator:

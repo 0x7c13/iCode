@@ -507,6 +507,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
             args=args,
             workspace_cwd=self._workspace_cwd,
             target_operation_id=trajectory.operation_id if trajectory is not None else None,
+            origin=origin,
         )
         args = context.arguments if is_mutable_tool_args(context.arguments) else {}
 
@@ -798,6 +799,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                         rejection_source=source,
                         workspace_cwd=self._workspace_cwd,
                         target_operation_id=trajectory.operation_id if trajectory is not None else None,
+                        origin=origin,
                     )
                     context.result, result_text = append_extra_context_to_result(
                         context.result,

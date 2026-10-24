@@ -988,6 +988,11 @@ class HookExecutionsChanged(Event):
 
 
 @dataclass
+class HookRunsChanged(Event):
+    """The engine's hook run log changed; reread it (no data; every session's runs; for the TUI only)."""
+
+
+@dataclass
 class UserInjectResult(Event):
     """Reports whether a mid-run user message was delivered to the model.
 

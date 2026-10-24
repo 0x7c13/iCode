@@ -1434,6 +1434,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             on_successful_turn=_on_successful_turn,
             on_turn_started=session_title_updater.on_turn_started,
             surface=SessionSurface.TUI,
+            record_hook_runs=True,
         )
 
         app = app_cls(

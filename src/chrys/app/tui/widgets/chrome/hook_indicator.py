@@ -82,7 +82,12 @@ class HookIndicator(NonSelectableStatic):
     """
 
     class Clicked(Message):
-        """The indicator was clicked: show the session's hooks."""
+        """The indicator was clicked: show the run it shows, or the hooks when it shows none."""
+
+        def __init__(self, run_id: str) -> None:
+            super().__init__()
+            self.run_id = run_id
+            """The run shown when clicked; empty when idle."""
 
     def __init__(self, *, locale_controller: LocaleController | None = None, **kwargs: Any) -> None:
         super().__init__("", markup=False, **kwargs)
@@ -91,6 +96,8 @@ class HookIndicator(NonSelectableStatic):
         self._timer: Timer | None = None
         self._frame = 0
         self._shown: Text | None = None
+        self._activity: HookExecutionView | None = None
+        """The run the label shows; None when it reads ``Hooks``."""
         # The mouse's screen column while it is over the box, for the hover.
         self._mouse_x: int | None = None
         self._hot = False
@@ -163,13 +170,19 @@ class HookIndicator(NonSelectableStatic):
         self._paint()
 
     def on_leave(self, _event: Leave) -> None:
+        # A Leave sent as an overlay covered the label can arrive after the
+        # screen resumed and read the hover again: a mouse still resting on
+        # the label keeps it.
+        if self.screen.is_current and self.region.contains_point(self.app.mouse_position):
+            return
         self._mouse_x = None
         self._paint()
 
     def on_click(self, event: Click) -> None:
         event.prevent_default()
         event.stop()
-        self.post_message(self.Clicked())
+        # The run the user saw, not one picked again at the click.
+        self.post_message(self.Clicked(self._activity.run_id if self._activity is not None else ""))
 
     def _sync_timer(self) -> None:
         if self._timer is None:
@@ -206,6 +219,7 @@ class HookIndicator(NonSelectableStatic):
 
     def _paint(self) -> None:
         activity = indicator_activity(self._executions, now=time.monotonic())
+        self._activity = activity
         if activity is None:
             component = "hook-indicator--idle"
             label = f" {_REST_GLYPH} {self._render_message(HOOK_INDICATOR_IDLE.bind())} "

@@ -30,6 +30,7 @@ from chrys.service.hooks.schema import HookDecision
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from chrys.foundation.models.invocations import InvocationOrigin
     from chrys.kernel.middleware import FunctionInvocationContext
     from chrys.service.hooks.manager import HookManager
 
@@ -51,12 +52,14 @@ async def apply_before_tool_hooks(
     args: dict[str, Any],
     workspace_cwd: str,
     target_operation_id: str | None = None,
+    origin: InvocationOrigin | None = None,
 ) -> bool:
     """Run ``before_tool_call`` hooks and apply their blocking/modification decision.
 
     Returns ``True`` when a hook blocked the tool.  The caller should still
     publish the normal tool start/result events with the current arguments so
-    the UI and persisted history reflect the denied call.
+    the UI and persisted history reflect the denied call. *origin* names the
+    sub-agent that calls the tool; None for the main agent.
     """
     if manager is None or not manager.has_hooks_for(HookEvent.BEFORE_TOOL_CALL):
         return False
@@ -73,6 +76,7 @@ async def apply_before_tool_hooks(
             workspace_cwd=workspace_cwd,
         ),
         target_operation_id=target_operation_id,
+        origin=origin,
     )
     if decision.blocked:
         message = decision.block_reason or "Tool execution was blocked by hook."
@@ -107,8 +111,12 @@ async def fire_after_tool_hooks(
     rejection_source: str,
     workspace_cwd: str,
     target_operation_id: str | None = None,
+    origin: InvocationOrigin | None = None,
 ) -> HookDecision:
-    """Fire ``after_tool_call`` / ``tool_error`` hooks and return their decision."""
+    """Fire ``after_tool_call`` / ``tool_error`` hooks and return their decision.
+
+    *origin* names the sub-agent that called the tool; None for the main agent.
+    """
     if manager is None:
         return HookDecision()
     result = {
@@ -136,11 +144,14 @@ async def fire_after_tool_hooks(
     if manager.has_hooks_for(HookEvent.AFTER_TOOL_CALL):
         _merge_decision(
             decision,
-            await manager.fire(HookEvent.AFTER_TOOL_CALL, payload, target_operation_id=target_operation_id),
+            await manager.fire(
+                HookEvent.AFTER_TOOL_CALL, payload, target_operation_id=target_operation_id, origin=origin
+            ),
         )
     if errored and manager.has_hooks_for(HookEvent.TOOL_ERROR):
         _merge_decision(
-            decision, await manager.fire(HookEvent.TOOL_ERROR, payload, target_operation_id=target_operation_id)
+            decision,
+            await manager.fire(HookEvent.TOOL_ERROR, payload, target_operation_id=target_operation_id, origin=origin),
         )
     return decision
 

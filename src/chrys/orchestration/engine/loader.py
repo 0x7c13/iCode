@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.usage import UsagePublisher
     from chrys.service.approval.turn_context import TurnContextHolder
     from chrys.service.hooks.manager import HookManager
+    from chrys.service.hooks.run_log import HookRunLog
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.agents.schema import AgentProfile, MCPServerConfig
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -188,8 +189,10 @@ class AgentLoader:
         allow_user_interaction: bool,
         build_agent_fn: BuildAgentFn,
         register_current_engine: Callable[[], None],
+        hook_runs: HookRunLog | None = None,
     ) -> None:
         self._bus = bus
+        self._hook_runs = hook_runs
         self._persistence = persistence
         self._agent_registry = agent_registry
         self._model_registry = model_registry
@@ -310,7 +313,7 @@ class AgentLoader:
         # Every main-session manager reports to the TUI; workflow managers are
         # built by their own factory and stay unreported.
         if manager is not None:
-            wire_hook_reporting(manager, self._bus, session_id=resolved_session_id or "")
+            wire_hook_reporting(manager, self._bus, session_id=resolved_session_id or "", run_log=self._hook_runs)
         return manager
 
     def start_outbox_recovery(self) -> None:

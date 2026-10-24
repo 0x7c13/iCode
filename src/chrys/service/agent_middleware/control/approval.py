@@ -604,6 +604,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                         call_id=call_id,
                         args=parsed_args,
                         target_operation_id=approval_trace.request_id if approval_trace is not None else None,
+                        origin=publisher.origin if publisher is not None else None,
                     )
                 finally:
                     # Cancel the judge if the user decided first (or reason is in — the
@@ -668,6 +669,7 @@ class ApprovalMiddleware(FunctionMiddleware):
                     # edited arguments belongs to the tool it can still block,
                     # not to the exchange the call came in on.
                     target_operation_id=tool_operation_id(context.metadata),
+                    origin=publisher.origin if publisher is not None else None,
                 )
                 # Hooks may have rewritten args further — capture the final form.
                 final_args = context.arguments if isinstance(context.arguments, dict) else modified_args

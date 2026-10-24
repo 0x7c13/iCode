@@ -337,8 +337,8 @@ async def test_shell_mode_sidebar_tab_strip_keeps_focus_for_keyboard_navigation(
             pilot=pilot,
             description="the clicked tab strip keeps focus",
         )
-        await pilot.press("right")
-        await wait_for(lambda: tabs.active == "tab-context", pilot=pilot, description="Right selects the next tab")
+        await pilot.press("left")
+        await wait_for(lambda: tabs.active == "tab-toc", pilot=pilot, description="Left selects the previous tab")
         assert main.focused is strip
 
         main.shell_mode_state = False

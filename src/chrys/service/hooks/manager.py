@@ -21,22 +21,30 @@ import asyncio
 import contextlib
 import copy
 import itertools
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.models.hook_executions import HookExecutionView, HookWaitPoint
+from chrys.foundation.models.hook_runs import HookRunApplied, HookRunEffect
 from chrys.foundation.trajectory.context import TrajectoryContext
+from chrys.foundation.trajectory.ids import new_analytics_id
 from chrys.service.hooks.events import GATED_EVENTS, HookEvent
 from chrys.service.hooks.matcher import matches
 from chrys.service.hooks.outbox import Outbox, OutboxJob
+from chrys.service.hooks.run_log import indented_json
 from chrys.service.hooks.runner import HookResult, HookRunner
 from chrys.service.hooks.schema import HookConfig, HookDecision, HooksFile, MergedHooksFile
 from chrys.service.trajectory.hooks import HookOperationTrace, HookOutcome, TrajectoryContextProvider
+
+if TYPE_CHECKING:
+    from chrys.foundation.models.invocations import InvocationOrigin
+    from chrys.service.hooks.run_log import HookRunLog
 
 logger = logging.getLogger(__name__)
 _ARGS_OVERRIDE_EVENTS = frozenset({HookEvent.BEFORE_TOOL_CALL})
@@ -54,13 +62,13 @@ class _Tracked:
 
     ``scope`` lets :meth:`HookManager.drain_turn` filter to just turn-
     scoped tasks without touching background or session-scoped ones.
-    ``execution_key`` is the run's snapshot entry, registered before the task
-    exists, and ``trace`` its span, opened before: for a task cancelled before
-    its first step, whose own handlers never ran, the drain or the reap
-    callback drops the one and closes the other.
+    ``run`` is the run, queued before the task exists, and ``trace`` its span,
+    opened before: for a task cancelled before its first step, whose own
+    handlers never ran, the drain or the reap callback ends the one and closes
+    the other.
     """
 
-    __slots__ = ("execution_key", "hook", "job", "operation_id", "scope", "task", "trace")
+    __slots__ = ("hook", "job", "operation_id", "run", "scope", "task", "trace")
 
     def __init__(
         self,
@@ -70,7 +78,7 @@ class _Tracked:
         scope: str,
         job: OutboxJob | None,
         operation_id: str | None,
-        execution_key: int | None,
+        run: _Run,
         trace: HookOperationTrace | None = None,
     ) -> None:
         self.hook = hook
@@ -78,8 +86,68 @@ class _Tracked:
         self.scope = scope  # "turn" | "session" | "background"
         self.job = job
         self.operation_id = operation_id
-        self.execution_key = execution_key
+        self.run = run
         self.trace = trace
+
+
+class _Run:
+    """One run: its entry in the runs in flight, its entry in the run log, and how it was started.
+
+    The manager moves it through three steps, each changing both entries
+    together and saying what changed: ``_queue_run``, ``_take_slot`` and
+    ``_finish_run``. The last is called the moment the run's outcome is known,
+    before anything else is awaited, and takes effect once.
+    """
+
+    __slots__ = (
+        "key",
+        "output",
+        "payload_text",
+        "recorded",
+        "retry",
+        "run_id",
+        "sub_agent",
+        "tool_call_id",
+        "tool_name",
+    )
+
+    def __init__(
+        self,
+        run_id: str,
+        *,
+        recorded: bool = False,
+        payload_text: str | None = None,
+        tool_name: str = "",
+        tool_call_id: str = "",
+        sub_agent: str = "",
+        retry: bool = False,
+    ) -> None:
+        self.run_id = run_id
+        self.key: int | None = None
+        """Its entry in the runs in flight; None until queued, and for a detached run."""
+        self.recorded = recorded
+        """Whether the run log records it."""
+        self.payload_text = payload_text
+        """The payload file's text, serialized once when the run is made; None when the
+        runner serializes it, and once the run ended (it is the largest thing a run holds)."""
+        self.tool_name = tool_name
+        self.tool_call_id = tool_call_id
+        self.sub_agent = sub_agent
+        self.retry = retry
+        self.output: HookResult | None = None
+        """The result the runner fills while the hook runs; None until it starts, and
+        once the run ended. A cancelled run keeps what the hook printed from it."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Changed:
+    """What a step of a run changed: the runs in flight, the run log, or both."""
+
+    executions: bool = False
+    runs: bool = False
+
+    def __or__(self, other: _Changed) -> _Changed:
+        return _Changed(executions=self.executions or other.executions, runs=self.runs or other.runs)
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +209,12 @@ class HookManager:
         # The single observer, installed by the session that owns this manager
         # (``wire_hook_reporting``); a second assignment replaces the first.
         self.on_change: Callable[[HookManager], Awaitable[None]] | None = None
+        # Where every run is recorded with its input and output (the TUI's
+        # Hooks panel), and who is told after each write; none unless the
+        # engine records runs (``record_runs``).
+        self._run_log: HookRunLog | None = None
+        self._run_log_session_id = ""
+        self._on_runs_change: Callable[[], Awaitable[None]] | None = None
 
     @property
     def hooks_dir(self) -> Path:
@@ -174,6 +248,17 @@ class HookManager:
         """The runs in flight now (queued or running, waited on or not), oldest first."""
         return tuple(self._executions.values())
 
+    def record_runs(
+        self, log: HookRunLog, *, session_id: str, on_change: Callable[[], Awaitable[None]] | None = None
+    ) -> None:
+        """Record every run of this manager in *log* under *session_id*, calling *on_change* after each write.
+
+        A run that ends after the manager closed is recorded too.
+        """
+        self._run_log = log
+        self._run_log_session_id = session_id
+        self._on_runs_change = on_change
+
     # ── dispatch ─────────────────────────────────────────────────────
 
     async def fire(
@@ -184,6 +269,7 @@ class HookManager:
         scope: str = "turn",
         target_operation_id: str | None = None,
         trajectory_context: TrajectoryContext | None = None,
+        origin: InvocationOrigin | None = None,
     ) -> HookDecision:
         """Fire every matching hook for *event*.
 
@@ -201,6 +287,8 @@ class HookManager:
             trajectory_context: Explicit recording owner for blocking hooks.
                 Non-blocking turn-scoped hooks deliberately retain the normal
                 provider context so response-fence membership remains resolvable.
+            origin: The invocation that fired the event, when a sub-agent
+                did; the run log names that sub-agent. None is the main agent.
 
         Returns:
             Aggregated :class:`HookDecision`.  For events with no
@@ -235,7 +323,8 @@ class HookManager:
                 return decision
             if not matches(hook, envelope):
                 continue
-            trace = self._open_trace(target_operation_id, context=trajectory_context)
+            run = self._new_run(envelope, origin=origin)
+            trace = self._open_trace(target_operation_id, context=trajectory_context, operation_id=run.run_id)
             try:
                 # Inside the block that closes the span: the start marker
                 # awaits its write ack, and an interrupt landing there would
@@ -259,30 +348,74 @@ class HookManager:
                     envelope,
                     # Interrupt observers run on a task nobody waits on.
                     waited_at="none" if scope == "detached" else "call",
+                    run=run,
                 )
             except asyncio.CancelledError:
                 if trace is not None:
                     trace.finished_soon(outcome=HookOutcome.CANCELLED)
+                await self._report(self._finish_run(run, outcome=HookOutcome.CANCELLED))
                 raise
             except Exception as exc:
                 logger.exception("Blocking hook %r failed before producing a result", hook.id)
                 result = HookResult(hook_id=hook.id, exit_code=None, stderr=str(exc))
             blocked_before = decision.blocked
             override_before = decision.args_override
-            _merge_blocking_result(decision, hook, result, event=event)
-            if trace is not None:
-                await trace.finished(
-                    outcome=_hook_outcome(result, blocked=decision.blocked and not blocked_before),
-                    arguments_modified=decision.args_override != override_before,
+            reminders_before = len(decision.system_reminders)
+            contexts_before = len(decision.extra_context)
+            try:
+                _merge_blocking_result(decision, hook, result, event=event)
+                # Compared as JSON, what the tool gets: a hook returning the arguments as they were
+                # changed nothing, while 1 turned to true did, though Python finds them equal.
+                args_changed = False
+                if not decision.blocked and decision.args_override is not None:
+                    returned = self._run_log is not None and decision.args_override is not override_before
+                    args_before = _args_key(_tool_args(envelope)) if returned else None
+                    _apply_args_override_to_envelope(envelope, decision.args_override)
+                    # Either side too deep to write as JSON: counted as changed, since the hook
+                    # returned an override.
+                    args_changed = returned and (args_before is None or args_before != _args_key(_tool_args(envelope)))
+                blocked = decision.blocked and not blocked_before
+                try:
+                    arguments_modified = decision.args_override != override_before
+                except RecursionError:
+                    # Too deep to compare: the hook returned an override, all that can be told.
+                    arguments_modified = decision.args_override is not override_before
+                effect, applied = _blocking_effect(
+                    event,
+                    result,
+                    decision,
+                    blocked=blocked,
+                    args_changed=args_changed,
+                    args_after=_tool_args(envelope),
+                    reminders_before=reminders_before,
+                    contexts_before=contexts_before,
+                )
+            except Exception:
+                # The hook's result, written by the hook, could not be taken: its run ended all
+                # the same, and is ended and reported before the error goes on to the caller.
+                outcome = _hook_outcome(result, blocked=False)
+                await self._report_end(
+                    self._finish_run(run, outcome=outcome, result=result),
+                    trace,
+                    outcome=outcome,
                     exit_code=result.exit_code,
                     timed_out=result.timed_out,
                 )
+                raise
+            await self._report_end(
+                self._finish_run(
+                    run, outcome=_hook_outcome(result, blocked=False), result=result, effect=effect, applied=applied
+                ),
+                trace,
+                outcome=_hook_outcome(result, blocked=blocked),
+                arguments_modified=arguments_modified,
+                exit_code=result.exit_code,
+                timed_out=result.timed_out,
+            )
             if decision.blocked:
                 # Cancel any planned non-blocking hooks for this event —
                 # nothing else will execute on this dispatch.
                 return decision
-            if decision.args_override is not None:
-                _apply_args_override_to_envelope(envelope, decision.args_override)
 
         if self._closed or self._session_drain_generation != session_drain_generation:
             return decision
@@ -296,49 +429,200 @@ class HookManager:
                     scope=scope,
                     session_drain_generation=session_drain_generation,
                     target_operation_id=target_operation_id,
+                    origin=origin,
                 )
             except Exception as exc:
                 _log_nonblocking_spawn_failure(hook, exc)
 
         return decision
 
-    # ── runs in flight ───────────────────────────────────────────────
+    # ── runs ─────────────────────────────────────────────────────────
 
-    def _add_execution(self, hook: HookConfig, *, waited_at: HookWaitPoint) -> int:
-        key = next(self._execution_keys)
-        self._executions[key] = HookExecutionView(
-            hook_id=hook.id, waited_at=waited_at, queued=True, started_at=time.monotonic()
-        )
-        return key
+    def _new_run(self, payload: dict[str, Any], *, origin: InvocationOrigin | None = None, retry: bool = False) -> _Run:
+        """A run's id, and, when runs are recorded, the payload it will be handed as it is now.
 
-    def _mark_running(self, key: int) -> bool:
-        """Mark run *key* as holding a slot; False when the manager closed and cleared it."""
-        view = self._executions.get(key)
-        if view is None:
-            return False
-        self._executions[key] = replace(view, queued=False)
-        return True
-
-    async def _notify_change(self) -> None:
-        """Report the current runs; a failing subscriber never touches the hook."""
-        if self.on_change is None:
-            return
-        self._reported_runs = bool(self._executions)
+        Serialized here, not kept by reference: a later blocking hook's
+        argument override rewrites the same dict in place. Never raises: a
+        payload that cannot be serialized is left to the runner, whose own
+        attempt fails the run, as is one that is no object, which a pending
+        outbox job read back can hold.
+        """
+        run_id = new_analytics_id()
+        if self._run_log is None:
+            return _Run(run_id)
+        fields = payload if isinstance(payload, dict) else {}
+        tool = fields.get("tool")
+        tool_name = tool_call_id = ""
+        if isinstance(tool, dict):
+            tool_name = _text_field(tool, "name")
+            tool_call_id = _text_field(tool, "call_id")
+        # Every event a sub-agent fires carries its profile name; only some carry its display name.
+        sub_agent = _text_field(fields, "profile") if origin is not None and origin.kind == "sub_agent" else ""
         try:
-            await self.on_change(self)
-        except Exception:
-            logger.exception("Hook execution change notification failed")
+            payload_text: str | None = json.dumps(payload, default=str)
+        except TypeError, ValueError, RecursionError:
+            payload_text = None
+        return _Run(
+            run_id,
+            recorded=True,
+            payload_text=payload_text,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            sub_agent=sub_agent,
+            retry=retry,
+        )
+
+    def _register_run(self, hook: HookConfig, run: _Run) -> _Changed:
+        """Add *run* to the run log, queued for a slot."""
+        if self._run_log is None or not run.recorded:
+            return _Changed()
+        self._run_log.register(
+            run_id=run.run_id,
+            session_id=self._run_log_session_id,
+            hook=hook,
+            source=self._hook_sources.get(id(hook), ""),
+            source_path=self._hook_source_paths.get(id(hook), ""),
+            payload_text=run.payload_text or "",
+            tool_name=run.tool_name,
+            tool_call_id=run.tool_call_id,
+            sub_agent=run.sub_agent,
+            retry=run.retry,
+        )
+        return _Changed(runs=True)
+
+    def _queue_run(self, hook: HookConfig, run: _Run, *, waited_at: HookWaitPoint) -> _Changed:
+        """Add *run* to the runs in flight and to the run log, queued for a slot."""
+        run.key = next(self._execution_keys)
+        self._executions[run.key] = HookExecutionView(
+            hook_id=hook.id, waited_at=waited_at, queued=True, started_at=time.monotonic(), run_id=run.run_id
+        )
+        return _Changed(executions=True) | self._register_run(hook, run)
+
+    def _take_slot(self, run: _Run) -> _Changed:
+        """Mark *run* as holding its slot.
+
+        Not in the runs in flight once the manager closed and cleared them,
+        and then reported no more there; the run log records it still.
+        """
+        view = self._executions.get(run.key) if run.key is not None else None
+        if view is not None and run.key is not None:
+            self._executions[run.key] = replace(view, queued=False)
+        return _Changed(
+            executions=view is not None, runs=self._run_log is not None and self._run_log.mark_running(run.run_id)
+        )
+
+    def _finish_run(
+        self,
+        run: _Run,
+        *,
+        outcome: str,
+        result: HookResult | None = None,
+        effect: HookRunEffect | None = None,
+        applied: HookRunApplied | None = None,
+        log_path: str = "",
+        error: str = "",
+    ) -> _Changed:
+        """End *run*: drop it from the runs in flight, and end it in the run log.
+
+        *outcome* is how the hook's process ended, as its span records it but
+        for a block: the run log keeps that as the *effect* of a run that
+        succeeded. Takes effect once; nothing changes when called again.
+        Without *result*, the run log keeps what the hook printed before it
+        was cancelled, or *error* as its stderr.
+        """
+        run.payload_text = None
+        output, run.output = run.output, None
+        removed = run.key is not None and self._executions.pop(run.key, None) is not None
+        if self._run_log is None or not run.recorded:
+            return _Changed(executions=removed)
+        if result is None:
+            ended = self._run_log.finish(
+                run.run_id,
+                outcome=outcome,
+                stdout=output.stdout if output is not None else "",
+                stderr=error or (output.stderr if output is not None else ""),
+                stdout_dropped=output.stdout_dropped if output is not None else 0,
+                stderr_dropped=output.stderr_dropped if output is not None else 0,
+                log_path=log_path,
+            )
+        else:
+            ended = self._run_log.finish(
+                run.run_id,
+                outcome=outcome,
+                exit_code=result.exit_code,
+                effect=effect,
+                applied=applied,
+                result_file=result.result_file,
+                # An empty object is still what the hook wrote.
+                decision=indented_json(result.decision) if result.result_file == "ok" else "",
+                stdout=result.stdout,
+                stderr=result.stderr,
+                stdout_dropped=result.stdout_dropped,
+                stderr_dropped=result.stderr_dropped,
+                log_path=log_path,
+            )
+        return _Changed(executions=removed, runs=ended)
+
+    async def _report(self, changed: _Changed) -> None:
+        if changed.executions or changed.runs:
+            await self._notify_change(executions=changed.executions, runs=changed.runs)
+
+    async def _report_end(
+        self,
+        changed: _Changed,
+        trace: HookOperationTrace | None,
+        *,
+        outcome: str,
+        arguments_modified: bool = False,
+        exit_code: int | None = None,
+        timed_out: bool = False,
+    ) -> None:
+        """Report what a run's end changed, then close its span with *outcome*.
+
+        In that order: the panel and the indicator never wait on the
+        trajectory's write ack. A cancel landing in the report still closes the span.
+        """
+        try:
+            await self._report(changed)
+        except asyncio.CancelledError:
+            if trace is not None:
+                trace.finished_soon(outcome=outcome)
+            raise
+        if trace is not None:
+            await trace.finished(
+                outcome=outcome, arguments_modified=arguments_modified, exit_code=exit_code, timed_out=timed_out
+            )
+
+    async def _notify_change(self, *, executions: bool = True, runs: bool = True) -> None:
+        """Report the runs in flight (*executions*), then that the run log changed (*runs*).
+
+        Separate conditions: a run ending after the manager closed changes the
+        log but publishes no snapshot. A failing subscriber never touches the hook.
+        """
+        if executions and self.on_change is not None:
+            self._reported_runs = bool(self._executions)
+            try:
+                await self.on_change(self)
+            except Exception:
+                logger.exception("Hook execution change notification failed")
+        if runs and self._run_log is not None and self._on_runs_change is not None:
+            try:
+                await self._on_runs_change()
+            except Exception:
+                logger.exception("Hook run log change notification failed")
 
     def _open_trace(
         self,
         target_operation_id: str | None,
         *,
         context: TrajectoryContext | None = None,
+        operation_id: str | None = None,
     ) -> HookOperationTrace | None:
         return HookOperationTrace.open(
             target_operation_id=target_operation_id,
             context=context,
             provider=self.trajectory_context_provider,
+            operation_id=operation_id,
         )
 
     # ── drains ───────────────────────────────────────────────────────
@@ -392,7 +676,7 @@ class HookManager:
             # session-switch event that would clear what it reported.
             self._executions.clear()
             if self._reported_runs:
-                await self._notify_change()
+                await self._notify_change(runs=False)
 
     async def _drain(self, *, scopes: set[str], timeout: float | None) -> None:
         tracked = [t for t in self._inflight if t.scope in scopes]
@@ -424,11 +708,10 @@ class HookManager:
             # Also when this drain is cancelled (an interrupt during
             # ``drain_turn``): ``gather`` passes the cancel on to the runs and
             # raises only once every one of them is done.
-            dropped = False
+            changed = _Changed()
             for tracked_task in tracked:
-                dropped |= self._settle_unstarted(tracked_task)
-            if dropped:
-                await self._notify_change()
+                changed |= self._settle_unstarted(tracked_task)
+            await self._report(changed)
 
         for tracked_task in tracked:
             if not tracked_task.task.done():
@@ -547,29 +830,27 @@ class HookManager:
         payload: dict[str, Any],
         *,
         waited_at: HookWaitPoint,
+        run: _Run,
     ) -> HookResult:
-        # Registered as queued before the slot is taken: probing the semaphore
-        # first would race other runs taking or releasing it.
-        key = self._add_execution(hook, waited_at=waited_at)
-        try:
-            await self._notify_change()
-            async with self._sem:
-                # Published while holding the slot: ``on_change`` must stay a
-                # quick store (the TUI defers its render), or it delays every
-                # run queued behind this one. A run that queued past the
-                # manager's close publishes nothing, as at its end.
-                if self._mark_running(key):
-                    await self._notify_change()
-                return await self._runner.run_and_wait(hook, payload)
-        finally:
-            # Every removal is reported, a cancelled run's too: the report
-            # runs on the run's own task and reads the set when it is stored,
-            # so the last stored snapshot stays the current one. A run ending
-            # after the manager closed (an undrained ``user_interrupt``
-            # observer) was already cleared and reported: publishing again
-            # would overwrite the snapshot of the manager that replaced this one.
-            if self._executions.pop(key, None) is not None:
-                await self._notify_change()
+        """Queue *run*, take a slot and run it; the caller ends the run, however this ends.
+
+        Every end is reported, a cancelled run's too: the report runs on the
+        run's own task and reads the set when it is stored, so the last stored
+        snapshot stays the current one. A run ending after the manager closed
+        (an undrained ``user_interrupt`` observer) was already cleared and
+        reported: publishing again would overwrite the snapshot of the manager
+        that replaced this one.
+        """
+        # Queued before the slot is taken: probing the semaphore first would
+        # race other runs taking or releasing it.
+        await self._report(self._queue_run(hook, run, waited_at=waited_at))
+        async with self._sem:
+            # Published while holding the slot: ``on_change`` must stay a
+            # quick store (the TUI defers its render), or it delays every
+            # run queued behind this one.
+            await self._report(self._take_slot(run))
+            run.output = HookResult(hook_id=hook.id, exit_code=None)
+            return await self._runner.run_and_wait(hook, payload, payload_text=run.payload_text, result=run.output)
 
     async def _spawn_nonblocking(
         self,
@@ -580,9 +861,11 @@ class HookManager:
         session_drain_generation: int,
         existing_job: OutboxJob | None = None,
         target_operation_id: str | None = None,
+        origin: InvocationOrigin | None = None,
     ) -> None:
         if self._closed or self._session_drain_generation != session_drain_generation:
             return
+        run = self._new_run(payload, origin=origin, retry=existing_job is not None)
         job = existing_job
         if hook.execution.delivery == "durable" and job is None:
             job = self._outbox.write_pending(
@@ -602,7 +885,7 @@ class HookManager:
         # Async turn-scope hooks must stay in the active turn: drain_turn()
         # publishes their ids in the response fence, whose analyzer lookup is
         # intentionally confined to that turn's node membership.
-        trace = self._open_trace(target_operation_id)
+        trace = self._open_trace(target_operation_id, operation_id=run.run_id)
         if trace is not None:
             try:
                 await trace.started(
@@ -631,7 +914,7 @@ class HookManager:
         if hook.execution.mode == "async":
             # The drain of the run's scope waits on it; nobody waits on an interrupt observer.
             waited_at: HookWaitPoint = "turn" if scope == "turn" else "session" if scope == "session" else "none"
-            self._start_tracked(hook, payload, job, trace, scope=scope, waited_at=waited_at)
+            self._start_tracked(hook, payload, job, trace, run, scope=scope, waited_at=waited_at)
             await self._notify_change()
             return
 
@@ -640,27 +923,33 @@ class HookManager:
             try:
                 if job is not None:
                     self._outbox.mark_started(job)
-                await self._runner.spawn_detached(hook, payload, job=job)
+                log_path = await self._runner.spawn_detached(hook, payload, job=job, payload_text=run.payload_text)
             except asyncio.CancelledError:
                 if trace is not None:
                     trace.finished_soon(outcome=HookOutcome.CANCELLED)
+                # Recorded as its span is: interrupted while it was handed off.
+                self._register_run(hook, run)
+                await self._report(self._finish_run(run, outcome=HookOutcome.CANCELLED))
                 raise
             except Exception as exc:
                 _log_nonblocking_spawn_failure(hook, exc)
                 if job is not None:
                     with contextlib.suppress(OSError):
                         self._outbox.mark_failed(job, exit_code=None, error=str(exc))
-                if trace is not None:
-                    await trace.finished(outcome=HookOutcome.SPAWN_FAILED)
+                # Recorded ended at once: nobody observes a detached run.
+                self._register_run(hook, run)
+                changed = self._finish_run(run, outcome=HookOutcome.SPAWN_FAILED, error=str(exc))
+                await self._report_end(changed, trace, outcome=HookOutcome.SPAWN_FAILED)
                 return
-            if trace is not None:
-                # Handed to the detached worker: the parent never observes
-                # its exit, so the recorded span ends at the hand-off.
-                await trace.finished(outcome=HookOutcome.DETACHED)
+            # Handed to the detached worker: the parent never observes its
+            # exit, so the run, and its recorded span, end at the hand-off.
+            self._register_run(hook, run)
+            changed = self._finish_run(run, outcome=HookOutcome.DETACHED, log_path=str(log_path))
+            await self._report_end(changed, trace, outcome=HookOutcome.DETACHED)
             return
 
         # Observed to its end like any other run, though nobody waits on it.
-        self._start_tracked(hook, payload, job, trace, scope="background", waited_at="none")
+        self._start_tracked(hook, payload, job, trace, run, scope="background", waited_at="none")
         await self._notify_change()
 
     def _start_tracked(
@@ -669,47 +958,43 @@ class HookManager:
         payload: dict[str, Any],
         job: OutboxJob | None,
         trace: HookOperationTrace | None,
+        run: _Run,
         *,
         scope: str,
         waited_at: HookWaitPoint,
     ) -> None:
-        """Register a non-blocking run, start its task and track it, all without suspending.
+        """Queue a non-blocking run, start its task and track it, all without suspending.
 
         The caller checked that the manager is open and reports the run only
         after this: a drain or close that runs during the report already sees
-        the task, which owns the run's span and snapshot entry from here on.
+        the task, which owns the run and its span from here on.
         """
-        key = self._add_execution(hook, waited_at=waited_at)
-        task = asyncio.create_task(self._run_async_tracked(hook, payload, job, trace, execution_key=key))
+        self._queue_run(hook, run, waited_at=waited_at)
+        task = asyncio.create_task(self._run_async_tracked(hook, payload, job, trace, run=run))
         operation_id = trace.operation_id if trace is not None and trace.start_committed else None
-        tracked = _Tracked(
-            hook=hook, task=task, scope=scope, job=job, operation_id=operation_id, execution_key=key, trace=trace
-        )
+        tracked = _Tracked(hook=hook, task=task, scope=scope, job=job, operation_id=operation_id, run=run, trace=trace)
         self._inflight.append(tracked)
         if scope in ("detached", "background"):
             task.add_done_callback(lambda _task, tracked=tracked: self._reap_background(tracked))
 
-    def _settle_unstarted(self, tracked: _Tracked) -> bool:
-        """Settle a run cancelled before its first step; return whether its snapshot entry was dropped.
+    def _settle_unstarted(self, tracked: _Tracked) -> _Changed:
+        """Settle a run cancelled before its first step, and say what that changed.
 
-        Such a task never ran the body that closes the run's span and drops
-        its entry. A no-op for a run that has not ended, or whose body ran:
-        that body closed the span (closing twice keeps the first) and dropped
-        the entry.
+        Such a task never ran the body that closes the run's span and ends
+        the run. A no-op for a run that has not ended, or whose body ran: that
+        body closed the span (closing twice keeps the first) and ended the run.
         """
         if not tracked.task.cancelled():
-            return False
+            return _Changed()
         if tracked.trace is not None:
             tracked.trace.finished_soon(outcome=HookOutcome.CANCELLED)
-        if tracked.execution_key is None:
-            return False
-        return self._executions.pop(tracked.execution_key, None) is not None
+        return self._finish_run(tracked.run, outcome=HookOutcome.CANCELLED)
 
     def _reap_background(self, tracked: _Tracked) -> None:
         with contextlib.suppress(ValueError):
             self._inflight.remove(tracked)
-        # Nothing here cancels these runs (loop teardown does), so a dropped
-        # entry goes unreported: the next report leaves it out.
+        # Nothing here cancels these runs (loop teardown does), so a run ended
+        # here goes unreported: the next report leaves it out.
         self._settle_unstarted(tracked)
         try:
             tracked.task.result()
@@ -725,17 +1010,19 @@ class HookManager:
         job: OutboxJob | None,
         trace: HookOperationTrace | None = None,
         *,
-        execution_key: int | None = None,
+        run: _Run | None = None,
     ) -> HookResult:
         """Wrap ``runner.run_and_wait`` with outbox + semaphore + error logging."""
+        run = run if run is not None else _Run(new_analytics_id())
         try:
-            return await self._run_async_tracked_inner(hook, payload, job, trace, execution_key)
+            return await self._run_async_tracked_inner(hook, payload, job, trace, run)
         finally:
-            # Reported however it ends, as for a blocking run; not after the
-            # manager closed first: ``background`` runs are not drained and may
-            # end long after the close.
-            if execution_key is not None and self._executions.pop(execution_key, None) is not None:
-                await self._notify_change()
+            # A run ended once its outcome was known; this ends one cancelled
+            # before then, and reports it, as for a blocking run. No snapshot
+            # after the manager closed first: ``background`` runs are not
+            # drained and may end long after the close. The run log still
+            # records them.
+            await self._report(self._finish_run(run, outcome=HookOutcome.CANCELLED))
 
     async def _run_async_tracked_inner(
         self,
@@ -743,7 +1030,7 @@ class HookManager:
         payload: dict[str, Any],
         job: OutboxJob | None,
         trace: HookOperationTrace | None,
-        execution_key: int | None,
+        run: _Run,
     ) -> HookResult:
         try:
             # The slot is taken inside the ``try``: a hook cancelled while it
@@ -751,11 +1038,13 @@ class HookManager:
             # span was opened before the task was created, and once the task
             # took a step only this handler closes it.
             async with self._sem:
-                if execution_key is not None and self._mark_running(execution_key):
-                    await self._notify_change()
+                await self._report(self._take_slot(run))
                 if job is not None:
                     self._outbox.mark_started(job)
-                result = await self._runner.run_and_wait(hook, payload)
+                run.output = HookResult(hook_id=hook.id, exit_code=None)
+                result = await self._runner.run_and_wait(
+                    hook, payload, payload_text=run.payload_text, result=run.output
+                )
         except asyncio.CancelledError:
             if job is not None and hook.execution.delivery == "durable":
                 logger.info(
@@ -768,37 +1057,31 @@ class HookManager:
             raise
         except Exception as exc:
             logger.exception("Hook %r raised", hook.id)
-            if job is not None:
-                with contextlib.suppress(OSError):
-                    self._outbox.mark_failed(job, exit_code=None, error=str(exc))
-            if trace is not None:
-                await trace.finished(outcome=HookOutcome.LAUNCH_ERROR)
-            return HookResult(hook_id=hook.id, exit_code=None, stderr=str(exc))
-        # Before the span is closed: the hook has already run, and the outbox
-        # is what decides whether it runs again. An interrupt landing on the
-        # awaited marker below must not leave a finished durable job pending
-        # for the next runtime to replay.
+            result = HookResult(hook_id=hook.id, exit_code=None, stderr=str(exc))
+            launch_error: str | None = str(exc)
+        else:
+            launch_error = None
+        # The hook has run: what it did is settled before anything is awaited,
+        # so an interrupt landing on an await below neither logs it cancelled
+        # nor leaves a finished durable job pending for the next runtime to
+        # replay (the outbox decides whether it runs again).
+        outcome = _hook_outcome(result, blocked=False)
+        changed = self._finish_run(run, outcome=outcome, result=result, applied=_nonblocking_applied(result))
         if job is not None:
-            if _result_failed(result):
-                with contextlib.suppress(OSError):
+            with contextlib.suppress(OSError):
+                if launch_error is not None:
+                    self._outbox.mark_failed(job, exit_code=None, error=launch_error)
+                elif _result_failed(result):
                     self._outbox.mark_failed(
                         job,
                         exit_code=result.exit_code,
                         error=_result_failure_label(result),
                         stderr_tail=result.stderr,
                     )
-            else:
-                with contextlib.suppress(OSError):
+                else:
                     self._outbox.mark_done(job, exit_code=result.exit_code or 0)
-
-        if trace is not None:
-            await trace.finished(
-                outcome=_hook_outcome(result, blocked=False),
-                exit_code=result.exit_code,
-                timed_out=result.timed_out,
-            )
-
-        if _result_failed(result):
+        await self._report_end(changed, trace, outcome=outcome, exit_code=result.exit_code, timed_out=result.timed_out)
+        if launch_error is None and _result_failed(result):
             _log_hook_failure(hook, result)
         return result
 
@@ -867,6 +1150,94 @@ def _hooks_by_id(hooks: list[HookConfig]) -> dict[str, list[HookConfig]]:
     return grouped
 
 
+def _tool_args(envelope: dict[str, Any]) -> Any:
+    tool = envelope.get("tool")
+    return tool.get("args") if isinstance(tool, dict) else None
+
+
+def _args_key(args: Any) -> str | None:
+    """*args* as JSON with sorted keys, which two equal argument sets share.
+
+    None when they nest deeper than the encoder writes, which parsed JSON can:
+    the decoder takes deeper objects than the encoder (and dict equality) does.
+    """
+    try:
+        return json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+    except RecursionError:
+        return None
+
+
+def _text_field(fields: dict[str, Any], key: str) -> str:
+    """*fields*' *key* when it is a string, else empty."""
+    value = fields.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _decision_action(decision: dict[str, Any]) -> str:
+    """The ``action`` a result file names, lowercased; ``allow`` unless it names one as a string."""
+    action = decision.get("action")
+    return action.lower() if isinstance(action, str) and action else "allow"
+
+
+def _asks_unsupported(event: HookEvent, decision: dict[str, Any]) -> bool:
+    """Whether a result file asks for something *event* does not take."""
+    action = _decision_action(decision)
+    return (
+        (action == "block" and event not in GATED_EVENTS)
+        or (action == "modify" and event not in _ARGS_OVERRIDE_EVENTS)
+        or (bool(decision.get("system_reminder")) and event not in _SYSTEM_REMINDER_EVENTS)
+        or (bool(decision.get("extra_context")) and event not in _EXTRA_CONTEXT_EVENTS)
+    )
+
+
+def _asks_anything(decision: dict[str, Any]) -> bool:
+    action = _decision_action(decision)
+    return action in ("block", "modify") or bool(decision.get("system_reminder") or decision.get("extra_context"))
+
+
+def _blocking_effect(
+    event: HookEvent,
+    result: HookResult,
+    decision: HookDecision,
+    *,
+    blocked: bool,
+    args_changed: bool,
+    args_after: Any,
+    reminders_before: int,
+    contexts_before: int,
+) -> tuple[HookRunEffect | None, HookRunApplied]:
+    """What iCode took from one blocking run, folded into *decision*; at most one effect.
+
+    *blocked* when this run blocked; *args_changed* when its override changed the
+    arguments, *args_after*.
+    """
+    failed = _result_failed(result)
+    if blocked:
+        return "blocked", HookRunApplied(
+            block_reason=decision.block_reason, not_applied="failed_blocked" if failed else None
+        )
+    if failed:
+        return None, HookRunApplied(not_applied="failed")
+    if args_changed:
+        return "modified_args", HookRunApplied(args=indented_json(args_after))
+    if len(decision.system_reminders) > reminders_before:
+        return "added_reminder", HookRunApplied(reminder=decision.system_reminders[-1])
+    if len(decision.extra_context) > contexts_before:
+        return "added_context", HookRunApplied(extra_context=decision.extra_context[-1])
+    if _asks_unsupported(event, result.decision):
+        return None, HookRunApplied(not_applied="unsupported")
+    return None, HookRunApplied()
+
+
+def _nonblocking_applied(result: HookResult) -> HookRunApplied:
+    """An ``async`` or ``fire_and_forget`` run's decision is never taken."""
+    if _result_failed(result):
+        return HookRunApplied(not_applied="failed")
+    if _asks_anything(result.decision):
+        return HookRunApplied(not_applied="nonblocking")
+    return HookRunApplied()
+
+
 def _apply_args_override_to_envelope(envelope: dict[str, Any], args_override: dict[str, Any]) -> None:
     """Merge blocking hook argument overrides into the current tool payload."""
     tool = envelope.get("tool")
@@ -909,7 +1280,7 @@ def _merge_blocking_result(
         # only the configured error policy and ignore any action payload.
         return
 
-    action = str(result.decision.get("action") or "allow").lower()
+    action = _decision_action(result.decision)
     if action == "block":
         if event in GATED_EVENTS:
             decision.blocked = True
@@ -963,6 +1334,9 @@ def _hook_outcome(result: HookResult, *, blocked: bool) -> str:
 
 
 def _result_failure_label(result: HookResult) -> str:
+    # Named apart from a timeout: stderr only ends with the note, which a cut may drop.
+    if result.stopped:
+        return "stopped"
     if result.timed_out:
         return "timeout"
     if result.exit_code is None:

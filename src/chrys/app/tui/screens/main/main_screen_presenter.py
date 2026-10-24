@@ -105,6 +105,9 @@ class MainScreenPresenter:
     def set_hook_executions(self, executions: tuple[HookExecutionView, ...]) -> None:
         self._view.set_hook_executions(executions)
 
+    def hook_runs_changed(self) -> None:
+        self._view.hook_runs_changed()
+
     def set_header_approval_mode(self, mode: ApprovalMode) -> None:
         self._view.set_header_approval_mode(mode)
 

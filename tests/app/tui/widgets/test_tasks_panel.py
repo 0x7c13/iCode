@@ -225,6 +225,7 @@ async def test_sidebar_panel_routes_todo_state_to_tasks_tab() -> None:
             "tab-toc",
             "tab-tasks",
             "tab-context",
+            "tab-hooks",
             "tab-debug",
             "tab-buddy",
         ]

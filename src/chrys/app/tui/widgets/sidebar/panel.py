@@ -15,6 +15,7 @@ from chrys.app.tui.i18n import render_content
 from chrys.app.tui.widgets.sidebar.buddy import BuddyPanel
 from chrys.app.tui.widgets.sidebar.context import ContextPanel, ContextUsageState
 from chrys.app.tui.widgets.sidebar.debug import DebugPanel
+from chrys.app.tui.widgets.sidebar.hooks import HookRunList
 from chrys.app.tui.widgets.sidebar.tasks import TasksPanel, TodoListState
 from chrys.app.tui.widgets.sidebar.toc import ConversationToc
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
@@ -22,6 +23,7 @@ from chrys.foundation.i18n.formatting import format_message
 
 _SIDEBAR_MESSAGES = msg("tui.sidebar.tab.messages", fallback="Messages")
 _SIDEBAR_TASKS = msg("tui.sidebar.tab.tasks", fallback="Tasks")
+_SIDEBAR_HOOKS = msg("tui.sidebar.tab.hooks", fallback="Hooks")
 _SIDEBAR_CONTEXT = msg("tui.sidebar.tab.context", fallback="Context")
 _SIDEBAR_DEBUG = msg("tui.sidebar.tab.debug", fallback="Debug")
 _SIDEBAR_BUDDY = msg("tui.sidebar.tab.buddy", fallback="Buddy")
@@ -29,13 +31,19 @@ _SIDEBAR_TAB_MESSAGES: tuple[MessageDef, ...] = (
     _SIDEBAR_MESSAGES,
     _SIDEBAR_TASKS,
     _SIDEBAR_CONTEXT,
+    _SIDEBAR_HOOKS,
     _SIDEBAR_DEBUG,
     _SIDEBAR_BUDDY,
 )
-_WORKFLOW_HIDDEN_TABS = ("tab-toc", "tab-tasks", "tab-context")
+SIDEBAR_HOOKS_TAB = "tab-hooks"
+# Workflow runs build their own hook managers, which the run log does not record.
+_WORKFLOW_HIDDEN_TABS = ("tab-toc", "tab-tasks", SIDEBAR_HOOKS_TAB, "tab-context")
+_TAB_STRIP_SCROLL_CELLS = 4
+"""How far one wheel step moves the tab strip."""
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.events import MouseScrollDown, MouseScrollLeft, MouseScrollRight, MouseScrollUp
 
     from chrys.app.tui.i18n import LocaleController
     from chrys.foundation.models.background_tasks import BackgroundTaskView
@@ -90,6 +98,8 @@ class SidebarPanel(Widget, can_focus=False):
                 yield ContextPanel(locale_controller=self._locale_controller).data_bind(
                     usage_state=SidebarPanel.context_usage_state
                 )
+            with TabPane(self._localized_content(_SIDEBAR_HOOKS.bind()), id=SIDEBAR_HOOKS_TAB):
+                yield HookRunList(locale_controller=self._locale_controller)
             with TabPane(self._localized_content(_SIDEBAR_DEBUG.bind()), id="tab-debug"):
                 yield DebugPanel(locale_controller=self._locale_controller)
             with TabPane(self._localized_content(_SIDEBAR_BUDDY.bind()), id="tab-buddy"):
@@ -125,6 +135,7 @@ class SidebarPanel(Widget, can_focus=False):
             tab.label = self._localized_content(definition.bind())
         self.context_panel.refresh_localization()
         self.tasks_panel.refresh_localization()
+        self.hooks_panel.refresh_localization()
         self.toc_panel.refresh_localization()
         self.buddy_panel.refresh_localization()
         self.debug_panel.refresh_localization()
@@ -134,6 +145,32 @@ class SidebarPanel(Widget, can_focus=False):
         if controller is None:
             return Content.from_text(format_message(reference), markup=False)
         return render_content(controller.localizer, reference)
+
+    # The tab strip is wider than a narrow sidebar: the wheel over it (up and
+    # down too, as most mice have no sideways wheel) slides it left and right.
+    # Its own scroll box hides overflow and ignores the wheel, so these bubble here.
+    def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
+        self._slide_tab_strip(event, _TAB_STRIP_SCROLL_CELLS)
+
+    def on_mouse_scroll_up(self, event: MouseScrollUp) -> None:
+        self._slide_tab_strip(event, -_TAB_STRIP_SCROLL_CELLS)
+
+    def on_mouse_scroll_right(self, event: MouseScrollRight) -> None:
+        self._slide_tab_strip(event, _TAB_STRIP_SCROLL_CELLS)
+
+    def on_mouse_scroll_left(self, event: MouseScrollLeft) -> None:
+        self._slide_tab_strip(event, -_TAB_STRIP_SCROLL_CELLS)
+
+    def _slide_tab_strip(
+        self, event: MouseScrollDown | MouseScrollUp | MouseScrollLeft | MouseScrollRight, cells: int
+    ) -> None:
+        tabs = self.query_one(TabbedContent).query_one(Tabs)
+        # Where the mouse is, not ``event.widget``: the terminal's wheel events name no widget.
+        if not tabs.region.contains_point(event.screen_offset):
+            return
+        event.stop()
+        # Forced: the strip hides its overflow, so it takes no scroll of its own.
+        tabs.query_one("#tabs-scroll").scroll_relative(x=cells, animate=False, force=True)
 
     def toggle(self) -> None:
         if not self._visibility_suppressors:
@@ -185,6 +222,10 @@ class SidebarPanel(Widget, can_focus=False):
     @property
     def tasks_panel(self) -> TasksPanel:
         return self.query_one(TasksPanel)
+
+    @property
+    def hooks_panel(self) -> HookRunList:
+        return self.query_one(HookRunList)
 
     @property
     def toc_panel(self) -> ConversationToc:

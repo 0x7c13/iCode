@@ -53,9 +53,11 @@ class HookOperationTrace:
         "_target_operation_id",
     )
 
-    def __init__(self, context: TrajectoryContext, *, target_operation_id: str | None) -> None:
+    def __init__(
+        self, context: TrajectoryContext, *, target_operation_id: str | None, operation_id: str | None = None
+    ) -> None:
         self._context = context
-        self._operation_id = new_analytics_id()
+        self._operation_id = operation_id or new_analytics_id()
         self._target_operation_id = target_operation_id
         self._started_ns = time.monotonic_ns()
         self._finished = False
@@ -69,14 +71,18 @@ class HookOperationTrace:
         target_operation_id: str | None = None,
         context: TrajectoryContext | None = None,
         provider: TrajectoryContextProvider | None = None,
+        operation_id: str | None = None,
     ) -> HookOperationTrace | None:
-        """Bind to explicit, ambient, then provider scope; return ``None`` when unrecorded."""
+        """Bind to explicit, ambient, then provider scope; return ``None`` when unrecorded.
+
+        *operation_id*, when given, is the run's id elsewhere (the TUI's run log), so the two join.
+        """
         resolved = context or current_trajectory()
         if resolved is None and provider is not None:
             resolved = provider()
         if resolved is None:
             return None
-        return cls(resolved, target_operation_id=target_operation_id)
+        return cls(resolved, target_operation_id=target_operation_id, operation_id=operation_id)
 
     @property
     def operation_id(self) -> str:
