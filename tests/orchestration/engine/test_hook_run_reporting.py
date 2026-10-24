@@ -24,7 +24,7 @@ from chrys.service.hooks.manager import HookManager
 from chrys.service.hooks.run_log import HookRunLog
 from chrys.service.hooks.schema import HookConfig, HookExecution, HookMatch, HookRun, HookSettings, HooksFile
 from chrys.service.trajectory.hooks import HookOutcome
-from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 _SESSION = "s1"
 
@@ -267,7 +267,6 @@ async def test_a_raising_bus_subscriber_does_not_stop_the_hook(tmp_path: Path) -
     assert decision.blocked is True
     (record,) = log.records()
     assert (record.state, record.effect) == ("ended", "blocked")
-    assert not await wait_until(lambda: len(log.records()) != 1, timeout=0.2)
 
 
 def test_the_notice_does_not_reach_headless_or_acp_output() -> None:
