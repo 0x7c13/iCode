@@ -107,14 +107,19 @@ def indented_json(value: object) -> str:
 def _clip_text(text: str, limit: int = HOOK_RUN_TEXT_MAX_BYTES) -> tuple[str, int]:
     """*text* cut to at most *limit* UTF-8 bytes, and its full size in them.
 
-    A cut drops the character it splits, and every lone surrogate of the text.
+    A cut drops the character it splits; lone surrogates, which a path that is not
+    UTF-8 holds, are kept as they are.
     """
     if text.isascii():
         return text[:limit], len(text)
     data = text.encode("utf-8", "surrogatepass")
     if len(data) <= limit:
         return text, len(data)
-    return data[:limit].decode("utf-8", "ignore"), len(data)
+    cut = limit
+    # Back to the first byte of the character the limit splits: its others are 10xxxxxx.
+    while cut and data[cut] & 0xC0 == 0x80:
+        cut -= 1
+    return data[:cut].decode("utf-8", "surrogatepass"), len(data)
 
 
 class HookRunLog:

@@ -541,10 +541,10 @@ def test_changed_arguments_past_the_cap_are_cut_with_their_size_kept(unit: str) 
     detail = log.detail("rewrite")
     assert detail is not None and detail.applied is not None
     kept = detail.applied.args
-    assert len(kept.encode("utf-8", "surrogatepass")) <= HOOK_RUN_TEXT_MAX_BYTES
+    # Cut short of the limit by the character it would split, at most: a path that is not UTF-8 included.
+    assert HOOK_RUN_TEXT_MAX_BYTES - 4 < len(kept.encode("utf-8", "surrogatepass")) <= HOOK_RUN_TEXT_MAX_BYTES
     assert detail.applied.args_size == len(full.encode("utf-8", "surrogatepass"))
-    if unit != "\udc80":
-        assert full.startswith(kept)
+    assert full.startswith(kept)
 
 
 def test_changed_arguments_within_the_cap_are_kept_whole() -> None:
