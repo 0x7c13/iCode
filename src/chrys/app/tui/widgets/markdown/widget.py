@@ -490,6 +490,8 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
         self._last_parsed_line = 0
         self._pending_parse: _PendingParse | None = None
         """The scheduled parse that has not read ``_markdown`` yet; new requests join it."""
+        self._shown_source = ""
+        """The source the installed blocks were parsed from."""
 
         # Virtualization state
         self._blocks: list[MarkdownBlock] = []
@@ -591,6 +593,11 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
     def source(self) -> str:
         """The markdown source."""
         return self._markdown or ""
+
+    @property
+    def shown_source(self) -> str:
+        """The source of the document installed so far: ``source`` once its parse has landed."""
+        return self._shown_source
 
     async def _on_mount(self, _: Mount) -> None:  # ty: ignore[invalid-method-override]  # Textual dispatch awaits async handlers.
         initial_markdown = self._initial_markdown
@@ -1830,6 +1837,7 @@ class VirtualizedMarkdown(ScrollView, can_focus=True):
                 report.cancel()
                 watch.ended()
             self._install_blocks(blocks)
+            self._shown_source = markdown
 
             lines = markdown.splitlines()
             self._last_parsed_line = len(lines) - (1 if lines and lines[-1] else 0)

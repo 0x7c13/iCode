@@ -475,6 +475,12 @@ class AgentMessage(Widget):
         """A callback that brings the markdown body up to date is queued on this widget."""
         self._body_synced_at = float("-inf")
         """When the markdown body was last handed new text (``time.monotonic()``)."""
+        self._holding_rows = not is_final
+        """The floors of :meth:`get_content_height` apply: the answer streams, or its final text is not shown yet."""
+        self._streamed_height: tuple[int, int] | None = None
+        """The most rows its text has taken while it streams, as (content width, rows); None until laid out."""
+        self._folded_above = (0, 0)
+        """Rows a tool group above gave up by folding as this answer started, and that group's bottom margin."""
         self._is_final = is_final
         self._profile_name = profile_name
         self._is_intermediate = is_intermediate
@@ -675,6 +681,9 @@ class AgentMessage(Widget):
             self._sync_body()
             self.remove_class("--streaming")
             self._show_copy_button_if_ready()
+            if self._streamed_height is None or self._md_widget is None:
+                self._give_back_held_rows()
+            # Otherwise once the body shows the final text: on_virtualized_markdown_table_of_contents_updated.
         elif not self._body_sync_scheduled:
             delay = self._body_synced_at + _STREAMED_BODY_INTERVAL_SECONDS - time.monotonic()
             if delay > 0:
@@ -708,6 +717,72 @@ class AgentMessage(Widget):
         self._body_synced_at = time.monotonic()
         if self._md_widget is not None:
             self._md_widget.update(self.text)
+
+    def on_virtualized_markdown_table_of_contents_updated(
+        self, event: VirtualizedMarkdown.TableOfContentsUpdated
+    ) -> None:
+        """The body installed a parse, as it announces after each: once it shows the final text, the held rows go back.
+
+        It parses that text off the event loop: given back before then, the
+        message would take the old text's height for a frame, and a view that
+        follows the bottom would move down and back up as the final text took
+        the rows again. A parse that fails leaves the old text, and the rows.
+        """
+        if self._holding_rows and self._is_final and event.markdown.shown_source == self.text:
+            self._give_back_held_rows()
+
+    def _give_back_held_rows(self) -> None:
+        """End both floors (:meth:`get_content_height`): the message is as tall as its text from now on."""
+        if not self._holding_rows:
+            return
+        laid_out = self._streamed_height is not None
+        self._holding_rows = False
+        self._streamed_height = None
+        self._folded_above = (0, 0)
+        if laid_out:
+            # The final text may change nothing else that would lay the message out again.
+            self.refresh(layout=True)
+
+    def take_rows_folded_above(self, rows: int, margin: int) -> None:
+        """Fill the *rows* a tool group gives up by folding as this answer starts below it.
+
+        *margin* is the group's bottom margin, which this message's top margin
+        collapses with. While the answer streams, the rows stay blank below its
+        text (see :meth:`get_content_height`), so the content above does not
+        move down and then back up as the answer grows.
+        """
+        self._folded_above = (rows, margin)
+
+    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
+        """While the answer streams, it gives up no rows it took.
+
+        Until its closing markup arrives, a ``**`` or a link's URL can wrap a
+        line that then fits again: the message would give up a row and take it
+        back as more text arrives, and a transcript that follows the bottom
+        would move everything on screen down a row and back up each time. The
+        row stays blank below the text instead, until the text fills it or the
+        answer's final text shows; so do the rows a tool group above gave up as
+        the answer started (:meth:`take_rows_folded_above`). Either holds at most a third
+        of the panel's height as it is now: more blank rows would leave the
+        text above the view, so the message gives them back at once, and the
+        view moves as before.
+        """
+        height = super().get_content_height(container, viewport, width)
+        if not self._holding_rows:
+            return height
+        most_held = container.height // 3
+        streamed = self._streamed_height
+        if streamed is not None and streamed[0] == width and streamed[1] - height <= most_held:
+            height = max(height, streamed[1])
+        self._streamed_height = (width, height)
+        rows, margin = self._folded_above
+        if rows:
+            spacing = self.styles.margin
+            # Less the margins this message adds: its top one collapses with the group's bottom one.
+            folded = rows + margin - max(margin, spacing.top) - spacing.bottom - self.styles.gutter.height
+            if folded <= most_held:
+                height = max(height, folded)
+        return height
 
     def _size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
         # Textual sets a changed virtual size as a reactive that asks for another

@@ -477,7 +477,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Defuse Textual anchor pins while chat layout is settling.
 
         The compositor writes ``scroll_y`` directly from arranged height.
-        Keep that math current, clamp stale negative pins, and skip one
+        Keep that math current, clamp stale negative pins, leave out the
+        spacer row past content that fills the viewport, and skip one
         anchored shrink frame; ``_size_updated`` handles the validator side.
         """
         return self._scroll_controller.arrange(size, optimal=optimal)
@@ -672,18 +673,20 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Post-layout hook: re-engage anchor, sync scrollbar, toggle spacer.
 
         1. Anchor re-engage on growth: ``add_user_message`` releases the
-           anchor (via ``scroll_visible(top=True)``) so the user's message
-           shows at viewport top while the response streams in below.
-           Once the response overflows, resume following the bottom.
+           anchor when the content lets the user's message reach the viewport
+           top (``scroll_user_message_to_top``), so it shows there while the
+           response streams in below. Once the response overflows, resume
+           following the bottom; rows a replay lands above the view are no
+           response.
         2. Drive ``scroll_y`` through its own setter (not the compositor's
            ``set_reactive`` pin) so ``watch_scroll_y`` → ``ScrollBar.position``
            marks the scrollbar dirty on the same frame the content scrolls.
            Otherwise the thumb freezes for one frame because Textual's pin
            writes ``vertical_scrollbar._reactive_position`` directly.
-        3. Bottom spacer (``1fr``, min-height 1) — hide when content fills
-           the viewport (no stray 1-cell tail), re-show when it shrinks
-           back below (e.g. ``ToolGroup`` auto-collapse) so the next
-           growth phase has a flexible tail again.
+        3. Bottom spacer (``1fr``) — hide when content fills the viewport
+           (:meth:`arrange` already left out the one row Textual still gives
+           it then), re-show when it shrinks back below (e.g. ``ToolGroup``
+           auto-collapse) so the next growth phase has a flexible tail again.
 
         The negative-pin defense lives in :meth:`arrange` — it must run
         before the compositor reads the anchor flag.
@@ -851,6 +854,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def scroll_user_message_to_top(self, widget: Widget) -> None:
         """Scroll a newly mounted user message to the viewport top."""
+        # The message is where the user looks now, not a turn a TOC jump still waits for.
+        self._replay_mount.forget_jump()
         self._scroll_controller.scroll_user_message_to_top(widget)
 
     def on_final_response_started(self) -> None:
@@ -976,6 +981,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def set_scroll_target_y(self, y: float) -> None:
         self.scroll_target_y = y
+
+    def stop_scroll_y_animation(self) -> None:
+        self.app.animator.force_stop_animation(self, "scroll_y")
 
     def set_vertical_scrollbar_position(self, y: float) -> None:
         # Like the compositor's own anchor pin: move the thumb without watchers.

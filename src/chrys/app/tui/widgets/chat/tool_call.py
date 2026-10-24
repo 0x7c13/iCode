@@ -2120,6 +2120,14 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
             else:
                 indicator.pause_animation()
 
+    def rows_folding_gives_up(self) -> int:
+        """The rows of tool calls below the header, which folding the laid-out group gives up."""
+        try:
+            content = self.query_one("#tg-content")
+        except NoMatches:
+            return 0
+        return content.outer_size.height if content.display else 0
+
     def watch_collapsed(self, collapsed: bool) -> None:
         try:
             content = self.query_one("#tg-content")

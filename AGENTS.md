@@ -12,8 +12,8 @@ uv run icode acp                     # ACP stdio server; also: serve, agent, mod
 uv run python scripts/chrys_test.py --smart --paths <changed files...>   # default verification; both modes run below normal CPU priority
 uv run python scripts/chrys_test.py --full        # complete non-integration suite; only when asked
 uv run pytest tests/x/test_y.py::test_fn -n0      # debugging only
-uv run ruff check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py   # pyproject's fix = true EDITS files (--no-fix inspects); CI auto-fixes too, so only unfixable errors fail there
-uv run ruff format --check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py
+uv run ruff check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py scripts/chat_panel_workloads.py   # pyproject's fix = true EDITS files (--no-fix inspects); CI auto-fixes too, so only unfixable errors fail there
+uv run ruff format --check src/ tests/ scripts/chrys_test.py scripts/check_wheel.py scripts/calibrate_gc_freeze.py scripts/gc_freeze_calibration_math.py scripts/chat_panel_workloads.py
 uv run ty check --error-on-warning --python-platform linux src/chrys   # repeat for darwin and win32; the src/chrys argument is required
 uv run python scripts/i18n.py extract   # then update, translate, compile, check (see i18n)
 ```

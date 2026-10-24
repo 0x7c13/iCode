@@ -167,8 +167,21 @@ class ChatScrollController:
         self.view_hold_active: bool = False
         self._view_hold_child: tuple[Widget, int] | None = None
         self._view_hold_arrangement: DockArrangeResult | None = None
+        self._view_hold_rows = 0
+        """How far the view hold moved the view since the last layout's size update: rows landed above it.
+
+        A geometry read can arrange before that layout, which then gets the same arrangement again.
+        """
         self._settle_reanchor_generation = 0
-        """Advanced by a TOC jump; a settle re-pin queued before it leaves the view where the jump put it."""
+        """Advanced by a TOC jump or a new message's reveal: a re-pin or replay end queued before it does nothing."""
+        self._spacer_rows = 0
+        """Rows the bottom spacer took in the last arrange: 0 when it was hidden or left out."""
+        self._arrangement: DockArrangeResult | None = None
+        """The last arrangement that placed the transcript."""
+        self._reveal: Widget | None = None
+        """A new user message to bring into view once a layout places it."""
+        self._reveal_top = -1
+        """Where that layout put the top of ``_reveal``, margin included; -1 until one does."""
 
     def set_agent_running(self, running: bool) -> None:
         """Mirror current run state and reset the final gate only on run start."""
@@ -187,12 +200,71 @@ class ChatScrollController:
         self.final_response_started = False
 
     def scroll_user_message_to_top(self, widget: Widget) -> None:
-        """Scroll a newly mounted user message to the viewport top."""
+        """Scroll a newly mounted user message to the viewport top, as far as the content allows.
+
+        The layout that places the message decides it: :meth:`arrange` reads
+        where the message landed and :meth:`size_updated` scrolls there once
+        that layout's height is in, never a callback. Textual runs
+        ``call_after_refresh`` callbacks whenever the screen idles while a
+        ``batch_update`` (a footer recompose as a run starts) holds layout
+        back, so a deferred ``scroll_visible`` could find the message
+        unplaced and do nothing; and when it replaced a failed turn, the
+        content did not grow enough to bring a scrolled-up view down to it.
+        """
+        self._reveal = widget
+        self._reveal_top = -1
+        # ``outer_size`` is set by a layout only: ``size`` reads the region, which a
+        # lazily rebuilt widget map gives before any layout applies the new height.
+        if widget.outer_size and self._arrangement is not None:
+            # A layout placed it while it mounted, and that layout's height is in.
+            self._place_reveal(self._arrangement)
+            if self._reveal_top >= 0:
+                self._reveal_placed()
+
+    def _place_reveal(self, result: DockArrangeResult) -> None:
+        widget = self._reveal
+        if widget is None:
+            return
+        if not widget.is_attached:
+            self._reveal = None
+            return
+        placements = result.placements
+        for index in range(len(placements) - 1, -1, -1):
+            placement = placements[index]
+            if placement.widget is widget:
+                self._reveal_top = placement.region.y - placement.margin.top
+                return
+
+    def _reveal_placed(self) -> None:
+        """Put the message's top at the viewport top, or follow the bottom when it is there.
+
+        As ``scroll_to`` and Textual's anchor check do: a message the content
+        lets reach the top holds the view there, until the reply's growth
+        resumes the following; one that ends the content follows the bottom.
+        """
+        host = self._host
+        # A scroll animation still running would carry the view away again. Stopping
+        # it puts the view at the animation's end, which is no scroll of the user's,
+        # and comes before the anchor is decided: an end at the bottom re-engages it.
+        programmatic = self.programmatic_scroll
         self.programmatic_scroll = True
         try:
-            widget.scroll_visible(top=True, immediate=True, animate=False)
+            host.stop_scroll_y_animation()
         finally:
-            self.programmatic_scroll = False
+            self.programmatic_scroll = programmatic
+        max_y = host.max_scroll_y
+        y = min(self._reveal_top, max_y)
+        self._reveal = None
+        self._reveal_top = -1
+        if y < max_y:
+            # A settle re-pin queued by the shrink before it (a failed turn's
+            # cleanup) would take the view on to the bottom.
+            self._settle_reanchor_generation += 1
+        if host.is_anchored:
+            host.set_anchor_released(y < max_y)
+        if host.scroll_y != y:
+            self.set_scroll_y_programmatically(y)
+        self.sync_scroll_to_bottom_button()
 
     def on_final_response_started(self) -> None:
         """Resume bottom-follow once when the agent starts its final answer."""
@@ -217,7 +289,7 @@ class ChatScrollController:
         self._host.call_after_refresh(self._host.scroll_to_widget_top, widget)
 
     def after_replay_history_mounted(self) -> None:
-        """Schedule final replay scroll-to-bottom, unless a TOC jump lands first."""
+        """Schedule final replay scroll-to-bottom, unless a TOC jump or a new message's reveal lands first."""
         self._host.call_after_refresh(self._scroll_end_unless_jumped, self._settle_reanchor_generation)
 
     def _scroll_end_unless_jumped(self, generation: int) -> None:
@@ -253,6 +325,11 @@ class ChatScrollController:
                 self._host.set_container_size(Size(container_size.width, new_container_h))
         result = self._host.call_super_arrange(size, optimal=optimal)
         self._host.place_fixed_scroll_button(result, size)
+        if not optimal:
+            self._arrangement = result
+            self._spacer_rows = self._arrange_bottom_spacer(result, size)
+            if self._reveal is not None:
+                self._place_reveal(result)
         virtual_h = result.spatial_map.total_region.bottom
         if virtual_h < size.height and self._host.scroll_y < 0:
             if self._host.is_anchored and not self._host.is_anchor_released():
@@ -269,6 +346,32 @@ class ChatScrollController:
         if not optimal and (self.view_hold_active or self._view_hold_child is not None):
             self._hold_view(result)
         return result
+
+    def _arrange_bottom_spacer(self, result: DockArrangeResult, size: Size) -> int:
+        """Return the rows the bottom spacer takes, leaving it out once the content fills the viewport.
+
+        Textual gives ``1fr`` one row when no space remains, so content that
+        grows to the viewport height would lay out one row past it until
+        :meth:`watch_virtual_size` hides the spacer: for that frame a scrollbar
+        shows, and a following view scrolls by the row and back.
+        """
+        spacer = self._host.bottom_spacer()
+        if spacer is None or not spacer.display:
+            return 0
+        placements = result.placements
+        for index in range(len(placements) - 1, -1, -1):
+            placement = placements[index]
+            if placement.widget is spacer:
+                if placement.region.y < size.height:
+                    return placement.region.height
+                del placements[index]
+                result.widgets.discard(spacer)
+                result._spatial_map = None
+                return 0
+            if not placement.fixed:
+                # The spacer ends the transcript: this arrangement left it out already.
+                break
+        return 0
 
     def begin_view_hold(self) -> None:
         """Keep a scrolled-up view on its content while entries land above it."""
@@ -309,6 +412,7 @@ class ChatScrollController:
                 if placement.widget is child:
                     delta = placement.region.y - old_y
                     if delta:
+                        self._view_hold_rows += delta
                         scroll_y = max(0.0, scroll_y + delta)
                         host.set_scroll_y_reactive(scroll_y)
                         host.set_scroll_target_y_reactive(scroll_y)
@@ -329,8 +433,10 @@ class ChatScrollController:
         return None
 
     def note_toc_jump(self) -> None:
-        """A TOC jump moved the view; a settle re-pin already queued must not pull it back to the bottom."""
+        """A TOC jump moved the view; a settle re-pin or a reveal already queued must not move it again."""
         self._settle_reanchor_generation += 1
+        self._reveal = None
+        self._reveal_top = -1
 
     def _reanchor_after_settle_unless_jumped(self, generation: int) -> None:
         if generation == self._settle_reanchor_generation:
@@ -391,8 +497,12 @@ class ChatScrollController:
             # the watcher runs.
             old_virtual_size = self._host.virtual_size
             changed = self._host.call_super_size_updated(size, virtual_size, container_size, False)
-            if layout and self._host.virtual_size != old_virtual_size:
-                self.watch_virtual_size(old_virtual_size, self._host.virtual_size)
+            if layout:
+                if self._host.virtual_size != old_virtual_size:
+                    self.watch_virtual_size(old_virtual_size, self._host.virtual_size)
+                self._view_hold_rows = 0
+            if self._reveal_top >= 0:
+                self._reveal_placed()
             return changed
         finally:
             self.programmatic_scroll = programmatic
@@ -533,7 +643,8 @@ class ChatScrollController:
         new_h = new.height
         if (
             self.agent_running
-            and new_h > old_h
+            # Rows a replay lands above the view, which the view hold moved down with, are no reply.
+            and new_h - self._view_hold_rows > old_h
             and self._host.is_anchored
             and self._host.is_anchor_released()
             and not self.auto_scroll_paused_by_user
@@ -549,8 +660,7 @@ class ChatScrollController:
         if spacer is not None:
             viewport_h = self._host.size.height
             if spacer.display:
-                natural_h = new_h - spacer.size.height
-                if natural_h >= viewport_h:
+                if new_h - self._spacer_rows >= viewport_h:
                     spacer.display = False
             elif new_h < viewport_h:
                 spacer.display = True
@@ -564,6 +674,9 @@ class ChatScrollController:
         self.scrollbar_grabbed = False
         self.resume_gc_after_manual_scroll(schedule_collect=False)
         self.held_shrink_height = -1
+        self._arrangement = None
+        self._reveal = None
+        self._reveal_top = -1
         self.agent_running = False
         self.auto_scroll_paused_by_user = False
         self.final_response_started = False
@@ -572,6 +685,7 @@ class ChatScrollController:
         self.view_hold_active = False
         self._view_hold_child = None
         self._view_hold_arrangement = None
+        self._view_hold_rows = 0
         self._host.anchor()
 
     def stop(self) -> None:
@@ -583,3 +697,7 @@ class ChatScrollController:
         self.resume_gc_after_manual_scroll(schedule_collect=False)
         self.end_view_hold()
         self._view_hold_child = None
+        self._view_hold_rows = 0
+        self._arrangement = None
+        self._reveal = None
+        self._reveal_top = -1

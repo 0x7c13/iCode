@@ -659,6 +659,31 @@ async def test_user_scroll_drops_a_toc_jump_still_waiting_for_its_turn(
         assert reading.virtual_region.y - cp.scroll_y == offset
 
 
+async def test_a_message_sent_drops_a_toc_jump_still_waiting_for_its_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The new message is what the user looks at now; the turn they jumped to before must not take the view."""
+    async with ChatPanelApp().run_test(size=_SIZE) as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        gate = _PrependGate(cp, monkeypatch)
+        await cp.replay_history(_turns())
+        await gate.wait_held(pilot)
+        await _settle(cp, pilot)
+        oldest_turn = cp.toc_items[0].turn_id
+
+        cp.scroll_to_turn(oldest_turn)
+        cp.agent_running = True
+        await cp.add_user_message("new question")
+        message = cp.query(UserMessage).last()
+        await wait_for(lambda: bool(message.outer_size), pilot=pilot, description="the message laid out")
+
+        gate.release.set()
+        await _wait_complete(cp)
+        await _settle(cp, pilot)
+
+        target = next(child for child in cp.children if isinstance(child, UserMessage) and child.id == oldest_turn)
+        assert not target.has_class("-highlighted")
+        assert cp.scroll_y <= message.virtual_region.y < cp.scroll_y + cp.size.height
+
+
 @pytest.mark.parametrize("refreshes", [0, 1])
 async def test_a_toc_jump_right_after_a_restore_is_not_pulled_back_to_the_bottom(
     monkeypatch: pytest.MonkeyPatch, refreshes: int

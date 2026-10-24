@@ -11,7 +11,6 @@ from io import StringIO
 import pytest
 from rich.console import Console, Group
 from rich.syntax import Syntax
-from textual import events as textual_events
 from textual import on
 from textual.app import App, ComposeResult
 from textual.events import MouseDown, MouseUp
@@ -26,6 +25,8 @@ from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     AgentTranscriptJournal,
     AgentTranscriptSurface,
     TranscriptAssistantOp,
+    TranscriptToolResultOp,
+    TranscriptToolStartOp,
 )
 from chrys.app.tui.widgets.chat.messages import AgentMessage
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserToolCall
@@ -58,7 +59,8 @@ from chrys.foundation.i18n import Localizer
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ
 from chrys.kernel import Content
-from tests.support.waiting import wait_for
+from tests.support.tui_helpers import make_wheel
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
 
 
 def test_tool_view_chrome_keeps_english_and_localizes_chinese() -> None:
@@ -196,6 +198,10 @@ class _ToolViewHostApp(App):
         self.push_screen(ToolDetailModal.from_request(event))
 
 
+def _at_bottom(surface: AgentTranscriptSurface) -> bool:
+    return surface.max_scroll_y > 0 and surface.scroll_y == surface.max_scroll_y
+
+
 @pytest.mark.asyncio
 async def test_view_button_revealed_and_opens_modal() -> None:
     class ToolApp(_ToolViewHostApp):
@@ -284,37 +290,27 @@ async def test_sub_agent_detail_uses_one_scroll_owner_and_pauses_gc_during_scrol
     async with _ToolViewHostApp().run_test(size=(100, 30)) as pilot:
         pilot.app.push_screen(modal)
         await wait_for(
-            lambda: surface.is_attached and surface.virtual_size.height > surface.size.height,
+            lambda: _at_bottom(surface),
             pilot=pilot,
-            description="scrollable sub-agent detail transcript",
+            description="scrollable sub-agent detail transcript at its newest content",
         )
+        # Its own moves to the bottom are no scroll gesture.
+        assert not scroll_gc_paused()
 
         output_pane = modal.query_one("#tool-view-output", TabPane)
         assert surface.parent is output_pane
 
         gc_states_during_scroll: list[bool] = []
-        original_scroll_down = surface._scroll_down_for_pointer
+        original_scroll_up = surface._scroll_up_for_pointer
 
-        def scroll_down_spy(**kwargs: object) -> bool:
+        def scroll_up_spy(**kwargs: object) -> bool:
             gc_states_during_scroll.append(scroll_gc_paused())
-            return original_scroll_down(**kwargs)
+            return original_scroll_up(**kwargs)
 
-        monkeypatch.setattr(surface, "_scroll_down_for_pointer", scroll_down_spy)
-        await surface._on_message(
-            textual_events.MouseScrollDown(
-                surface,
-                x=1,
-                y=1,
-                delta_x=0,
-                delta_y=1,
-                button=0,
-                shift=False,
-                meta=False,
-                ctrl=False,
-            )
-        )
+        monkeypatch.setattr(surface, "_scroll_up_for_pointer", scroll_up_spy)
+        await surface._on_message(make_wheel(surface, up=True))
         await wait_for(
-            lambda: surface.scroll_y > 0 and surface._scroll_gc_guard.paused,
+            lambda: surface.scroll_y < surface.max_scroll_y and surface._scroll_gc_guard.paused,
             pilot=pilot,
             description="detail scroll with GC paused",
         )
@@ -327,6 +323,145 @@ async def test_sub_agent_detail_uses_one_scroll_owner_and_pauses_gc_during_scrol
             pilot=pilot,
             description="detail scroll GC pause released on close",
         )
+
+
+@pytest.mark.asyncio
+async def test_sub_agent_detail_follows_new_tools_only_while_scrolled_to_the_bottom() -> None:
+    journal = AgentTranscriptJournal()
+    for index in range(40):
+        journal.record(TranscriptAssistantOp(f"Transcript line {index}: " + ("content " * 12)))
+    surface = AgentTranscriptSurface(journal)
+    modal = ToolDetailModal(title="Explore", input_widgets=[], output_widgets=[surface], initial_tab="output")
+    tools = 0
+
+    def add_tool() -> int:
+        nonlocal tools
+        tools += 1
+        call_id = f"read-{tools}"
+        # Text first, so the tool opens a group of its own rather than joining the last one.
+        journal.record(TranscriptAssistantOp(f"Reading, step {tools}.", segment_id=f"step-{tools}"))
+        journal.record(TranscriptToolStartOp(call_id, "read_file", KIND_FILESYSTEM_READ, {"path": "README.md"}))
+        journal.record(TranscriptToolResultOp(call_id, "read_file", "contents"))
+        return surface.max_scroll_y
+
+    async with _ToolViewHostApp().run_test(size=(100, 30)) as pilot:
+        pilot.app.push_screen(modal)
+        await wait_for(lambda: _at_bottom(surface), pilot=pilot, description="the detail opens at its newest content")
+
+        bottom = add_tool()
+        await wait_for(
+            lambda: surface.max_scroll_y > bottom and _at_bottom(surface),
+            pilot=pilot,
+            description="a new tool keeps a view at the bottom there",
+        )
+
+        surface.post_message(make_wheel(surface, up=True))
+        await wait_for(lambda: 0 < surface.scroll_y < surface.max_scroll_y, pilot=pilot, description="scrolled up")
+        reading = surface.scroll_y
+        bottom = add_tool()
+        await wait_for(lambda: surface.max_scroll_y > bottom, pilot=pilot, description="the second tool lands")
+        assert not await wait_until(lambda: surface.scroll_y != reading, pilot=pilot, timeout=0.5)
+
+        # A scroll heading to the bottom follows again from the first frame of its move.
+        surface.scroll_page_down(duration=1.0)
+        await wait_for(
+            lambda: pilot.app.animator.is_being_animated(surface, "scroll_y"),
+            pilot=pilot,
+            description="Page Down heading to the bottom",
+        )
+        bottom = add_tool()
+        await wait_for(
+            lambda: surface.max_scroll_y > bottom and _at_bottom(surface),
+            pilot=pilot,
+            description="back at the bottom, a new tool is followed again",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_kind", ["page-down", "down"])
+async def test_a_scroll_down_asked_as_new_content_lands_keeps_a_following_detail_following(
+    monkeypatch: pytest.MonkeyPatch, request_kind: str
+) -> None:
+    """Asked for as new content lands, a scroll down heads on from where the view was, and the view follows.
+
+    Page Down (the key, or a click on the scrollbar's track below its thumb) and Down work out their rows as they
+    are asked for; Textual scrolls after the next refresh, when the follow would take the view to the new content.
+    """
+    journal = AgentTranscriptJournal()
+    for index in range(40):
+        journal.record(TranscriptAssistantOp(f"Transcript line {index}: " + ("content " * 12)))
+    surface = AgentTranscriptSurface(journal)
+    modal = ToolDetailModal(title="Explore", input_widgets=[], output_widgets=[surface], initial_tab="output")
+
+    async with _ToolViewHostApp().run_test(size=(100, 30)) as pilot:
+        pilot.app.push_screen(modal)
+        follow = surface._bottom_follow
+        # The settle the opening queued has run: one still queued would pin the view before the seam.
+        await wait_for(
+            lambda: _at_bottom(surface) and not follow._settle_scheduled,
+            pilot=pilot,
+            description="the detail opens at its newest content",
+        )
+        bottom = surface.max_scroll_y
+        settle = follow._settle
+        asked: list[bool] = []
+
+        def page_down_then_settle() -> None:
+            if not asked and surface.max_scroll_y > bottom:
+                asked.append(True)
+                if request_kind == "page-down":
+                    surface.scroll_page_down(duration=ENGINE_TURN_TIMEOUT, easing="linear")
+                else:
+                    surface.scroll_down(duration=ENGINE_TURN_TIMEOUT, easing="linear")
+            settle()
+
+        monkeypatch.setattr(follow, "_settle", page_down_then_settle)
+        # Far more than a page, in one answer that lands at once.
+        journal.record(
+            TranscriptAssistantOp("\n\n".join(f"New line {index}." for index in range(60)), segment_id="new")
+        )
+        await wait_for(
+            lambda: (
+                bool(asked) and _at_bottom(surface) and not pilot.app.animator.is_being_animated(surface, "scroll_y")
+            ),
+            pilot=pilot,
+            description="the view is at the new content's bottom",
+        )
+        assert follow.following
+
+
+@pytest.mark.asyncio
+async def test_home_asked_as_content_outgrows_a_detail_that_fit_keeps_it_at_the_top(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The view that fit its content was at its top and bottom at once: Home there is no scroll to the bottom."""
+    journal = AgentTranscriptJournal()
+    journal.record(TranscriptAssistantOp("A short opening line."))
+    surface = AgentTranscriptSurface(journal)
+    modal = ToolDetailModal(title="Explore", input_widgets=[], output_widgets=[surface], initial_tab="output")
+
+    follow = surface._bottom_follow
+    settle = follow._settle
+    asked: list[bool] = []
+
+    def home_then_settle() -> None:
+        if not asked and surface.max_scroll_y > 0:
+            asked.append(True)
+            surface.scroll_home(animate=False)
+        settle()
+
+    # Before the detail opens: a settle the opening queued would otherwise pin the view first.
+    monkeypatch.setattr(follow, "_settle", home_then_settle)
+    async with _ToolViewHostApp().run_test(size=(100, 30)) as pilot:
+        pilot.app.push_screen(modal)
+        await wait_for(lambda: surface.is_mounted, pilot=pilot, description="the detail opens")
+        assert surface.max_scroll_y == 0
+        journal.record(
+            TranscriptAssistantOp("\n\n".join(f"New line {index}." for index in range(60)), segment_id="new")
+        )
+        await wait_for(lambda: bool(asked), pilot=pilot, description="Home asked for as the content outgrew the view")
+        assert not await wait_until(lambda: surface.scroll_y != 0, pilot=pilot, timeout=0.5)
+        assert not follow.following
 
 
 @pytest.mark.asyncio

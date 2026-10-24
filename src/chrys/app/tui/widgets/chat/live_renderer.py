@@ -179,12 +179,16 @@ class LiveTranscriptRenderer:
         if not self._blank_segment_text.strip():
             return
         await self._status.remove_trailing_status()
-        if self._tools.current_tool_group is not None:
-            self._tools.current_tool_group.collapsed = True
+        group = self._tools.current_tool_group
+        folded = (0, 0)
+        if group is not None:
+            folded = (group.rows_folding_gives_up(), group.styles.margin.bottom)
+            group.collapsed = True
         self._tools.end_group()
         message = AgentMessage(
             self._blank_segment_text, is_final=False, profile_name=self._profile_name, segment_ids=(segment_id,)
         )
+        message.take_rows_folded_above(*folded)
         self._blank_segment_text = ""
         self._current_agent_msg = message
         await self._mount.mount_transcript_widget(message)
