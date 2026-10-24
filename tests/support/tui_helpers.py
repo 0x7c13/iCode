@@ -655,9 +655,9 @@ class ChatPanelApp(LocalizedApp):
 class GcMessageChatPanelApp(ChatPanelApp):
     """:class:`ChatPanelApp` that records the GC absorb/reclaim requests it receives."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, show_thinking: Callable[[], bool] | None = None) -> None:
         self.gc_messages: list[GcAbsorbRequested | GcReclaimRequested] = []
-        super().__init__()
+        super().__init__(show_thinking=show_thinking)
 
     def on_gc_absorb_requested(self, message: GcAbsorbRequested) -> None:
         self.gc_messages.append(message)

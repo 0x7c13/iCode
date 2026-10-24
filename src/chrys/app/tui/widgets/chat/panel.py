@@ -167,6 +167,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             default_profile=lambda: self._profile_name,
             localization=localization,
             tool_widget_configurator=self._configure_tool_widget,
+            show_thinking=show_thinking,
         )
         self._transcript_reader = TranscriptReader(self)
         self._replay_mount = ReplayMountController(self)

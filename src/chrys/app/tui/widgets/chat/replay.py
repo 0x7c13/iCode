@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
@@ -16,6 +16,7 @@ from chrys.app.tui.widgets.chat.messages import (
     INTERRUPTED_RETRY_ACTION_MESSAGE,
     AgentMessage,
     InterruptedMessage,
+    ThinkingMessage,
     UserMessage,
     format_message_created_at,
     resolve_interrupted_message_copy,
@@ -65,6 +66,7 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     normalize_hosted_replay_content,
 )
 from chrys.service.agent_middleware.events.result_persistence import PERSISTED_RESULT_METADATA_KEYS
+from chrys.service.llm.reasoning_display import readable_reasoning
 from chrys.service.mutations.tool_names import _FILE_TOOLS
 from chrys.service.session.message_metadata import (
     MESSAGE_CREATED_AT_KEY,
@@ -77,6 +79,7 @@ from chrys.service.text_blocks import join_text_blocks, reconstruct_text_blocks,
 if TYPE_CHECKING:
     from textual.widget import Widget
 
+    from chrys.foundation.models.invocations import ContentChannel
     from chrys.service.context.providers.history import CompressedBlock
 
 # Replay renders every function-style call it can display: legacy serialized calls
@@ -170,10 +173,21 @@ class ReplayAgentMessage:
     contents: list[Any]
     created_at: Any = None
     is_intermediate: bool = False
-    structured_output_completed: bool = False
     intermediate_texts: list[str] = field(default_factory=list)
     status_code: str | None = None
     status_count: int | None = None
+    duration_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class ReplayStructuredCompletion:
+    """The ✓ of a turn that ended with successful structured hosted output and no answer text.
+
+    It carries the timing of the agent message whose output it completes, and
+    follows the thinking after it, as it did live.
+    """
+
+    created_at: Any = None
     duration_ms: int | None = None
 
 
@@ -197,6 +211,7 @@ ReplayEntry = (
     | ReplayUserMessage
     | ReplayProfileSwitch
     | ReplayAgentMessage
+    | ReplayStructuredCompletion
     | ReplayContextFold
     | ReplayInterrupted
 )
@@ -255,7 +270,9 @@ class HistoryReplayPlanner:
         *,
         file_snapshots: dict[str, list[Any]] | None = None,
         suppress_marker_text: bool = False,
+        show_reasoning: bool = False,
     ) -> ReplayPlan:
+        """Plan the replay of *messages*; with *show_reasoning*, readable thinking shows, and splits tool groups as live."""
         # Compaction tool summaries are the model's context and never render.
         # Drop them before pairing and merging, so a hidden summary cannot
         # split or join the tool groups around it.
@@ -264,8 +281,10 @@ class HistoryReplayPlanner:
             messages,
             file_snapshots=file_snapshots,
         )
-        merged = self._merge_assistant_entries(messages, pairings, standalone_hosted_results, annotations)
-        entries = self._build_entries(merged, suppress_marker_text=suppress_marker_text)
+        merged = self._merge_assistant_entries(
+            messages, pairings, standalone_hosted_results, annotations, show_reasoning=show_reasoning
+        )
+        entries = self._build_entries(merged, suppress_marker_text=suppress_marker_text, show_reasoning=show_reasoning)
         return ReplayPlan(entries=entries, annotations=annotations)
 
     def _pair_tool_calls(
@@ -408,6 +427,8 @@ class HistoryReplayPlanner:
         pairings: dict[int, _PairedToolData],
         standalone_hosted_results: dict[int, ReplayToolCall],
         annotations: list[ReplayCompatibilityAnnotation],
+        *,
+        show_reasoning: bool,
     ) -> list[MergedEntry]:
         merged: list[MergedEntry] = []
         legacy_duplicate_sidecars = _legacy_duplicate_intermediate_sidecars(messages)
@@ -480,7 +501,10 @@ class HistoryReplayPlanner:
 
             for content in contents:
                 if _is_tool_call(content) or id(content) in standalone_hosted_results:
-                    if self._append_text_segment(merged, pending_text, extra, is_intermediate=True):
+                    if self._append_text_segment(
+                        merged, pending_text, extra, is_intermediate=True, show_reasoning=show_reasoning
+                    ):
+                        # Thinking shown before the tools ends the tool group above, as it did live.
                         text_before_next_tool = True
                     pending_text.clear()
                     pending_tools.append(next(replay_tools))
@@ -508,7 +532,13 @@ class HistoryReplayPlanner:
                     has_preceding_text=text_before_next_tool,
                 )
             trailing_text_is_final = bool(pending_text) and _hosted_trailing_text_is_final(contents)
-            self._append_text_segment(merged, pending_text, extra, is_intermediate=not trailing_text_is_final)
+            self._append_text_segment(
+                merged,
+                pending_text,
+                extra,
+                is_intermediate=not trailing_text_is_final,
+                show_reasoning=show_reasoning,
+            )
 
         return self._coalesce_tool_groups(merged)
 
@@ -554,8 +584,9 @@ class HistoryReplayPlanner:
         extra: dict[str, Any],
         *,
         is_intermediate: bool,
+        show_reasoning: bool,
     ) -> bool:
-        if not _has_visible_text(contents):
+        if not (_has_visible_text(contents) or (show_reasoning and _shows_thinking(contents))):
             return False
         merged.append(
             _MergedAssistantEntry(
@@ -713,6 +744,7 @@ class HistoryReplayPlanner:
         merged: list[MergedEntry],
         *,
         suppress_marker_text: bool,
+        show_reasoning: bool,
     ) -> list[ReplayEntry]:
         entries: list[ReplayEntry] = []
         seen_user_in_turn = False
@@ -832,20 +864,39 @@ class HistoryReplayPlanner:
                     )
                 )
 
-        return _mark_structured_output_completions(entries)
+        return _add_structured_output_completions(entries, show_reasoning=show_reasoning)
 
 
-def _mark_structured_output_completions(entries: list[ReplayEntry]) -> list[ReplayEntry]:
-    """Mark a turn-ending successful hosted result that has no text response."""
+def _add_structured_output_completions(entries: list[ReplayEntry], *, show_reasoning: bool) -> list[ReplayEntry]:
+    """Complete a turn-ending successful hosted result that has no text response with a ✓.
+
+    The ✓ goes after the thinking that follows the result: live, it showed
+    when the turn ended. Shown thinking splits the tool group that ends a
+    turn into several; the ✓ reads them all, as it reads the one group
+    otherwise.
+    """
     candidate_index: int | None = None
+    completions: dict[int, ReplayStructuredCompletion] = {}
 
     def finalize_candidate() -> None:
         nonlocal candidate_index
         if candidate_index is None:
             return
         candidate = entries[candidate_index]
-        if isinstance(candidate, ReplayAgentMessage) and _has_successful_structured_tool(candidate.contents):
-            entries[candidate_index] = replace(candidate, structured_output_completed=True)
+        contents = list(candidate.contents) if isinstance(candidate, ReplayAgentMessage) else []
+        if show_reasoning and _shows_no_answer(candidate):
+            before = candidate_index
+            while before > 0 and isinstance(previous := entries[before - 1], ReplayAgentMessage):
+                # Only what thinking split off: a tool group, or the thinking before one.
+                if not (_shows_no_answer(previous) and (previous.is_intermediate or _has_tool_call(previous.contents))):
+                    break
+                before -= 1
+                contents.extend(previous.contents)
+        if isinstance(candidate, ReplayAgentMessage) and _has_successful_structured_tool(contents):
+            after = candidate_index
+            while after + 1 < len(entries) and _shows_at_most_thinking(entries[after + 1]):
+                after += 1
+            completions[after] = ReplayStructuredCompletion(candidate.created_at, candidate.duration_ms)
         candidate_index = None
 
     for index, entry in enumerate(entries):
@@ -860,14 +911,40 @@ def _mark_structured_output_completions(entries: list[ReplayEntry]) -> list[Repl
             continue
         if not isinstance(entry, ReplayAgentMessage) or entry.is_intermediate:
             continue
-        if _has_visible_text(entry.contents) or any(
-            isinstance(content, ReplayToolCall) or (isinstance(content, dict) and _is_tool_call(content))
-            for content in entry.contents
-        ):
+        if _has_visible_text(entry.contents) or _has_tool_call(entry.contents):
             candidate_index = index
 
     finalize_candidate()
-    return entries
+    if not completions:
+        return entries
+    completed: list[ReplayEntry] = []
+    for index, entry in enumerate(entries):
+        completed.append(entry)
+        if (completion := completions.get(index)) is not None:
+            completed.append(completion)
+    return completed
+
+
+def _has_tool_call(contents: list[Any]) -> bool:
+    return any(
+        isinstance(content, ReplayToolCall) or (isinstance(content, dict) and _is_tool_call(content))
+        for content in contents
+    )
+
+
+def _shows_no_answer(entry: ReplayEntry) -> bool:
+    """Whether *entry* is an agent message that shows no answer or notice: tools and thinking at most."""
+    return (
+        isinstance(entry, ReplayAgentMessage)
+        and entry.status_code is None
+        and not any(text.strip() for text in entry.intermediate_texts)
+        and not _has_visible_text(entry.contents)
+    )
+
+
+def _shows_at_most_thinking(entry: ReplayEntry) -> bool:
+    """Whether *entry* is an agent message that shows no more than thinking: no answer, notice or tool."""
+    return _shows_no_answer(entry) and isinstance(entry, ReplayAgentMessage) and not _has_tool_call(entry.contents)
 
 
 def _has_successful_structured_tool(contents: list[Any]) -> bool:
@@ -895,6 +972,7 @@ class HistoryReplayRenderer:
         default_profile: Callable[[], str],
         localization: TranscriptLocalizationPort | None = None,
         tool_widget_configurator: Callable[[Widget], None] | None = None,
+        show_thinking: Callable[[], bool] | None = None,
     ) -> None:
         self._mount = mount
         self._ui = ui
@@ -902,6 +980,7 @@ class HistoryReplayRenderer:
         self._tool_kind_resolver = tool_kind_resolver
         self._default_profile = default_profile
         self._tool_widget_configurator = tool_widget_configurator
+        self._show_thinking = show_thinking or (lambda: False)
         self._resolve_message = localization.render if localization is not None else format_message
         self._planner = HistoryReplayPlanner()
 
@@ -916,7 +995,8 @@ class HistoryReplayRenderer:
         """Replay saved session messages into the chat transcript."""
         await self._ui.dismiss_welcome_for_content()
         self._ui.on_replay_started()
-        plan = self._planner.build_plan(messages, file_snapshots=file_snapshots)
+        show_reasoning = self._show_thinking()
+        plan = self._planner.build_plan(messages, file_snapshots=file_snapshots, show_reasoning=show_reasoning)
         plan.apply_compatibility_annotations()
         replay_profile = initial_profile or self._default_profile()
         seen_user_in_turn = False
@@ -931,7 +1011,9 @@ class HistoryReplayRenderer:
             if isinstance(entry, ReplayContextFold):
                 block = compressed_blocks.get(entry.context_id) if compressed_blocks else None
                 if block:
-                    replay_profile = await self._replay_compressed_block(block, replay_profile, widgets=widgets)
+                    replay_profile = await self._replay_compressed_block(
+                        block, replay_profile, widgets=widgets, show_reasoning=show_reasoning
+                    )
                 freed_messages = len(block.messages) if block else 0
                 turn_range = block.turn_range if block else (0, 0)
                 widgets.append(
@@ -1006,11 +1088,15 @@ class HistoryReplayRenderer:
                     contents,
                     profile_name=replay_profile,
                     is_intermediate=entry.is_intermediate,
-                    structured_output_completed=entry.structured_output_completed,
                     created_at=entry.created_at,
                     duration_ms=entry.duration_ms,
                     widgets=widgets,
+                    show_reasoning=show_reasoning,
                 )
+                continue
+
+            if isinstance(entry, ReplayStructuredCompletion):
+                widgets.append(_structured_completion_message(entry, replay_profile, is_compressed=False))
 
         if widgets:
             await self._mount.mount_transcript_widgets(widgets)
@@ -1040,11 +1126,12 @@ class HistoryReplayRenderer:
         replay_profile: str,
         *,
         widgets: list[Widget] | None = None,
+        show_reasoning: bool = False,
     ) -> str:
         """Render a compressed block through the canonical replay planner."""
         replay_widgets = widgets if widgets is not None else []
         serialized_messages = [message.to_dict() for message in block.messages]
-        plan = self._planner.build_plan(serialized_messages, suppress_marker_text=True)
+        plan = self._planner.build_plan(serialized_messages, suppress_marker_text=True, show_reasoning=show_reasoning)
         plan.apply_compatibility_annotations()
         seen_user_in_turn = False
         for entry in plan.entries:
@@ -1109,12 +1196,16 @@ class HistoryReplayRenderer:
                     visible_contents,
                     profile_name=replay_profile,
                     is_intermediate=entry.is_intermediate,
-                    structured_output_completed=entry.structured_output_completed,
                     created_at=entry.created_at,
                     duration_ms=entry.duration_ms,
                     is_compressed=True,
                     widgets=replay_widgets,
+                    show_reasoning=show_reasoning,
                 )
+                continue
+
+            if isinstance(entry, ReplayStructuredCompletion):
+                replay_widgets.append(_structured_completion_message(entry, replay_profile, is_compressed=True))
 
         if widgets is None:
             await self._mount.mount_transcript_widgets(replay_widgets)
@@ -1125,37 +1216,60 @@ class HistoryReplayRenderer:
         contents: list[Any],
         profile_name: str = "",
         is_intermediate: bool = False,
-        structured_output_completed: bool = False,
         created_at: Any = None,
         duration_ms: int | None = None,
         is_compressed: bool = False,
         widgets: list[Widget] | None = None,
+        show_reasoning: bool = False,
     ) -> None:
-        """Replay a single assistant message, preserving text/tool-call order."""
+        """Replay a single assistant message, preserving text/thinking/tool-call order."""
         replay_widgets = widgets if widgets is not None else []
         pending_text: list[tuple[str, str | None]] = []
         # The segment the pending text was shown in: one bubble per segment, as a bare Continue may withdraw each.
         pending_segment: str | None = None
         pending_tools: list[ReplayToolCall | dict[str, Any]] = []
+        pending_thinking: list[str] = []
+        thinking_channel: ContentChannel | None = None
+        # An answer bubble thinking followed, as (index, text, segment ids): live, a later answer settled it.
+        before_thinking: tuple[int, str, tuple[str, ...]] | None = None
         timestamp = "" if is_intermediate else format_message_created_at(created_at)
 
-        async def flush_text(*, settled: bool = False) -> None:
+        def answer_message(text: str, segment_ids: tuple[str, ...], *, intermediate: bool) -> AgentMessage:
+            return AgentMessage(
+                text,
+                is_final=True,
+                profile_name=profile_name,
+                is_intermediate=intermediate,
+                is_compressed=is_compressed,
+                timestamp="" if intermediate else timestamp,
+                duration_ms=None if intermediate else duration_ms,
+                segment_ids=segment_ids,
+            )
+
+        async def flush_text(*, settled: bool = False, thinking_follows: bool = False) -> None:
+            nonlocal before_thinking
             text = join_text_blocks(reconstruct_text_blocks(pending_text)).strip()
             segment_ids = (pending_segment,) if pending_segment else ()
             pending_text.clear()
-            if text:
-                intermediate = is_intermediate or settled
+            if not text:
+                return
+            if before_thinking is not None:
+                index, earlier_text, earlier_segment_ids = before_thinking
+                replay_widgets[index] = answer_message(earlier_text, earlier_segment_ids, intermediate=True)
+                before_thinking = None
+            intermediate = is_intermediate or settled
+            replay_widgets.append(answer_message(text, segment_ids, intermediate=intermediate))
+            if thinking_follows and not intermediate:
+                before_thinking = (len(replay_widgets) - 1, text, segment_ids)
+
+        def flush_thinking() -> None:
+            nonlocal thinking_channel
+            channel, text = thinking_channel, "".join(pending_thinking)
+            thinking_channel = None
+            pending_thinking.clear()
+            if channel is not None:
                 replay_widgets.append(
-                    AgentMessage(
-                        text,
-                        is_final=True,
-                        profile_name=profile_name,
-                        is_intermediate=intermediate,
-                        is_compressed=is_compressed,
-                        timestamp="" if intermediate else timestamp,
-                        duration_ms=None if intermediate else duration_ms,
-                        segment_ids=segment_ids,
-                    )
+                    ThinkingMessage(text, channel=channel, collapsed=True, is_compressed=is_compressed)
                 )
 
         async def flush_tools() -> None:
@@ -1266,12 +1380,27 @@ class HistoryReplayRenderer:
         for content in contents:
             is_tool = isinstance(content, ReplayToolCall) or _is_tool_call(content)
             if is_tool:
+                flush_thinking()
                 if pending_text:
                     await flush_text()
                 pending_tools.append(content)
             else:
                 if pending_tools:
                     await flush_tools()
+                if isinstance(content, dict) and content.get("type") in TOOL_RESULT_CONTENT_TYPES:
+                    # A result ends the thinking before it, as it ended the segment live.
+                    flush_thinking()
+                if show_reasoning and (shown := _readable_thinking(content)) is not None:
+                    channel, thought = shown
+                    if channel == thinking_channel:
+                        pending_thinking.append(thought)
+                    elif thought.strip():
+                        # The answer before it shows above it; blank thinking showed nothing live.
+                        flush_thinking()
+                        await flush_text(thinking_follows=True)
+                        thinking_channel = channel
+                        pending_thinking.append(thought)
+                    continue
                 if isinstance(content, dict) and content.get("type") == "text":
                     properties = content.get("additional_properties")
                     text, block_id = content.get("text", "") or "", text_block_id(properties)
@@ -1284,6 +1413,7 @@ class HistoryReplayRenderer:
                 # Even an empty fragment can separate different item IDs, but only
                 # text shows a segment. Suppress empty blocks after reconstruction.
                 if text:
+                    flush_thinking()
                     if pending_text and segment != pending_segment:
                         # A later segment settles this one as intermediate text, as it did live.
                         await flush_text(settled=True)
@@ -1291,21 +1421,24 @@ class HistoryReplayRenderer:
                 pending_text.append((text, block_id))
 
         await flush_tools()
+        flush_thinking()
         await flush_text()
-        if structured_output_completed and not is_intermediate:
-            replay_widgets.append(
-                AgentMessage(
-                    "✓",
-                    is_final=True,
-                    profile_name=profile_name,
-                    is_compressed=is_compressed,
-                    is_structured_completion=True,
-                    timestamp=timestamp,
-                    duration_ms=duration_ms,
-                )
-            )
         if widgets is None:
             await self._mount.mount_transcript_widgets(replay_widgets)
+
+
+def _structured_completion_message(
+    entry: ReplayStructuredCompletion, profile_name: str, *, is_compressed: bool
+) -> AgentMessage:
+    return AgentMessage(
+        "✓",
+        is_final=True,
+        profile_name=profile_name,
+        is_compressed=is_compressed,
+        is_structured_completion=True,
+        timestamp=format_message_created_at(entry.created_at),
+        duration_ms=entry.duration_ms,
+    )
 
 
 def _message_contents(message: dict[str, Any]) -> list[Any]:
@@ -1508,6 +1641,18 @@ def _has_visible_text(contents: list[Any]) -> bool:
         or isinstance(content, str)
         for content in contents
     )
+
+
+def _readable_thinking(content: Any) -> tuple[ContentChannel, str] | None:
+    """The channel and text a persisted reasoning content shows, or ``None`` when it has nothing readable."""
+    if not isinstance(content, dict) or content.get("type") != "text_reasoning":
+        return None
+    return readable_reasoning(Content.from_dict(content))
+
+
+def _shows_thinking(contents: list[Any]) -> bool:
+    """Whether *contents* hold thinking to show: readable text that is not blank, as live."""
+    return any((shown := _readable_thinking(content)) is not None and shown[1].strip() for content in contents)
 
 
 def _intermediate_text_is_visible(contents: list[Any], intermediate_text: Any) -> bool:

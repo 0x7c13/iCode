@@ -25,6 +25,7 @@ from textual.widgets import Button, Static
 from chrys.app.tui.clipboard import copy_text_to_clipboards
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcAbsorbRequested
 from chrys.app.tui.util.removal import remove_all_shielded
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets.chat.image_preview import ChatImagePreview, ImagePreviewGrid, extract_image_previews
@@ -838,7 +839,8 @@ class ThinkingMessage(StreamedMarkdownMessage):
     """The model's readable thinking, muted, above what it led to.
 
     It streams like an answer and stays open once complete; its header folds
-    it then. It is not part of the answer: it has no copy button, and copying
+    it then. A replayed one starts folded, and builds its body the first time
+    it opens. It is not part of the answer: it has no copy button, and copying
     the agent's responses leaves it out.
     """
 
@@ -849,6 +851,9 @@ class ThinkingMessage(StreamedMarkdownMessage):
         border-left: thick $tui-border-neutral-gray $border-opacity;
         height: auto;
         color: $text-muted;
+    }
+    ThinkingMessage.--compressed {
+        border-left: thick $tui-border-neutral-100 $border-opacity;
     }
     ThinkingMessage > VirtualizedMarkdown {
         padding: 0;
@@ -868,11 +873,18 @@ class ThinkingMessage(StreamedMarkdownMessage):
         channel: ContentChannel = "reasoning",
         segment_id: str = "",
         is_final: bool = True,
+        collapsed: bool = False,
+        is_compressed: bool = False,
     ) -> None:
         self.segment_id = segment_id
         """The content segment this message shows, for a retry that gives up its response to remove."""
         self._channel = channel
-        super().__init__(text, is_final=is_final)
+        self._absorb_after_parse = False
+        """The body was built on opening: its first parse is stable content the GC freeze can take."""
+        super().__init__(text, is_final=is_final, classes="--compressed" if is_compressed else "")
+        if collapsed:
+            # Before mount, and without the watcher: the body is built when it first opens.
+            self.set_reactive(StreamedMarkdownMessage.collapsed, True)
 
     def _label(self) -> str:
         label = _THINKING_SUMMARY_LABEL if self._channel == "reasoning_summary" else _THINKING_LABEL
@@ -885,7 +897,22 @@ class ThinkingMessage(StreamedMarkdownMessage):
     def compose(self) -> ComposeResult:
         with MessageHeaderRow():
             yield _AgentHeader(self._label(), self._header_text())
-        yield self._new_body()
+        if not self.collapsed:
+            yield self._new_body()
+
+    def watch_collapsed(self, collapsed: bool) -> None:
+        if not collapsed and self._md_widget is None and self.is_mounted:
+            self._absorb_after_parse = True
+            self.mount(self._new_body())
+        super().watch_collapsed(collapsed)
+
+    def on_virtualized_markdown_table_of_contents_updated(
+        self, event: VirtualizedMarkdown.TableOfContentsUpdated
+    ) -> None:
+        # The base class's handler of the same name runs after this one: Textual dispatches to each class.
+        if self._absorb_after_parse and event.markdown is self._md_widget:
+            self._absorb_after_parse = False
+            self.post_message(GcAbsorbRequested(GcAbsorbReason.STABLE_CONTENT_MOUNTED))
 
     def _refresh_header(self) -> None:
         with contextlib.suppress(Exception):
