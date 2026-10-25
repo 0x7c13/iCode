@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import create_autospec
 
 import pytest
@@ -17,9 +18,11 @@ from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.dialogs.background_task import confirm_stopping
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog, NoticeDialog
+from chrys.app.tui.screens.dialogs.editor import EditorDialog
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolCall
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
+from chrys.app.tui.widgets.editor import EditorBufferSnapshot
 from chrys.app.tui.widgets.task_summary import (
     TaskSummary,
     TaskSummaryData,
@@ -32,6 +35,85 @@ from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import make_chrys_app
 from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for
+
+if TYPE_CHECKING:
+    from rich.console import RenderableType
+    from textual.geometry import Region
+    from textual.screen import Screen
+
+
+class _ConfirmationFrameApp(App):
+    def __init__(self, locale: str = "en") -> None:
+        self.locale_controller = LocaleController(Settings(locale=locale))
+        self.painted_sizes: list[tuple[int, int]] = []
+        self.painted_button_regions: list[tuple[Region, ...]] = []
+        super().__init__()
+
+    def _display(self, screen: Screen, renderable: RenderableType | None) -> None:
+        super()._display(screen, renderable)
+        if renderable is not None and isinstance(screen, ConfirmDialog):
+            region = screen.query_one("#confirm-container").region
+            if region.width:
+                self.painted_sizes.append((region.width, region.height))
+                self.painted_button_regions.append(tuple(button.region for button in screen.query(Button)))
+
+
+@pytest.mark.parametrize("locale", ["en", "zh-Hans"])
+@pytest.mark.parametrize("size", [(120, 36), (60, 30), (40, 30), (40, 14)])
+async def test_editor_discard_confirmation_has_its_final_size_on_every_frame(
+    locale: str, size: tuple[int, int]
+) -> None:
+    app = _ConfirmationFrameApp(locale)
+    async with app.run_test(size=size) as pilot:
+        await app.push_screen(EditorDialog(EditorBufferSnapshot("draft", (0, 0))))
+        await click_when_settled(pilot, "#editor-cancel")
+        dialog = app.screen
+        assert isinstance(dialog, ConfirmDialog)
+        await wait_for(
+            lambda: dialog.is_mounted and screen_is_settled(app, dialog) and bool(app.painted_sizes),
+            pilot=pilot,
+        )
+        final = dialog.query_one("#confirm-container").region
+        expected_width = 43 if locale == "zh-Hans" else 80
+        assert final.width == min(expected_width, int(size[0] * 0.9))
+        assert set(app.painted_sizes) == {(final.width, final.height)}
+        buttons = tuple(button.region for button in dialog.query(Button))
+        assert set(app.painted_button_regions) == {buttons}
+        assert all(button.bottom <= final.bottom for button in buttons)
+
+
+@pytest.mark.parametrize("screen_width", [120, 60, 40])
+@pytest.mark.parametrize(
+    ("dialog_type", "title", "message", "tasks", "expected_width"),
+    [
+        (ConfirmDialog, "Confirm", "Short message", (), 43),
+        (ConfirmDialog, "Confirm", "Long message " * 4, (), 80),
+        (ConfirmDialog, "Long title " * 8, "Short message", (), 100),
+        (NoticeDialog, "Notice", "Short message", (), 64),
+        (NoticeDialog, "Notice", "Long notice line\n" * 70, (), 64),
+        (ConfirmDialog, "Stop tasks", "Stop?", (TaskSummaryData("command " * 30),), 100),
+    ],
+)
+async def test_confirmation_layout_is_final_from_first_painted_frame(
+    screen_width: int,
+    dialog_type: type[ConfirmDialog],
+    title: str,
+    message: str,
+    tasks: tuple[TaskSummaryData, ...],
+    expected_width: int,
+) -> None:
+    app = _ConfirmationFrameApp()
+    dialog = dialog_type(title=title, message=message, tasks=tasks)
+    async with app.run_test(size=(screen_width, 36)) as pilot:
+        await app.push_screen(dialog)
+        await wait_for(
+            lambda: dialog.is_mounted and screen_is_settled(app, dialog) and bool(app.painted_sizes),
+            pilot=pilot,
+        )
+        assert {width for width, _height in app.painted_sizes} == {min(expected_width, int(screen_width * 0.9))}
+        final = dialog.query_one("#confirm-container").region
+        assert set(app.painted_sizes) == {(final.width, final.height)}
+        assert set(app.painted_button_regions) == {tuple(button.region for button in dialog.query(Button))}
 
 
 @pytest.mark.parametrize("text", ["abc " * 200, "中文测试 " * 100, "👩‍💻é " * 100, "你\t好\t" * 100])

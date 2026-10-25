@@ -417,6 +417,8 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.editor.button.commit",
     "tui.editor.button.discard",
     "tui.editor.character_limit",
+    "tui.editor.discard_message",
+    "tui.editor.discard_title",
     "tui.editor.draft_changed_warning",
     "tui.editor.draft_too_large",
     "tui.editor.hint.command",

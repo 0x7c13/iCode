@@ -27,6 +27,7 @@ from chrys.foundation.i18n.formatting import format_message
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.geometry import Size
 
     from chrys.app.tui.i18n import LocaleController
 
@@ -89,8 +90,11 @@ class ConfirmDialog(BaseDialog[bool]):
         super().__init__()
 
     def compose(self) -> ComposeResult:
+        self._title = self._render_message(self._title_message)
+        self._message = self._render_dialog_message(self._message_value)
         with VerticalGroup(id="confirm-container") as container:
-            container.border_title = Text(self._render_message(self._title_message))
+            container.border_title = Text(self._title)
+            container.styles.width = self._dialog_width(self.app.size.width)
             with VerticalGroup(id="confirm-inner"):
                 yield from self.compose_message()
                 confirm_label = self._render_message(self._confirm_label_message)
@@ -134,14 +138,15 @@ class ConfirmDialog(BaseDialog[bool]):
         return text
 
     def on_mount(self) -> None:
+        if not self.app.is_running or self._closing or self._pruning:
+            return
         if self._locale_controller is not None:
             self._locale_controller.register_surface(self)
-        # The buttons are composed by the nested DialogButtonRow. Defer the
-        # autofocus one refresh so it runs after that nested mount has
-        # settled, and never let a missing button crash the app: a compose
-        # interrupted by shutdown leaves the row empty.
+        # Descendants have mounted, but the screen has no layout yet. Use the
+        # viewport to size the buttons and scrolling body before the first paint.
+        self._apply_dialog_size(self.app.size)
+        # Focus waits for the first layout.
         self.call_after_refresh(self._focus_confirm_button)
-        self.call_after_refresh(self._size_dialog)
 
     def on_resize(self) -> None:
         self.call_after_refresh(self._size_dialog)
@@ -157,9 +162,8 @@ class ConfirmDialog(BaseDialog[bool]):
                     return
         super()._maybe_clear_tooltip(_)
 
-    def _size_dialog(self) -> None:
-        if not self.is_mounted or not self.is_attached or self.dismiss_requested:
-            return
+    def _dialog_width(self, available_width: int) -> int:
+        """Use the same content-based width for the first frame and later resizes."""
         message = self._message.plain if isinstance(self._message, Text) else self._message
         needed = max(cell_len(self._title) + 6, *(cell_len(line) + 6 for line in message.split("\n")))
         for task in self._tasks:
@@ -167,7 +171,15 @@ class ConfirmDialog(BaseDialog[bool]):
             needed = max(needed, (max(map(cell_len, display_command(task.command).split("\n"))) + 1) // 2 + 7)
         minimum = 64 if self._tasks else self._minimum_width
         desired = next((tier for tier in (minimum, 80, 100) if tier >= needed), 100)
-        width = max(8, min(desired, int(self.size.width * 0.9)))
+        return max(8, min(desired, int(available_width * 0.9)))
+
+    def _size_dialog(self) -> None:
+        if not self.is_mounted or not self.is_attached or self.dismiss_requested:
+            return
+        self._apply_dialog_size(self.size)
+
+    def _apply_dialog_size(self, viewport: Size) -> None:
+        width = self._dialog_width(viewport.width)
         container = self.query_one("#confirm-container")
         container.styles.width = width
         buttons = list(self.query_one("#confirm-buttons").query(Button))
@@ -186,8 +198,8 @@ class ConfirmDialog(BaseDialog[bool]):
             impact = self.query_one("#confirm-impact", Static)
             impact.update(Text(self._impact_text()))
             for widget in (self.query_one("#confirm-message", Static), impact):
-                fixed += widget.get_content_height(self.size, self.size, max(2, width - 6)) + 2
-        self.query_one(".confirm-scroll").styles.max_height = max(1, int(self.size.height * 0.9) - fixed)
+                fixed += widget.get_content_height(viewport, viewport, max(2, width - 6)) + 2
+        self.query_one(".confirm-scroll").styles.max_height = max(1, int(viewport.height * 0.9) - fixed)
 
     def on_unmount(self) -> None:
         if self._locale_controller is not None:

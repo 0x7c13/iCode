@@ -199,8 +199,8 @@ async def test_modal_follows_the_log_and_stops_after_a_confirmation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hold_refresh_callbacks = True
-    # Textual's private refresh dispatcher runs _size_dialog, which fills the
-    # initially empty task previews. Hold it to expose that state deterministically.
+    # Hold post-refresh callbacks to prove previews and actions are ready
+    # without a second layout pass.
     invoke_callbacks = ConfirmDialog._invoke_and_clear_callbacks
 
     async def invoke_when_released(dialog: ConfirmDialog) -> None:
@@ -222,12 +222,14 @@ async def test_modal_follows_the_log_and_stops_after_a_confirmation(
         await wait_for(
             lambda: isinstance(app.screen, ConfirmDialog) and app.screen.is_mounted,
             pilot=pilot,
-            description="the confirmation mounted before its previews are filled",
+            description="the confirmation mounted before post-refresh callbacks",
         )
         dialog = app.screen
         try:
             message = dialog.query_one(".task-command", Static)
-            assert str(message.content) == ""
+            assert "npm run dev" in str(message.content)
+            await wait_for(lambda: dialog.query_one("#confirm-yes").region.width > 0, pilot=pilot)
+            initial_buttons = tuple(button.region for button in dialog.query(Button))
             assert not screen_is_settled(app, dialog)
         finally:
             hold_refresh_callbacks = False
@@ -236,6 +238,7 @@ async def test_modal_follows_the_log_and_stops_after_a_confirmation(
             lambda: screen_is_settled(app, dialog), pilot=pilot, description="the confirmation previews laid out"
         )
         assert "npm run dev" in str(message.content)
+        assert tuple(button.region for button in dialog.query(Button)) == initial_buttons
         await click_when_settled(pilot, "#confirm-yes")
         await wait_for(lambda: app.stopped == ["t1"], pilot=pilot, description="the stop requested")
         assert app.screen is modal
