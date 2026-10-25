@@ -5816,6 +5816,18 @@ msgstr ""
 msgid "tui.editor.character_limit"
 msgstr ""
 
+#. English: Close the editor without committing this content?
+#. chrys-meta={"fingerprint":"da95eef4f29286b54eb976874fe3d18c25ecf11885ef223ba7585e3994ecd123","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/editor.py
+msgid "tui.editor.discard_message"
+msgstr ""
+
+#. English: Discard prompt?
+#. chrys-meta={"fingerprint":"3fbdf6d350aea162b334bd2fbe6b135a97de05fefc10c09fedd7d6a649b33f1e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/editor.py
+msgid "tui.editor.discard_title"
+msgstr ""
+
 #. English: Chat draft changed — Commit again to overwrite
 #. chrys-meta={"fingerprint":"580f6806f7b7c6671e1c4961e26e21d5df8c2ae692f85e712c08a150e8ba27bb","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/editor.py

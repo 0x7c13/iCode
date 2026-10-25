@@ -107,8 +107,8 @@ async def test_rejection_waits_for_other_modal_and_long_notice_remains_dismissib
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hold_refresh_callbacks = True
-    # Textual's private Screen._invoke_and_clear_callbacks dispatches _size_dialog;
-    # holding it makes the layout before that callback deterministic.
+    # Hold post-refresh callbacks to prove the initial layout already keeps
+    # long notices scrollable and their actions on screen.
     invoke_callbacks = NoticeDialog._invoke_and_clear_callbacks
 
     async def invoke_when_released(dialog: NoticeDialog) -> None:
@@ -142,14 +142,14 @@ async def test_rejection_waits_for_other_modal_and_long_notice_remains_dismissib
         button = dialog.query_one("#confirm-yes", Button)
         try:
             await wait_for(lambda: dialog.is_mounted and button.region.width > 0, pilot=pilot)
-            # The first layout gives the button a width before _size_dialog caps
-            # the scrolling body. Hold that callback to force this intermediate state.
-            assert button.region.bottom > app.size.height
+            assert button.region.bottom <= app.size.height
+            initial_button = button.region
             assert not screen_is_settled(app, dialog)
         finally:
             hold_refresh_callbacks = False
             dialog.check_idle()
         await wait_for(lambda: screen_is_settled(app, dialog), pilot=pilot)
+        assert button.region == initial_button
         app.save_screenshot("workflow-long-notice.svg", path=str(tmp_path))
         assert button.region.bottom <= app.size.height, [
             (widget.id, widget.region, widget.styles.height, widget.styles.max_height)

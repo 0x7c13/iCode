@@ -13,8 +13,9 @@ from textual import on
 from textual.containers import HorizontalGroup, VerticalGroup
 from textual.widgets import Button, Select, Static
 
-from chrys.app.tui.i18n import render_str, widget_localizer
+from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
+from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.widgets.editor import (
     EditorBufferSnapshot,
     EditorIntent,
@@ -47,6 +48,11 @@ _MODE_EMACS = msg("tui.editor.mode.emacs", fallback="Emacs")
 _MODE_VIM = msg("tui.editor.mode.vim", fallback="Vim")
 _COMMIT = msg("tui.editor.button.commit", fallback="Commit")
 _DISCARD = msg("tui.editor.button.discard", fallback="Discard")
+_DISCARD_TITLE = msg("tui.editor.discard_title", fallback="Discard prompt?")
+_DISCARD_MESSAGE = msg(
+    "tui.editor.discard_message",
+    fallback="Close the editor without committing this content?",
+)
 _HINT_COMMIT = msg("tui.editor.hint.commit", fallback=" Commit ")
 _HINT_DISCARD = msg("tui.editor.hint.discard", fallback=" Discard ")
 _HINT_MODE = msg("tui.editor.hint.mode", fallback=" Mode")
@@ -172,7 +178,7 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
                 yield Static(Text(render_message(_STATUS_LABEL.bind())), id="editor-status-label")
                 yield Static(Text(self._render_status(editor.status_text)), id="editor-status")
                 yield Button(Text(render_message(_COMMIT.bind())), id="editor-commit", variant="primary", flat=True)
-                yield Button(Text(render_message(_DISCARD.bind())), id="editor-cancel", variant="warning", flat=True)
+                yield Button(Text(render_message(_DISCARD.bind())), id="editor-cancel", variant="error", flat=True)
 
     def on_mount(self) -> None:
         self._sync_narrow_layout(self.app.size.width)
@@ -259,7 +265,35 @@ class EditorDialog(BaseDialog[EditorDialogResult]):
     def _on_cancel_pressed(self, event: Button.Pressed) -> None:
         event.prevent_default()
         event.stop()
-        self.cancel_immediately()
+        self.request_discard()
+
+    def request_discard(self) -> None:
+        """Confirm the Discard button whenever the editor contains text."""
+        if self.app.screen is not self or self.dismiss_requested:
+            return
+        if not self.query_one(MessageEditor).text:
+            self.cancel_immediately()
+            return
+        self._clear_discard_armed()
+
+        def decided(discard: bool | None) -> None:
+            if not self.is_mounted or self.app.screen is not self or self.dismiss_requested:
+                return
+            if discard:
+                self.cancel_immediately()
+            else:
+                self.query_one(MessageEditor).focus()
+
+        self.app.push_screen(
+            ConfirmDialog(
+                title=_DISCARD_TITLE.bind(),
+                message=_DISCARD_MESSAGE.bind(),
+                confirm_label=_DISCARD.bind(),
+                confirm_variant="error",
+                locale_controller=widget_locale_controller(self),
+            ),
+            decided,
+        )
 
     def commit(self) -> None:
         """Accept the editor text when the underlying InputBar is writable."""

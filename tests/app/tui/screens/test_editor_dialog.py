@@ -18,6 +18,7 @@ from textual.widgets import Button, Select, Static, TextArea
 
 from chrys.app.tui.app import ChrysApp
 from chrys.app.tui.i18n import LocaleController
+from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.dialogs.editor import EditorDialog, EditorDialogResult
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.support.gc_freeze import (
@@ -52,6 +53,7 @@ from chrys.service.state.store import JsonFileStateStore
 from tests.support.paths import SRC_ROOT
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import ShutdownOnlyEngine
+from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 
 pytestmark = pytest.mark.asyncio
@@ -434,7 +436,7 @@ async def test_keyboard_save_returns_edited_text_without_submitting(save_key: st
         ]
 
 
-async def test_save_and_cancel_buttons_are_deliberate_immediate_paths() -> None:
+async def test_save_is_immediate_and_discard_requires_confirmation() -> None:
     app = _DialogApp()
 
     async with app.run_test() as pilot:
@@ -453,10 +455,116 @@ async def test_save_and_cancel_buttons_are_deliberate_immediate_paths() -> None:
         app.push_screen(cancel_dialog, cancelled.append)
         await pilot.pause()
         await pilot.press(*" dirty")
-        await pilot.click("#editor-cancel")
+        await click_when_settled(pilot, "#editor-cancel")
+        assert isinstance(app.screen, ConfirmDialog)
+        assert cancelled == []
+        await click_when_settled(pilot, "#confirm-yes")
         await pilot.pause()
         assert cancelled[0].accepted is False
         assert cancelled[0].text == "original dirty"
+
+
+@pytest.mark.parametrize("mode", list(EditorMode))
+@pytest.mark.parametrize("text", ["draft", " \n"])
+async def test_discard_confirms_unchanged_nonempty_text(text: str, mode: EditorMode) -> None:
+    app = _DialogApp()
+    results: list[EditorDialogResult] = []
+    dialog = EditorDialog(EditorBufferSnapshot(text, (0, 0)), mode=mode)
+
+    async with app.run_test() as pilot:
+        app.push_screen(dialog, results.append)
+        await click_when_settled(pilot, "#editor-cancel")
+
+        confirmation = app.screen
+        assert isinstance(confirmation, ConfirmDialog)
+        assert results == []
+        assert dialog.query_one(MessageEditor).text == text
+        assert confirmation.query_one("#confirm-yes", Button).variant == "error"
+        dialog.request_discard()
+        assert sum(isinstance(screen, ConfirmDialog) for screen in app.screen_stack) == 1
+
+        await click_when_settled(pilot, "#confirm-yes")
+        await wait_for(lambda: bool(results), pilot=pilot, description="confirmed editor discard")
+        assert results == [EditorDialogResult(accepted=False, text=text, mode=mode)]
+
+
+@pytest.mark.parametrize("cancel_action", ["button", "escape", "backdrop"])
+async def test_cancel_discard_preserves_editor_text_cursor_and_undo(cancel_action: str) -> None:
+    app = _DialogApp()
+    results: list[EditorDialogResult] = []
+    dialog = EditorDialog(EditorBufferSnapshot("draft", (0, 5)))
+
+    async with app.run_test() as pilot:
+        app.push_screen(dialog, results.append)
+        await wait_for(lambda: dialog.is_mounted, pilot=pilot, description="editor mounted before editing")
+        editor = dialog.query_one(MessageEditor)
+        await wait_for(lambda: editor.has_focus, pilot=pilot, description="editor focused before editing")
+        await pilot.press("x", "escape")
+        assert dialog.discard_armed is True
+        cursor = editor.cursor_location
+        await click_when_settled(pilot, "#editor-cancel")
+        assert isinstance(app.screen, ConfirmDialog)
+        if cancel_action == "button":
+            await click_when_settled(pilot, "#confirm-no")
+        elif cancel_action == "escape":
+            await pilot.press("escape")
+        else:
+            await pilot.click(offset=(0, 0))
+        await wait_for(
+            lambda: app.screen is dialog and editor.has_focus,
+            pilot=pilot,
+            description="cancelled discard returns to editor",
+        )
+
+        assert results == []
+        assert editor.text == "draftx"
+        assert editor.cursor_location == cursor
+        assert dialog.discard_armed is False
+        await pilot.press("ctrl+z")
+        assert editor.text == "draft"
+        await pilot.press("ctrl+o")
+        await wait_for(lambda: bool(results), pilot=pilot, description="commit after cancelling discard")
+        assert results == [EditorDialogResult(accepted=True, text="draft", mode=EditorMode.STANDARD)]
+
+
+@pytest.mark.parametrize("initial_text", ["", "draft"])
+async def test_discard_empty_editor_closes_without_confirmation(initial_text: str) -> None:
+    app = _DialogApp()
+    results: list[EditorDialogResult] = []
+    dialog = EditorDialog(EditorBufferSnapshot(initial_text, (0, 0)))
+
+    async with app.run_test() as pilot:
+        app.push_screen(dialog, results.append)
+        await wait_for(lambda: dialog.is_mounted, pilot=pilot, description="empty editor mounted")
+        dialog.query_one(MessageEditor).clear()
+        await click_when_settled(pilot, "#editor-cancel")
+        await wait_for(lambda: bool(results), pilot=pilot, description="empty editor discarded")
+        assert not any(isinstance(screen, ConfirmDialog) for screen in app.screen_stack)
+        assert results == [EditorDialogResult(accepted=False, text="", mode=EditorMode.STANDARD)]
+
+
+async def test_discard_confirmation_uses_and_refreshes_app_locale() -> None:
+    app = _LocalizedDialogApp("zh-Hans")
+    dialog = EditorDialog(EditorBufferSnapshot("draft", (0, 0)))
+
+    async with app.run_test() as pilot:
+        app.push_screen(dialog)
+        await click_when_settled(pilot, "#editor-cancel")
+        confirmation = app.screen
+        assert isinstance(confirmation, ConfirmDialog)
+        assert confirmation.query_one("#confirm-container").border_title == "放弃提示词？"  # noqa: RUF001
+        assert str(confirmation.query_one("#confirm-message", Static).render()) == (
+            "关闭编辑器，不提交本次内容吗？"  # noqa: RUF001
+        )
+        assert str(confirmation.query_one("#confirm-yes", Button).label) == "放弃"
+        assert str(confirmation.query_one("#confirm-no", Button).label) == "取消"
+
+        app.locale_controller.switch_locale("en")
+        assert confirmation.query_one("#confirm-container").border_title == "Discard prompt?"
+        assert str(confirmation.query_one("#confirm-message", Static).render()) == (
+            "Close the editor without committing this content?"
+        )
+        assert str(confirmation.query_one("#confirm-yes", Button).label) == "Discard"
 
 
 async def test_clean_escape_cancels_immediately_including_after_undo() -> None:
@@ -665,7 +773,8 @@ async def test_input_prompt_button_opens_editor_with_current_draft() -> None:
         assert editor.text == "current draft"
         assert editor.cursor_location == (0, 7)
 
-        await pilot.click("#editor-cancel")
+        await click_when_settled(pilot, "#editor-cancel")
+        await click_when_settled(pilot, "#confirm-yes")
         await _wait_for_condition(
             lambda: app.screen is app.main_screen,
             pilot,
@@ -1007,7 +1116,8 @@ async def test_main_screen_editor_cancel_and_writeback_preserve_drafts_without_s
         await _wait_for_editor_dialog_ready(app, pilot, description="editor before cancellation")
         assert app.screen.query_one(MessageEditor).cursor_location == (0, 2)
         await pilot.press("X")
-        await pilot.click("#editor-cancel")
+        await click_when_settled(pilot, "#editor-cancel")
+        await click_when_settled(pilot, "#confirm-yes")
         await wait_for(lambda: app.screen is app.main_screen and text_area.has_focus, pilot=pilot)
         assert input_bar.value == "original"
         assert text_area.cursor_location == (0, 2)
@@ -1200,6 +1310,7 @@ async def test_editor_layout_has_mode_hint_header_and_status_action_row() -> Non
         assert list(dialog.query("#editor-preview")) == []
         assert commit.label.plain == "Commit"
         assert cancel.label.plain == "Discard"
+        assert cancel.variant == "error"
         assert str(mode_label.render()) == "Mode:"
         assert mode_label.region.y == mode_select.region.y == hint.region.y
         assert header.region.height == mode_label.region.height == mode_select.region.height == hint.region.height == 1
@@ -1342,7 +1453,8 @@ async def test_keymap_persists_and_seeds_subsequent_dialog_on_commit_or_cancel(
         if dismissal == "commit":
             await pilot.press("ctrl+o")
         else:
-            await pilot.click("#editor-cancel")
+            await click_when_settled(pilot, "#editor-cancel")
+            await click_when_settled(pilot, "#confirm-yes")
         await pilot.pause()
 
         assert persisted == overrides == [EditorMode.EMACS.value]
@@ -1362,7 +1474,8 @@ async def test_keymap_persists_and_seeds_subsequent_dialog_on_commit_or_cancel(
         assert next_dialog.query_one("#editor-mode", Select).value == EditorMode.EMACS.value
 
         await _wait_for_editor_dialog_ready(app, pilot, description="reopened editor with unchanged keymap")
-        await pilot.click("#editor-cancel")
+        await click_when_settled(pilot, "#editor-cancel")
+        await click_when_settled(pilot, "#confirm-yes")
         await wait_for(lambda: app.screen is app.main_screen, pilot=pilot)
         assert persisted == overrides == [EditorMode.EMACS.value]
 
@@ -1506,7 +1619,8 @@ async def test_populated_main_screen_editor_overlay_does_not_restyle_recompose_o
         assert layout_refreshes == []
         assert await pilot.hover("#editor-cancel") is True
         assert app.mouse_over is not None
-        await pilot.click("#editor-cancel")
+        await click_when_settled(pilot, "#editor-cancel")
+        await click_when_settled(pilot, "#confirm-yes")
         await _wait_for_condition(
             lambda: app.screen is main_screen,
             pilot,
@@ -1603,7 +1717,8 @@ async def test_editor_uses_top_screen_gc_gate_without_participants_or_gc_posts(
             pilot,
             description="editor interaction before GC assertion",
         )
-        await pilot.click("#editor-cancel")
+        await click_when_settled(pilot, "#editor-cancel")
+        await click_when_settled(pilot, "#confirm-yes")
         await _wait_for_condition(
             lambda: app.screen is main_screen,
             pilot,
