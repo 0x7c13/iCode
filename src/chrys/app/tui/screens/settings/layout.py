@@ -62,6 +62,10 @@ _HINT_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
     "tui.settings.hint.ui.chat.tool_groups_expanded",
     fallback="Expand new tool groups by default. When off, click the tool status at any time to view details.",
 )
+_HINT_UI_CHAT_FOLD_FINISHED_TURNS = msg(
+    "tui.settings.hint.ui.chat.fold_finished_turns",
+    fallback="Fold activity after successful replies. Applies to future completed turns and sessions opened afterwards; existing folds keep their state.",
+)
 _HINT_APP_UPDATE_CHECK = msg(
     "tui.settings.hint.app.update_check",
     fallback="Once a day at startup, look up the newest version and show it on the welcome screen. Sends no personal data.",
@@ -308,6 +312,7 @@ TABS: tuple[SettingsTab, ...] = (
                     SettingRowSpec("ui.theme", hint=_HINT_UI_THEME),
                     SettingRowSpec("ui.locale", hint=_HINT_UI_LOCALE),
                     SettingRowSpec("ui.chat.show_thinking", hint=_HINT_UI_CHAT_SHOW_THINKING),
+                    SettingRowSpec("ui.chat.fold_finished_turns", hint=_HINT_UI_CHAT_FOLD_FINISHED_TURNS),
                 ),
             ),
             SettingsSection(

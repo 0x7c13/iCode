@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import TYPE_CHECKING, TypeGuard
 
 from textual.geometry import Offset, Region
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
 
     from chrys.app.tui.widgets.chat.panel import ChatPanel
 
-DocKey = tuple[int, ...]
+DocKey = tuple[Fraction | int, ...]
 
 # Orders a gap representative key after every real key that shares its
 # ``before`` prefix; leaf keys never extend below a leaf, so any suffix works.

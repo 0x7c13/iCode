@@ -40,6 +40,7 @@ llm:
 | `ui.editor.keymap` | `CHRYS_EDITOR_KEYMAP` | `standard` | 字符串；`standard`、`emacs`、`vim`，选择输入编辑器的按键模式 |
 | `ui.chat.tool_groups_expanded` | 无 | `false` | 布尔值；新出现的工具组是否默认展开详情 |
 | `ui.chat.show_thinking` | 无 | `true` | 布尔值；模型服务以可读文本返回模型的思考时，TUI 对话是否在回复上方显示它。服务只以加密形式返回的思考不会显示 |
+| `ui.chat.fold_finished_turns` | 无 | `true` | 布尔值；成功回复后自动折叠中间执行过程。适用于之后完成的轮次及之后打开的会话，已有过程块保持当前状态。用户消息和最终回复始终可见 |
 | `ui.chat.file_snapshot_inline_chars` | `CHRYS_TUI_FILE_SNAPSHOT_INLINE_CHARS` | `131072` | 整数；控制文件编辑卡片直接载入的改动前后内容上限，按两者字节数合计判断。不超过上限时随卡片载入，标题显示具体的增删行数；超过上限且有可用快照引用时，展开差异才读取，标题不显示具体行数。`0` 或负数将上限设为零；没有可用快照引用时仍可能保留内联内容。此设置只控制卡片的内容载入方式；是否备份文件内容由 `mutations.snapshot.max_file_mb` 和 `mutations.snapshot.skip_binary` 决定 |
 | `history.prompt.enabled` | `CHRYS_HISTORY_DISABLE` | `true` | 布尔值；跨会话保存和读取输入历史，关闭不会删除已有记录。环境变量含义相反：只有精确的 `1` 禁用历史，其他值不禁用 |
 | `app.update_check` | `CHRYS_UPDATE_CHECK` | `true` | 布尔值；TUI 每天启动时最多查询一次 iCode 的最新版本，有新版本时在欢迎页显示新版本号和升级 iCode 的命令。查询请求不包含你的任何个人信息或数据。`icode run`、`icode acp` 和 `icode serve` 不会查询 |

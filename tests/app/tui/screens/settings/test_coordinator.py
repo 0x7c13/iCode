@@ -117,6 +117,7 @@ class _Harness:
         self.tool_groups_expanded: list[bool] = []
         self.defer_while_judging: list[bool] = []
         self.show_thinking: list[bool] = []
+        self.fold_finished_turns: list[bool] = []
         self.saved_notifications: list[NotificationSettings] = []
         self.notification_service = _NotificationService()
         self.turn_task: asyncio.Task[None] | None = None
@@ -144,6 +145,7 @@ class _Harness:
                 apply_tool_groups_expanded=self.tool_groups_expanded.append,
                 apply_approval_defer_while_judging=self.defer_while_judging.append,
                 apply_show_thinking=self.show_thinking.append,
+                apply_fold_finished_turns=self.fold_finished_turns.append,
                 list_themes=lambda: ["textual-dark", "chrys", "chrys-legacy"],
                 save_notifications=self.saved_notifications.append,
                 notification_service=lambda: self.notification_service,
@@ -242,6 +244,17 @@ async def test_the_show_thinking_choice_applies_at_once_and_saves_without_a_relo
     await h.close_and_settle()
 
     assert h.recorder.calls == [({"ui.chat.show_thinking": False}, ())]
+    assert h.reloads == 0
+    assert h.coordinator.reload_dirty() is False
+
+
+async def test_process_folding_choice_applies_live_and_saves_without_reload(monkeypatch: pytest.MonkeyPatch) -> None:
+    h = _Harness(monkeypatch)
+    await h.install_engine()
+    h.coordinator.apply_live("ui.chat.fold_finished_turns", False)
+    assert h.fold_finished_turns == [False]
+    await h.close_and_settle()
+    assert h.recorder.calls == [({"ui.chat.fold_finished_turns": False}, ())]
     assert h.reloads == 0
     assert h.coordinator.reload_dirty() is False
 

@@ -1324,6 +1324,12 @@ msgstr ""
 msgid "settings.ui.chat.file_snapshot_inline_chars.label"
 msgstr ""
 
+#. English: Automatically fold completed turns
+#. chrys-meta={"fingerprint":"0dbfa66db6994053f1b028a5a8be48037876a9958c58f1ed65c1162649a2d074","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.ui.chat.fold_finished_turns.label"
+msgstr ""
+
 #. English: Show model thinking
 #. chrys-meta={"fingerprint":"009db1db6b24ef8953ec841eb4ac172e471351f342f9207b47e638425f480839","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -4777,6 +4783,21 @@ msgstr ""
 msgid "tui.chat.copy_user_message_tooltip"
 msgstr ""
 
+#. English: Activity
+#. chrys-meta={"fingerprint":"adc05a800b4e9d0dfccd9a893e52c89939fe10aab58b7d973b7b2897b27291b2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/process_block.py
+msgid "tui.chat.process.activity"
+msgstr ""
+
+#. English: Made {count} tool call
+#. English-plural: Made {count} tool calls
+#. chrys-meta={"fingerprint":"41af2a8a84334c679a6c341d4c0db0ddef12a52423d2958f299e45e6806afcb0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/process_block.py
+msgid "tui.chat.process.tool_calls"
+msgid_plural "tui.chat.process.tool_calls#plural"
+msgstr[0] ""
+msgstr[1] ""
+
 #. English: {message} Retrying in {delay_seconds}s
 #. ({attempt}/{max_attempts})...
 #. chrys-meta={"fingerprint":"2a539b6b7df6647ca02c8adcddd628c1096c2c87869f07ce542cec434098d512","multiline":true,"placeholders":["attempt","delay_seconds","max_attempts","message"]}
@@ -5030,8 +5051,8 @@ msgstr ""
 msgid "tui.commands.description.exit"
 msgstr ""
 
-#. English: Toggle collapse on all tool groups and thinking
-#. chrys-meta={"fingerprint":"0a350fec3d8fb98f2e2079d424e9db64a7d92cb018ef1b2960ad05aa44cd0691","multiline":false,"placeholders":[]}
+#. English: Toggle collapse on activity, tool groups and thinking
+#. chrys-meta={"fingerprint":"0010b6235021bc3af66568d5a6d1f642d73830b454299291955fc019c2bc82a9","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.fold"
 msgstr ""
@@ -7231,11 +7252,13 @@ msgstr ""
 msgid "tui.man.exit.body"
 msgstr ""
 
-#. English: Toggle collapse state on all tool groups and thinking in the
-#. current conversation view.  Collapsed items show only a summary header.
-#. Thinking that is still being written stays open. Useful for decluttering the
-#. view when reviewing long sessions.
-#. chrys-meta={"fingerprint":"483797533da9798bf665088afe22021ed15359b62af8166f236e619781309453","multiline":true,"placeholders":[]}
+#. English: Toggle collapse state on activity sections, tool groups and
+#. thinking in the current conversation view.  If any are open, collapse them
+#. all; otherwise expand them all. Thinking that is still being written and
+#. controls waiting for your input stay open. Click an activity header to
+#. toggle just that section. Useful for decluttering the view when reviewing
+#. long sessions.
+#. chrys-meta={"fingerprint":"9c42fb5c1abaf8d9c6288243716520774e7e69f68320962187da68b601a3a4fe","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.fold.body"
 msgstr ""
@@ -10343,6 +10366,13 @@ msgstr ""
 #. chrys-meta={"fingerprint":"0298aa1433b326b181ceee725192006c6760a0763d79a732a68a361e979e341e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.tools.web_search.private_origins"
+msgstr ""
+
+#. English: Fold activity after successful replies. Applies to future completed
+#. turns and sessions opened afterwards; existing folds keep their state.
+#. chrys-meta={"fingerprint":"dd6f495b926ae2dd26c75f387f91bd697b778178dc885330561ea6187c6faa50","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.ui.chat.fold_finished_turns"
 msgstr ""
 
 #. English: Show the model's thinking in the chat as it arrives, when the model

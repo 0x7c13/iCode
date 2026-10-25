@@ -829,6 +829,12 @@ def test_thinking_shows_by_default_and_only_the_user_settings_change_it_live() -
     assert (found.apply, found.env, found.project_merge) == (Apply.LIVE, None, ProjectMerge.DENY)
 
 
+def test_completed_turn_folding_is_user_owned_and_enabled_by_default() -> None:
+    found = specs_by_key(Settings)["ui.chat.fold_finished_turns"]
+    assert Settings().chat_fold_finished_turns is True
+    assert (found.apply, found.env, found.project_merge) == (Apply.LIVE, None, ProjectMerge.DENY)
+
+
 def test_tool_groups_default_collapsed_and_persist_native_bool(fake_config_dir: Path) -> None:
     assert Settings().tool_groups_expanded is False
 

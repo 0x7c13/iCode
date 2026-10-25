@@ -831,11 +831,15 @@ async def test_a_toc_jump_queued_before_an_unmount_never_runs(monkeypatch: pytes
         assert jumps == []
 
 
-async def test_fold_all_during_prepend_reaches_tool_groups_mounted_later(monkeypatch: pytest.MonkeyPatch) -> None:
-    async with ChatPanelApp().run_test(size=_SIZE) as pilot:
+@pytest.mark.parametrize("fold_processes", [False, True])
+async def test_fold_all_during_prepend_reaches_tool_groups_mounted_later(
+    monkeypatch: pytest.MonkeyPatch, fold_processes: bool
+) -> None:
+    count = _TOOL_TURNS * 2 if fold_processes else _TOOL_TURNS
+    async with ChatPanelApp(fold_finished_turns=lambda: fold_processes).run_test(size=_SIZE) as pilot:
         cp = pilot.app.query_one(ChatPanel)
         gate = _PrependGate(cp, monkeypatch)
-        await cp.replay_history(_turns(_TOOL_TURNS, with_tools=True))
+        await cp.replay_history(_turns(count, with_tools=True))
         await gate.wait_held(pilot)
         mounted_groups = list(cp.query(ToolGroup))
         assert mounted_groups
@@ -849,8 +853,8 @@ async def test_fold_all_during_prepend_reaches_tool_groups_mounted_later(monkeyp
         await _wait_complete(cp)
         groups = list(cp.query(ToolGroup))
 
-        assert len(groups) == _TOOL_TURNS
-        assert [group.collapsed for group in groups] == [False] * _TOOL_TURNS
+        assert len(groups) == count
+        assert [group.collapsed for group in groups] == [False] * count
         # Everything is expanded now, so the next fold-all collapses.
         assert cp.toggle_fold_all() is True
 

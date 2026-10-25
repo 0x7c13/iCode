@@ -72,6 +72,7 @@ class SettingsCoordinatorCallbacks:
     apply_tool_groups_expanded: Callable[[bool], None]
     apply_approval_defer_while_judging: Callable[[bool], None]
     apply_show_thinking: Callable[[bool], None]
+    apply_fold_finished_turns: Callable[[bool], None]
 
 
 def _values_by_key(loaded: LoadedSettings) -> dict[str, Any]:
@@ -233,6 +234,9 @@ class SettingsCoordinator:
         elif key == "ui.chat.show_thinking":
             self._queue.schedule({key: bool(value)})
             self._callbacks.apply_show_thinking(bool(value))
+        elif key == "ui.chat.fold_finished_turns":
+            self._queue.schedule({key: bool(value)})
+            self._callbacks.apply_fold_finished_turns(bool(value))
         else:
             msg_text = f"{key}: no live writer registered"
             raise ValueError(msg_text)

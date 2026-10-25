@@ -291,6 +291,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         on_editor_keymap_changed: Callable[[str], None] | None = None,
         tool_groups_expanded: Callable[[], bool] | None = None,
         show_thinking: Callable[[], bool] | None = None,
+        fold_finished_turns: Callable[[], bool] | None = None,
         approval_mode: ApprovalMode = ApprovalMode.MANUAL,
         reset_program_status: Callable[[], None] | None = None,
     ) -> None:
@@ -312,6 +313,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._on_editor_keymap_changed = on_editor_keymap_changed
         self._tool_groups_expanded = tool_groups_expanded or (lambda: True)
         self._show_thinking = show_thinking
+        self._fold_finished_turns = fold_finished_turns
         self._localization = localization
         self._locale_controller = locale_controller
         self._gc_freeze_participants: tuple[GcFreezeParticipant, ...] = ()
@@ -591,6 +593,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Put the choice in force; thinking already shown, or already left out, stays as it is."""
         cast("ChrysApp", self.app).settings_handle.override(chat_show_thinking=value)
 
+    def _apply_fold_finished_turns(self, value: bool) -> None:
+        """Existing process headers keep the user's choice."""
+        cast("ChrysApp", self.app).settings_handle.override(chat_fold_finished_turns=value)
+
     def _approval_timeout_seconds(self) -> int:
         return cast("ChrysApp", self.app).settings_handle.settings.approval_timeout_seconds
 
@@ -626,6 +632,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 apply_tool_groups_expanded=self._apply_tool_groups_expanded,
                 apply_approval_defer_while_judging=self._apply_approval_defer_while_judging,
                 apply_show_thinking=self._apply_show_thinking,
+                apply_fold_finished_turns=self._apply_fold_finished_turns,
                 list_themes=lambda: sorted(app.available_themes),
                 save_notifications=self._schedule_notification_settings_save,
                 notification_service=self._notification_service,
@@ -1042,6 +1049,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 locale_controller=self._locale_controller,
                 tool_groups_expanded=self._tool_groups_expanded,
                 show_thinking=self._show_thinking,
+                fold_finished_turns=self._fold_finished_turns,
                 sub_agent_transcript_loader=self._load_sub_agent_transcript,
             ).data_bind(
                 agent_running=MainScreen.agent_running_state,

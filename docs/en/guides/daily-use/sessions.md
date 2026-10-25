@@ -57,6 +57,10 @@ When you resume a long conversation, iCode shows its most recent part first so y
 
 A resumed conversation shows the model's saved thinking folded under **Thinking** above the reply it led to; click **Thinking** to unfold it. If a reply was interrupted or failed, the thinking shown for the request that was cut off is not saved, so it does not appear. To hide thinking, see [Show model thinking](../configuration/settings.md#appearance).
 
+Successful turns also fold their intermediate activity by default. Each mid-turn user addition stays visible and starts a separate activity section. Click **Made N tool calls** or **Activity** to inspect that section while keeping its inner details in their current state. A lone thinking block uses its own header. For keyboard access, `/fold` toggles activity sections, tool groups and thinking together: it collapses them if any are open, and expands them otherwise. Thinking that is still being written and controls waiting for your input stay open. Copy commands still include intermediate replies and keep their original message counts. Turn off **Automatically fold completed turns** in [Settings](../configuration/settings.md#appearance) to keep future completed turns and subsequently opened sessions expanded. The last turn recovered from a crash stays open.
+
+Clicking an activity header keeps focus in the input field. A restored turn waiting for sub-agents stays open. Compressed history shows only some tool details, so these sections are all labeled **Activity**.
+
 If a resumed conversation continues on a different model service than before, some earlier reasoning may be left out; see [Switch the current model profile](../configuration/models.md#switch-the-current-model-profile).
 
 ## Delete old sessions

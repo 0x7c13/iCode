@@ -168,7 +168,7 @@ def test_manual_pages_render_english_byte_identically_and_translate_at_display(
         "  /language     - Set display language\n"
         "  /chdir        - Change working directory\n"
         "  /copy         - Copy agent, user, or all turns to clipboard\n"
-        "  /fold         - Toggle collapse on all tool groups and thinking\n"
+        "  /fold         - Toggle collapse on activity, tool groups and thinking\n"
         "  /diff         - View file changes for the current session\n"
         "  /rollback     - Discard recent turns or return to a specific turn\n"
         "  /approval     - Switch approval mode: manual → auto → bypass\n"
