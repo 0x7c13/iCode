@@ -11,6 +11,7 @@ from chrys.app.tui.widgets.chat.replay import (
     ReplayAgentMessage,
     ReplayContextFold,
     ReplayInterrupted,
+    ReplayStructuredCompletion,
     ReplayToolCall,
     ReplayUserMessage,
 )
@@ -221,12 +222,10 @@ def test_coalesced_structured_completion_uses_latest_assistant_timing() -> None:
         _assistant([hosted_call, hosted_result], **{TRAJECTORY_TIMING_KEY: latest_timing}),
     ]
 
-    entries = _planned_agent_messages(messages)
+    entries = HistoryReplayPlanner().build_plan(messages).entries
 
-    assert len(entries) == 1
-    assert entries[0].structured_output_completed is True
-    assert entries[0].duration_ms == 999
-    assert entries[0].created_at == "2026-08-19T01:02:06.000000+00:00"
+    assert [type(entry) for entry in entries] == [ReplayAgentMessage, ReplayStructuredCompletion]
+    assert entries[1] == ReplayStructuredCompletion("2026-08-19T01:02:06.000000+00:00", 999)
 
 
 def test_planner_treats_missing_legacy_timing_as_unknown() -> None:

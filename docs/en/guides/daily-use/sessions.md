@@ -55,6 +55,8 @@ To find and resume another session, press **F1**, click `f1 Sessions`, or enter 
 
 When you resume a long conversation, iCode shows its most recent part first so you can continue right away; earlier messages keep loading above it for a few seconds.
 
+A resumed conversation shows the model's saved thinking folded under **Thinking** above the reply it led to; click **Thinking** to unfold it. If a reply was interrupted or failed, the thinking shown for the request that was cut off is not saved, so it does not appear. To hide thinking, see [Show model thinking](../configuration/settings.md#appearance).
+
 If a resumed conversation continues on a different model service than before, some earlier reasoning may be left out; see [Switch the current model profile](../configuration/models.md#switch-the-current-model-profile).
 
 ## Delete old sessions

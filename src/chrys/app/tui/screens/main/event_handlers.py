@@ -86,6 +86,7 @@ from chrys.foundation.events.types import (
     InvocationCompactionCommitted,
     InvocationCompactionFinished,
     InvocationCompactionStarted,
+    InvocationContentAbandoned,
     InvocationContentDelta,
     InvocationContentFinished,
     InvocationContextPressure,
@@ -374,7 +375,12 @@ class BackendEventHandler:
         return self._image_compression_controller
 
     def _predates_active_run(
-        self, event: InvocationMessage | InvocationContentDelta | InvocationContentFinished | Error
+        self,
+        event: InvocationMessage
+        | InvocationContentDelta
+        | InvocationContentFinished
+        | InvocationContentAbandoned
+        | Error,
     ) -> bool:
         """Return whether *event* was sourced before the current UI run."""
         started_at = self._state.run.started_at
@@ -510,13 +516,19 @@ class BackendEventHandler:
         return self._state.submit.text
 
     def defers_turn_event(
-        self, event: InvocationMessage | InvocationContentDelta | InvocationContentFinished | Error
+        self,
+        event: InvocationMessage
+        | InvocationContentDelta
+        | InvocationContentFinished
+        | InvocationContentAbandoned
+        | Error,
     ) -> bool:
         """Whether *event* waits for the user bubble: it mounts, or earlier events are still replaying."""
         return self._state.render_gate.defers(event)
 
     def defer_agent_message(
-        self, event: InvocationMessage | InvocationContentDelta | InvocationContentFinished
+        self,
+        event: InvocationMessage | InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned,
     ) -> None:
         self._state.render_gate.defer(event)
 
@@ -1027,7 +1039,9 @@ class BackendEventHandler:
         s.debug("AgentThinking")
 
     def _admits_turn_render(
-        self, event: InvocationMessage | InvocationContentDelta | InvocationContentFinished, name: str
+        self,
+        event: InvocationMessage | InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned,
+        name: str,
     ) -> bool:
         """Whether a main-turn output event renders now; one that arrives while the user bubble mounts is deferred."""
         if self._predates_active_run(event):
@@ -1038,8 +1052,14 @@ class BackendEventHandler:
             return False
         return self.agent_running
 
-    async def on_agent_content(self, event: InvocationContentDelta | InvocationContentFinished) -> None:
-        """Stream the turn's answer text; reasoning is not shown but keeps the thinking status."""
+    async def on_agent_content(
+        self, event: InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned
+    ) -> None:
+        """Stream the turn's answer and thinking text; thinking whose response a retry gave up goes from view."""
+        if isinstance(event, InvocationContentAbandoned):
+            if event.origin.kind == "turn" and self._admits_turn_render(event, "InvocationContentAbandoned"):
+                await self._ui().abandon_thinking(event.segment_ids)
+            return
         if event.origin.kind == "sub_agent":
             await self.on_sub_agent_content(event)
             return
@@ -1049,11 +1069,14 @@ class BackendEventHandler:
         if isinstance(event, InvocationContentFinished):
             if event.channel == "answer":
                 ui.finish_answer_segment(event.segment_id, completed=event.status == "completed")
+            else:
+                ui.finish_thinking_segment(event.segment_id)
         elif event.channel == "answer":
             ui.show_status(STATUS_STREAMING.bind())
             await ui.add_answer_delta(event.segment_id, event.text)
         else:
             ui.show_status(STATUS_THINKING.bind())
+            await ui.add_thinking_delta(event.segment_id, event.channel, event.text)
 
     async def on_agent_message(self, event: InvocationMessage) -> None:
         """Complete the turn: its answer already streamed, so this only finalizes it."""

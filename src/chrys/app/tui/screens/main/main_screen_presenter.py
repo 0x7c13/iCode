@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.widgets.sidebar.context import ContextUsageState
     from chrys.foundation.models.background_tasks import BackgroundTaskView
     from chrys.foundation.models.hook_executions import HookExecutionView
+    from chrys.foundation.models.invocations import ContentChannel
     from chrys.foundation.models.todos import TodoItem
     from chrys.service.approval.policy import ApprovalMode
 
@@ -173,6 +174,15 @@ class MainScreenPresenter:
 
     async def withdraw_answer(self, segment_ids: tuple[str, ...]) -> None:
         await self._view.withdraw_answer(segment_ids)
+
+    async def add_thinking_delta(self, segment_id: str, channel: ContentChannel, text: str) -> None:
+        await self._view.add_thinking_delta(segment_id, channel, text)
+
+    def finish_thinking_segment(self, segment_id: str) -> None:
+        self._view.finish_thinking_segment(segment_id)
+
+    async def abandon_thinking(self, segment_ids: tuple[str, ...]) -> None:
+        await self._view.abandon_thinking(segment_ids)
 
     async def add_agent_message(self, *args: Any, **kwargs: Any) -> None:
         await self._view.add_agent_message(*args, **kwargs)

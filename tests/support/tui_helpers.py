@@ -636,22 +636,28 @@ class PlaceholderHostApp(App):
 
 
 class ChatPanelApp(LocalizedApp):
-    """App whose only widget is a :class:`ChatPanel` (optionally with a localization port)."""
+    """App whose only widget is a :class:`ChatPanel` (optionally with a localization port and thinking shown)."""
 
-    def __init__(self, localization: TranscriptLocalizationPort | None = None) -> None:
+    def __init__(
+        self,
+        localization: TranscriptLocalizationPort | None = None,
+        *,
+        show_thinking: Callable[[], bool] | None = None,
+    ) -> None:
         self._localization = localization
+        self._show_thinking = show_thinking
         super().__init__()
 
     def compose(self) -> ComposeResult:
-        yield ChatPanel(localization=self._localization)
+        yield ChatPanel(localization=self._localization, show_thinking=self._show_thinking)
 
 
 class GcMessageChatPanelApp(ChatPanelApp):
     """:class:`ChatPanelApp` that records the GC absorb/reclaim requests it receives."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, show_thinking: Callable[[], bool] | None = None) -> None:
         self.gc_messages: list[GcAbsorbRequested | GcReclaimRequested] = []
-        super().__init__()
+        super().__init__(show_thinking=show_thinking)
 
     def on_gc_absorb_requested(self, message: GcAbsorbRequested) -> None:
         self.gc_messages.append(message)

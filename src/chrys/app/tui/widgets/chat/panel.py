@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from chrys.app.tui.widgets import PromptDraft
     from chrys.app.update_check import UpdateNotice
     from chrys.foundation.models.ask_user import AskUserQuestion
+    from chrys.foundation.models.invocations import ContentChannel
     from chrys.service.context.providers.history import CompressedBlock
     from chrys.service.session.sub_agent_transcript import PersistedSubAgentTranscript
 
@@ -56,6 +57,7 @@ from chrys.app.tui.widgets.chat.messages import (
     InterruptedMessage,
     RetryMessage,
     SystemMessage,
+    ThinkingMessage,
     UserMessage,
     remove_withdrawn_answer,
 )
@@ -125,6 +127,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         localization: TranscriptLocalizationPort | None = None,
         locale_controller: LocaleController | None = None,
         tool_groups_expanded: Callable[[], bool] | None = None,
+        show_thinking: Callable[[], bool] | None = None,
         sub_agent_transcript_loader: Callable[[str], Awaitable[PersistedSubAgentTranscript | None]] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -155,6 +158,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             self._toc,
             self._tool_registry,
             localization=localization,
+            show_thinking=show_thinking,
         )
         self._replay_renderer = HistoryReplayRenderer(
             self,
@@ -164,6 +168,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             default_profile=lambda: self._profile_name,
             localization=localization,
             tool_widget_configurator=self._configure_tool_widget,
+            show_thinking=show_thinking,
         )
         self._transcript_reader = TranscriptReader(self)
         self._replay_mount = ReplayMountController(self)
@@ -1070,21 +1075,25 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._chrome.set_update_notice(notice)
 
     def toggle_fold_all(self) -> bool:
-        """Collapse or expand all tool groups.
+        """Collapse or expand all tool groups and thinking.
 
         If any are expanded, collapses all.  If all are already collapsed,
         expands all.  Returns the new collapsed state.
         """
-        tool_groups = [group for group in self.query(ToolGroup) if not group.collapse_locked]
-        # Groups still waiting to be prepended take the choice as they mount.
-        pending_collapsed = self._replay_mount.pending_tool_groups_collapsed()
+        folds: list[ToolGroup | ThinkingMessage] = [
+            group for group in self.query(ToolGroup) if not group.collapse_locked
+        ]
+        # Thinking that still streams stays open, as a click on its header leaves it.
+        folds.extend(message for message in self.query(ThinkingMessage) if message.foldable)
+        # Entries still waiting to be prepended take the choice as they mount.
+        pending_collapsed = self._replay_mount.pending_folds_collapsed()
 
-        if not tool_groups and pending_collapsed is None:
+        if not folds and pending_collapsed is None:
             return False
 
-        any_expanded = any(not group.collapsed for group in tool_groups) or pending_collapsed is False
-        for group in tool_groups:
-            group.collapsed = any_expanded
+        any_expanded = any(not fold.collapsed for fold in folds) or pending_collapsed is False
+        for fold in folds:
+            fold.collapsed = any_expanded
         self._replay_mount.set_fold_state(any_expanded)
         return any_expanded
 
@@ -1139,6 +1148,18 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     def finish_answer_segment(self, segment_id: str, *, completed: bool) -> None:
         """Close a streamed answer segment; a failed or interrupted one keeps its partial text."""
         self._live_renderer.finish_answer_segment(segment_id, completed=completed)
+
+    async def add_thinking_delta(self, segment_id: str, channel: ContentChannel, text: str) -> None:
+        """Stream new thinking text into its segment's message, when thinking is shown."""
+        await self._live_renderer.add_thinking_delta(segment_id, channel, text)
+
+    def finish_thinking_segment(self, segment_id: str) -> None:
+        """Close a streamed thinking segment; a failed or interrupted one keeps its partial text."""
+        self._live_renderer.finish_thinking_segment(segment_id)
+
+    async def abandon_thinking(self, segment_ids: tuple[str, ...]) -> None:
+        """Remove the thinking a retry gave up with its response."""
+        await self._live_renderer.abandon_thinking(segment_ids)
 
     async def add_agent_message(
         self,

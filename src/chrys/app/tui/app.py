@@ -955,6 +955,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             locale_controller=self._locale_controller,
             on_editor_keymap_changed=self._record_editor_keymap_override,
             tool_groups_expanded=lambda: self._settings_handle.settings.tool_groups_expanded,
+            show_thinking=lambda: self._settings_handle.settings.chat_show_thinking,
             approval_mode=self._engine.approval_mode,
             reset_program_status=self._program_status_reporter.reset_context,
         )

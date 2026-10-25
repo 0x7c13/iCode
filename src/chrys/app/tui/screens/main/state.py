@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         BackgroundTasksChanged,
         Error,
         HookExecutionsChanged,
+        InvocationContentAbandoned,
         InvocationContentDelta,
         InvocationContentFinished,
         InvocationMessage,
@@ -33,7 +34,9 @@ if TYPE_CHECKING:
     from chrys.service.profiles.models.registry import ModelProfileRegistry
     from chrys.service.state.store import StateStore
 
-    DeferredTurnEvent = InvocationMessage | InvocationContentDelta | InvocationContentFinished | Error
+    DeferredTurnEvent = (
+        InvocationMessage | InvocationContentDelta | InvocationContentFinished | InvocationContentAbandoned | Error
+    )
 
 
 @dataclass

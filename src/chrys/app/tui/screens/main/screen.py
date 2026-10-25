@@ -290,6 +290,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         locale_controller: LocaleController | None = None,
         on_editor_keymap_changed: Callable[[str], None] | None = None,
         tool_groups_expanded: Callable[[], bool] | None = None,
+        show_thinking: Callable[[], bool] | None = None,
         approval_mode: ApprovalMode = ApprovalMode.MANUAL,
         reset_program_status: Callable[[], None] | None = None,
     ) -> None:
@@ -310,6 +311,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._trajectory_verify_commands = trajectory_verify_commands
         self._on_editor_keymap_changed = on_editor_keymap_changed
         self._tool_groups_expanded = tool_groups_expanded or (lambda: True)
+        self._show_thinking = show_thinking
         self._localization = localization
         self._locale_controller = locale_controller
         self._gc_freeze_participants: tuple[GcFreezeParticipant, ...] = ()
@@ -585,6 +587,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Put the choice in force; requests already waiting keep the choice they arrived under."""
         cast("ChrysApp", self.app).settings_handle.override(approval_defer_while_judging=value)
 
+    def _apply_show_thinking(self, value: bool) -> None:
+        """Put the choice in force; thinking already shown, or already left out, stays as it is."""
+        cast("ChrysApp", self.app).settings_handle.override(chat_show_thinking=value)
+
     def _approval_timeout_seconds(self) -> int:
         return cast("ChrysApp", self.app).settings_handle.settings.approval_timeout_seconds
 
@@ -619,6 +625,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 apply_trajectory_verify_commands=self._apply_trajectory_verify_commands,
                 apply_tool_groups_expanded=self._apply_tool_groups_expanded,
                 apply_approval_defer_while_judging=self._apply_approval_defer_while_judging,
+                apply_show_thinking=self._apply_show_thinking,
                 list_themes=lambda: sorted(app.available_themes),
                 save_notifications=self._schedule_notification_settings_save,
                 notification_service=self._notification_service,
@@ -1034,6 +1041,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 localization=self._localization,
                 locale_controller=self._locale_controller,
                 tool_groups_expanded=self._tool_groups_expanded,
+                show_thinking=self._show_thinking,
                 sub_agent_transcript_loader=self._load_sub_agent_transcript,
             ).data_bind(
                 agent_running=MainScreen.agent_running_state,
@@ -1893,7 +1901,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._copy_actions.copy_agent_responses(arg)
 
     def _toggle_fold(self) -> None:
-        """Handle /fold slash command — collapse or expand all tool groups."""
+        """Handle /fold slash command — collapse or expand all tool groups and thinking."""
         self._copy_actions.toggle_fold()
 
     def action_show_rollback(self, arg: str = "") -> None:

@@ -38,7 +38,7 @@ import logging
 
 from textual.widget import Widget
 
-from chrys.app.tui.widgets.chat.messages import AgentMessage, UserMessage
+from chrys.app.tui.widgets.chat.messages import AgentMessage, ThinkingMessage, UserMessage
 from chrys.app.tui.widgets.chat.ports import ReplayMountHost
 from chrys.app.tui.widgets.chat.scroll_controller import ChatGcPauseClaim
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
@@ -166,15 +166,15 @@ class ReplayMountController:
         if task is not None and not task.done():
             task.cancel()
 
-    def pending_tool_groups_collapsed(self) -> bool | None:
-        """Collapsed state pending tool groups will mount with; None without any."""
-        if not any(isinstance(widget, ToolGroup) for widget in self._pending):
+    def pending_folds_collapsed(self) -> bool | None:
+        """Collapsed state pending tool groups and thinking will mount with; None without any."""
+        if not any(isinstance(widget, ToolGroup | ThinkingMessage) for widget in self._pending):
             return None
-        # Replay builds every tool group collapsed.
+        # Replay builds every tool group and thinking block collapsed.
         return True if self._fold_collapsed is None else self._fold_collapsed
 
     def set_fold_state(self, collapsed: bool) -> None:
-        """Apply a fold-all choice to tool groups that mount after it."""
+        """Apply a fold-all choice to tool groups and thinking that mount after it."""
         # The whole prepend, not just ``pending``: the last batch has left it while it mounts.
         if self._task is not None:
             self._fold_collapsed = collapsed
@@ -264,6 +264,10 @@ class ReplayMountController:
         if collapsed is not None:
             for root in batch:
                 if not root.is_attached:
+                    continue
+                if isinstance(root, ThinkingMessage):
+                    if root.foldable:
+                        root.collapsed = collapsed
                     continue
                 groups = [root] if isinstance(root, ToolGroup) else []
                 groups.extend(root.query(ToolGroup))

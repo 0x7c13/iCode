@@ -1324,6 +1324,12 @@ msgstr ""
 msgid "settings.ui.chat.file_snapshot_inline_chars.label"
 msgstr ""
 
+#. English: Show model thinking
+#. chrys-meta={"fingerprint":"009db1db6b24ef8953ec841eb4ac172e471351f342f9207b47e638425f480839","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.ui.chat.show_thinking.label"
+msgstr ""
+
 #. English: Expand tool details by default
 #. chrys-meta={"fingerprint":"79644eefc7d4277f1f44569d63fa5be51591030d7d8fc4ed2ccf9ad44d6c5e70","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -4832,6 +4838,18 @@ msgstr ""
 msgid "tui.chat.session_title"
 msgstr ""
 
+#. English: Thinking
+#. chrys-meta={"fingerprint":"035935186d9026b49ead3077c1b3018b71e54f9bbee3e2a1276b907b14516ca3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_label"
+msgstr ""
+
+#. English: Thinking summary
+#. chrys-meta={"fingerprint":"3320160e453e56c223cebb0e8aff29fd57844ebf3f13b67b4213cfc28bbdec55","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/messages.py
+msgid "tui.chat.thinking_summary_label"
+msgstr ""
+
 #. English: New version found: {version} Run: {command} to upgrade
 #. chrys-meta={"fingerprint":"90536f5c417bc9fa28c317d37799b2f2f652d50ea96f7d2aa2dccc898e3aee61","multiline":true,"placeholders":["command","version"]}
 #: src/chrys/app/tui/widgets/chat/chrome.py
@@ -5012,8 +5030,8 @@ msgstr ""
 msgid "tui.commands.description.exit"
 msgstr ""
 
-#. English: Toggle collapse on all tool groups
-#. chrys-meta={"fingerprint":"f3d95b98ecf754b497a8683c659321295cc270ed2aa37405b6b74adc9e9fb8d7","multiline":false,"placeholders":[]}
+#. English: Toggle collapse on all tool groups and thinking
+#. chrys-meta={"fingerprint":"0a350fec3d8fb98f2e2079d424e9db64a7d92cb018ef1b2960ad05aa44cd0691","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.fold"
 msgstr ""
@@ -7201,10 +7219,11 @@ msgstr ""
 msgid "tui.man.exit.body"
 msgstr ""
 
-#. English: Toggle collapse state on all tool groups in the current
-#. conversation view.  Collapsed items show only a summary header. Useful for
-#. decluttering the view when reviewing long sessions.
-#. chrys-meta={"fingerprint":"37a0fd0ea50a69d919afe758ae14237c1ed6df082defd6b940fb04a4dedd880b","multiline":true,"placeholders":[]}
+#. English: Toggle collapse state on all tool groups and thinking in the
+#. current conversation view.  Collapsed items show only a summary header.
+#. Thinking that is still being written stays open. Useful for decluttering the
+#. view when reviewing long sessions.
+#. chrys-meta={"fingerprint":"483797533da9798bf665088afe22021ed15359b62af8166f236e619781309453","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.fold.body"
 msgstr ""
@@ -10312,6 +10331,14 @@ msgstr ""
 #. chrys-meta={"fingerprint":"0298aa1433b326b181ceee725192006c6760a0763d79a732a68a361e979e341e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.tools.web_search.private_origins"
+msgstr ""
+
+#. English: Show the model's thinking in the chat as it arrives, when the model
+#. service returns it as readable text. Applies to new replies and to sessions
+#. opened afterwards.
+#. chrys-meta={"fingerprint":"391e08f5e1bb84088e4f7704b2ae10abc823bd841874dfd85ea49ef5c1bde5f7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.ui.chat.show_thinking"
 msgstr ""
 
 #. English: Expand new tool groups by default. When off, click the tool status

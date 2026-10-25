@@ -1582,6 +1582,8 @@ _message_ids.update(
         "tui.chat.copy_message_button",
         "tui.chat.copy_user_message_tooltip",
         "tui.chat.retry_message",
+        "tui.chat.thinking_label",
+        "tui.chat.thinking_summary_label",
         "tui.app.quit_help",
         "tui.app.quit_help_title",
         "tui.compaction.copy.summary_tooltip",
