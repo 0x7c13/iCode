@@ -832,7 +832,11 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
         await self.mount(widget)
         return widget.is_attached and not widget._closing and not widget._pruning and self._accepts_transcript_updates()
 
-    async def mount_transcript_widgets(self, widgets: list[Widget]) -> None:
+    async def mount_transcript_widgets(
+        self, widgets: list[Widget], *, process_failures_after: tuple[Widget, ...] = ()
+    ) -> None:
+        # Nested transcripts do not fold completed turns.
+        _ = process_failures_after
         if not self._accepts_transcript_updates():
             return
         precompose_tree(widgets)

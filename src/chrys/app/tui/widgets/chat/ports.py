@@ -31,8 +31,14 @@ class ChatMountPort(Protocol):
         """Mount one widget and report whether it remained attached."""
         ...
 
-    async def mount_transcript_widgets(self, widgets: list[Widget]) -> None:
-        """Mount replayed entries; older ones may still be landing when this returns."""
+    async def mount_transcript_widgets(
+        self, widgets: list[Widget], *, process_failures_after: tuple[Widget, ...] = ()
+    ) -> None:
+        """Mount replayed entries with omitted failure boundaries anchored after existing widgets.
+
+        Older entries may still be landing when this returns. Surfaces without
+        completed-turn folding need not retain the failure boundaries.
+        """
         ...
 
     async def remove_transcript_widget(self, widget: Widget) -> None: ...

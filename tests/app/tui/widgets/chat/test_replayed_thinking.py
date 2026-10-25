@@ -346,10 +346,16 @@ async def test_a_replayed_block_builds_its_body_when_first_opened_and_hands_it_t
         assert [message.reason for message in absorbs[absorbs_before:]] == [GcAbsorbReason.STABLE_CONTENT_MOUNTED]
 
         await click_when_settled(pilot, thinking.query_one(_AgentHeader))
-        assert (thinking.collapsed, body.display) == (True, False)
+        await wait_for(
+            lambda: not thinking.query(VirtualizedMarkdown), pilot=pilot, description="folded thinking body released"
+        )
+        assert thinking.collapsed
         await click_when_settled(pilot, thinking.query_one(_AgentHeader))
-        assert thinking.query_one(VirtualizedMarkdown) is body
-        assert body.display is True
+        await wait_for(
+            lambda: bool(thinking.query(VirtualizedMarkdown)), pilot=pilot, description="thinking body rebuilt"
+        )
+        assert thinking.query_one(VirtualizedMarkdown) is not body
+        assert thinking.query_one(VirtualizedMarkdown).display is True
 
 
 async def test_fold_all_opens_and_folds_replayed_thinking_with_the_tool_groups() -> None:
@@ -362,12 +368,22 @@ async def test_fold_all_opens_and_folds_replayed_thinking_with_the_tool_groups()
 
         assert panel.toggle_fold_all() is False
         assert [group.collapsed, *(message.collapsed for message in thinking)] == [False, False, False]
+        await wait_for(
+            lambda: all(message.query(VirtualizedMarkdown) for message in thinking),
+            pilot=pilot,
+            description="fold-all rebuilds thinking bodies",
+        )
         bodies = [message.query_one(VirtualizedMarkdown) for message in thinking]
         assert [body.display for body in bodies] == [True, True]
 
         assert panel.toggle_fold_all() is True
         assert [group.collapsed, *(message.collapsed for message in thinking)] == [True, True, True]
         assert [body.display for body in bodies] == [False, False]
+        await wait_for(
+            lambda: all(not message.query(VirtualizedMarkdown) for message in thinking),
+            pilot=pilot,
+            description="fold-all releases thinking bodies",
+        )
 
 
 async def test_fold_all_between_a_batch_registering_and_mounting_still_opens_its_thinking(

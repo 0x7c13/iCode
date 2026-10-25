@@ -72,7 +72,9 @@
 
 ### Claude 思考设置
 
-Claude Opus 5.5、Fable 5.1 和 Sonnet 5.5 会把返回的思考内容与它之前的对话绑定。之前的对话发生变化后（例如 iCode 压缩了上下文），模型服务可能拒绝读回这些思考内容。当这些模型在 Anthropic 官方地址上使用自适应思考（在 [“Chat 选项”](./chat-options.md#anthropic)中设置 `"thinking": {"type": "adaptive"}`）时，iCode 会请服务略去对不上的思考内容，而不是拒绝请求。这样模型看到的早先推理会变少，但请求可以正常完成。对于服务原本不做这项检查的账号，这项要求也会让服务开始检查，对不上的思考内容同样会被略去。
+如需使用自适应思考并返回可读摘要，请在 [“Chat 选项”](./chat-options.md#anthropic)中添加 `thinking` 行，值设为 `{"type": "adaptive", "display": "summarized"}`。
+
+Claude Opus 5.5、Fable 5.1 和 Sonnet 5.5 会把返回的思考内容与它之前的对话绑定。之前的对话发生变化后（例如 iCode 压缩了上下文），模型服务可能拒绝读回这些思考内容。当这些模型在 Anthropic 官方地址上使用自适应思考时，iCode 会请服务略去对不上的思考内容，而不是拒绝请求。这样模型看到的早先推理会变少，但请求可以正常完成。对于服务原本不做这项检查的账号，这项要求也会让服务开始检查，对不上的思考内容同样会被略去。
 
 如需更改，请在 iCode 配置目录的 `models` 文件夹中（macOS 和 Linux 为 `~/.chrys/models/`，Windows 为 `%APPDATA%\chrys\models\`；文件中的 `name:` 一行即配置名称）打开该配置的文件，添加一行 `thinking_block_binding`，取下列值之一，然后重启 iCode：
 

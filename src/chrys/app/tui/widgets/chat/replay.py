@@ -177,6 +177,7 @@ class ReplayAgentMessage:
     status_code: str | None = None
     status_count: int | None = None
     duration_ms: int | None = None
+    is_status: bool = False
 
 
 @dataclass(frozen=True)
@@ -206,6 +207,11 @@ class ReplayInterrupted:
     status_count: int | None = None
 
 
+@dataclass(frozen=True)
+class ReplaySuppressedStatus:
+    """An unsuccessful terminal status whose prose is omitted from compressed history."""
+
+
 ReplayEntry = (
     ReplayTurnMarker
     | ReplayUserMessage
@@ -214,6 +220,7 @@ ReplayEntry = (
     | ReplayStructuredCompletion
     | ReplayContextFold
     | ReplayInterrupted
+    | ReplaySuppressedStatus
 )
 
 
@@ -808,6 +815,8 @@ class HistoryReplayPlanner:
                 # through as plain text only — chrome payloads never surface
                 # as conversation tool activity.
                 if suppress_marker_text:
+                    if role == "assistant" and (marker in HistoryMarkerKind.STATUS_MARKERS or status_code is not None):
+                        entries.append(ReplaySuppressedStatus())
                     continue
                 text_contents = [
                     {**content, "text": sanitize_legacy_block(str(content.get("text", "")))}
@@ -822,6 +831,7 @@ class HistoryReplayPlanner:
                             status_code=status_code,
                             status_count=_status_count(extra),
                             duration_ms=_trajectory_duration_ms(extra),
+                            is_status=marker in HistoryMarkerKind.STATUS_MARKERS or status_code is not None,
                         )
                     )
                 continue
@@ -906,7 +916,7 @@ def _add_structured_output_completions(entries: list[ReplayEntry], *, show_reaso
         if isinstance(entry, ReplayUserMessage) and not entry.is_injection:
             finalize_candidate()
             continue
-        if isinstance(entry, ReplayInterrupted):
+        if isinstance(entry, ReplayInterrupted | ReplaySuppressedStatus):
             candidate_index = None
             continue
         if not isinstance(entry, ReplayAgentMessage) or entry.is_intermediate:
@@ -1001,6 +1011,7 @@ class HistoryReplayRenderer:
         replay_profile = initial_profile or self._default_profile()
         seen_user_in_turn = False
         widgets: list[Widget] = []
+        process_failures_after: list[Widget] = []
 
         for entry in plan.entries:
             if isinstance(entry, ReplayTurnMarker):
@@ -1012,7 +1023,11 @@ class HistoryReplayRenderer:
                 block = compressed_blocks.get(entry.context_id) if compressed_blocks else None
                 if block:
                     replay_profile = await self._replay_compressed_block(
-                        block, replay_profile, widgets=widgets, show_reasoning=show_reasoning
+                        block,
+                        replay_profile,
+                        widgets=widgets,
+                        show_reasoning=show_reasoning,
+                        process_failures_after=process_failures_after,
                     )
                 freed_messages = len(block.messages) if block else 0
                 turn_range = block.turn_range if block else (0, 0)
@@ -1092,6 +1107,7 @@ class HistoryReplayRenderer:
                     duration_ms=entry.duration_ms,
                     widgets=widgets,
                     show_reasoning=show_reasoning,
+                    is_status=entry.is_status or entry.status_code is not None,
                 )
                 continue
 
@@ -1099,7 +1115,7 @@ class HistoryReplayRenderer:
                 widgets.append(_structured_completion_message(entry, replay_profile, is_compressed=False))
 
         if widgets:
-            await self._mount.mount_transcript_widgets(widgets)
+            await self._mount.mount_transcript_widgets(widgets, process_failures_after=tuple(process_failures_after))
         self._ui.after_replay_history_mounted()
 
     def _resolve_status(self, status_code: str | None, count: int | None) -> str | None:
@@ -1127,14 +1143,24 @@ class HistoryReplayRenderer:
         *,
         widgets: list[Widget] | None = None,
         show_reasoning: bool = False,
+        process_failures_after: list[Widget] | None = None,
     ) -> str:
         """Render a compressed block through the canonical replay planner."""
         replay_widgets = widgets if widgets is not None else []
+        failure_anchors = process_failures_after if process_failures_after is not None else []
         serialized_messages = [message.to_dict() for message in block.messages]
         plan = self._planner.build_plan(serialized_messages, suppress_marker_text=True, show_reasoning=show_reasoning)
         plan.apply_compatibility_annotations()
         seen_user_in_turn = False
         for entry in plan.entries:
+            if isinstance(entry, ReplayInterrupted | ReplaySuppressedStatus):
+                # Omitted prose still ends the preceding activity unsuccessfully.
+                # Anchor the fact to existing content so it never creates a copy
+                # entry, a process member, or a row in the replay mount budget.
+                if replay_widgets:
+                    failure_anchors.append(replay_widgets[-1])
+                continue
+
             if isinstance(entry, ReplayTurnMarker):
                 self._toc.apply_turn_marker(entry.turn_index)
                 seen_user_in_turn = False
@@ -1201,6 +1227,7 @@ class HistoryReplayRenderer:
                     is_compressed=True,
                     widgets=replay_widgets,
                     show_reasoning=show_reasoning,
+                    is_status=entry.is_status or entry.status_code is not None,
                 )
                 continue
 
@@ -1208,7 +1235,7 @@ class HistoryReplayRenderer:
                 replay_widgets.append(_structured_completion_message(entry, replay_profile, is_compressed=True))
 
         if widgets is None:
-            await self._mount.mount_transcript_widgets(replay_widgets)
+            await self._mount.mount_transcript_widgets(replay_widgets, process_failures_after=tuple(failure_anchors))
         return replay_profile
 
     async def _replay_assistant(
@@ -1221,6 +1248,7 @@ class HistoryReplayRenderer:
         is_compressed: bool = False,
         widgets: list[Widget] | None = None,
         show_reasoning: bool = False,
+        is_status: bool = False,
     ) -> None:
         """Replay a single assistant message, preserving text/thinking/tool-call order."""
         replay_widgets = widgets if widgets is not None else []
@@ -1244,6 +1272,7 @@ class HistoryReplayRenderer:
                 timestamp="" if intermediate else timestamp,
                 duration_ms=None if intermediate else duration_ms,
                 segment_ids=segment_ids,
+                is_status=is_status,
             )
 
         async def flush_text(*, settled: bool = False, thinking_follows: bool = False) -> None:

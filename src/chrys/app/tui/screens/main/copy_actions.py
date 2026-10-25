@@ -111,7 +111,7 @@ class CopyActionController:
         self._view.notify(message, title=COPIED_TITLE.bind(), timeout=2)
 
     def toggle_fold(self) -> None:
-        """Collapse or expand all tool groups and thinking."""
+        """Collapse or expand all process sections, tool groups and thinking."""
         collapsed = self._view.toggle_chat_fold_all()
         label = "Folded" if collapsed else "Unfolded"
         self._debug("Fold", label)

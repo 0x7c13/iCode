@@ -390,6 +390,24 @@ async def _populate_realistic_session(
         await asyncio.sleep(0)
 
 
+async def _populate_process_history(panel: ChatPanel, *, turns: int, markdown_lines: int = 80) -> None:
+    """Stream thinking and intermediate markdown with injected boundaries before successful completion."""
+    for turn in range(turns):
+        await panel.add_user_message(f"Request {turn}: inspect and verify.")
+        for segment in range(2):
+            if segment:
+                await panel.add_user_message(f"Also check case {turn}.", is_injection=True)
+            reasoning_id = f"reasoning-{turn}-{segment}"
+            await panel.add_thinking_delta(reasoning_id, "reasoning", "Checking evidence.\n\n" * markdown_lines)
+            panel.finish_thinking_segment(reasoning_id)
+            await _stream_answer(panel, f"middle-{turn}-{segment}", "Intermediate findings.\n\n" * markdown_lines)
+            call_id = f"read-{turn}-{segment}"
+            await panel.add_tool_start(call_id, "read_file", KIND_FILESYSTEM_READ, args={"path": "sample.py"})
+            await panel.add_tool_result(call_id, "read_file", "ok")
+        await _finish_turn(panel, f"final-{turn}", f"Verified case {turn}.")
+        await asyncio.sleep(0)
+
+
 async def _populate_sub_agent_markdown(
     panel: ChatPanel,
     *,

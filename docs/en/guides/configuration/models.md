@@ -72,7 +72,9 @@ If you edit the model profile currently in use, the updated configuration applie
 
 ### Claude thinking settings
 
-Claude Opus 5.5, Fable 5.1 and Sonnet 5.5 tie the thinking they return to the conversation before it. When that earlier conversation changes, for example after iCode compacts the context, the model service may refuse to read that thinking back. When one of these models uses adaptive thinking (`"thinking": {"type": "adaptive"}` in ["Chat Options"](./chat-options.md#anthropic)) at Anthropic's own address, iCode asks the service to leave out thinking that no longer matches instead of refusing the request. The model then sees less of its earlier reasoning, but the request goes through. On accounts where the service would not otherwise check this, the request makes it check, so such thinking is left out there too.
+To request adaptive thinking with readable summaries, add a `thinking` row with the value `{"type": "adaptive", "display": "summarized"}` in ["Chat Options"](./chat-options.md#anthropic).
+
+Claude Opus 5.5, Fable 5.1 and Sonnet 5.5 tie the thinking they return to the conversation before it. When that earlier conversation changes, for example after iCode compacts the context, the model service may refuse to read that thinking back. When one of these models uses adaptive thinking at Anthropic's own address, iCode asks the service to leave out thinking that no longer matches instead of refusing the request. The model then sees less of its earlier reasoning, but the request goes through. On accounts where the service would not otherwise check this, the request makes it check, so such thinking is left out there too.
 
 To change this, open the profile's file in the `models` folder of the iCode configuration directory (`~/.chrys/models/` on macOS and Linux, `%APPDATA%\chrys\models\` on Windows; the file's `name:` line shows the profile name), add a `thinking_block_binding` line with one of these values, and restart iCode:
 

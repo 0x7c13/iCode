@@ -45,6 +45,7 @@ from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.util.static_update import update_static_in_place
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
+from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
 from chrys.app.tui.widgets.chat.tool_view_builders import (
     TOOL_VIEW_EMPTY,
     TOOL_VIEW_OUTPUT,
@@ -1488,7 +1489,7 @@ class ToolGroupTitle(ToolCopyExcludedMixin, ClickAffordance):
 # ---------------------------------------------------------------------------
 
 
-class ToolGroup(ToolCopyExcludedMixin, Widget):
+class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
     """Collapsible group of tool calls within a single agent turn.
 
     Consecutive tool starts are grouped together. The title shows progress
@@ -1526,6 +1527,12 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
 
     collapsed: reactive[bool] = reactive(False)
 
+    @dataclass
+    class ProcessStateChanged(Message):
+        """A process owner may retry its fold after tool or interaction state changes."""
+
+        group: ToolGroup
+
     def __init__(
         self,
         *,
@@ -1533,6 +1540,7 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
         tool_widget_configurator: Callable[[Widget], None] | None = None,
     ) -> None:
         self._collapse_lock_call_ids: set[str] = set()
+        self._process_status: tuple[int, bool, bool] | None = None
         super().__init__()
         self._live = live
         self._tool_widget_configurator = tool_widget_configurator
@@ -1551,7 +1559,7 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
         self._content_mounted = True
         self._content_freeze_epoch: int | None = None
         """GC freeze epoch read before the oldest mounted tool widget was built; None while none is."""
-        self.display = False  # hidden until first tool is added
+        self.set_content_visible(False)  # hidden until first tool is added
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="tg-header"):
@@ -1612,10 +1620,12 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
         self._collapse_lock_call_ids.add(call_id)
         if self.collapsed:
             self.collapsed = False
+        self._notify_process_state()
 
     def unlock_collapse_for(self, call_id: str) -> None:
         """Release a live inline control's collapse lock."""
         self._collapse_lock_call_ids.discard(call_id)
+        self._notify_process_state()
 
     @property
     def collapse_locked(self) -> bool:
@@ -1657,6 +1667,7 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
             if isinstance(tc, AskUserToolCall):
                 tc.clear_inline_prompt()
         self._collapse_lock_call_ids.clear()
+        self._notify_process_state()
 
     async def add_tool(
         self,
@@ -1694,8 +1705,7 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
             canonical_status=canonical_status,
             activity_order=self._next_activity_order(),
         )
-        if not self.display:
-            self.display = True
+        self.set_content_visible(True)
         self._end_time = None
         self._ensure_timer()
         async with self._content_structure_lock:
@@ -1819,7 +1829,7 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
                 activity_order=self._next_activity_order(),
             )
             self._tools.pop(call_id, None)
-            self.display = True
+            self.set_content_visible(True)
             self._content_mounted = False
             self._reconcile_done_count()
             if self.all_complete:
@@ -2061,6 +2071,18 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
         total = len(self._tool_records) if self._tool_records else len(self._tools)
         return self._done == total and total > 0
 
+    @property
+    def process_tool_count(self) -> int:
+        """Calls in this group, excluding the inner activity of sub-agents."""
+        return len(self._tool_records)
+
+    def _notify_process_state(self) -> None:
+        status = (self.process_tool_count, self.all_complete, self.collapse_locked)
+        if status != self._process_status:
+            self._process_status = status
+            if self.is_attached:
+                self.post_message(self.ProcessStateChanged(self))
+
     def _elapsed_ms(self) -> int:
         end = self._end_time if self._end_time is not None else time.monotonic()
         return int((end - self._start_time) * 1000)
@@ -2093,6 +2115,7 @@ class ToolGroup(ToolCopyExcludedMixin, Widget):
         return Text(f"{arrow} {title}", no_wrap=True, overflow="ellipsis")
 
     def _update_title(self) -> None:
+        self._notify_process_state()
         title = self._title_text()
         self._sync_activity_indicator()
         if title.plain == self._last_title_plain:

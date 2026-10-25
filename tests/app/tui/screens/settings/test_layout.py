@@ -62,7 +62,12 @@ def test_the_thinking_display_preference_sits_with_the_appearance_rows() -> None
 
     assert general is not None
     appearance = next(section for section in general.sections if section.title.fallback == "Appearance")
-    assert [row.key for row in appearance.rows] == ["ui.theme", "ui.locale", "ui.chat.show_thinking"]
+    assert [row.key for row in appearance.rows] == [
+        "ui.theme",
+        "ui.locale",
+        "ui.chat.show_thinking",
+        "ui.chat.fold_finished_turns",
+    ]
 
 
 def test_tools_tab_lists_each_tool_category_as_its_own_section() -> None:

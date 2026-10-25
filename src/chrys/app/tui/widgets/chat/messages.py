@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import time
 from collections.abc import Callable, Iterable
@@ -25,10 +26,18 @@ from textual.widgets import Button, Static
 from chrys.app.tui.clipboard import copy_text_to_clipboards
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcAbsorbRequested
-from chrys.app.tui.util.removal import remove_all_shielded
+from chrys.app.tui.support.gc_freeze import (
+    GcAbsorbReason,
+    GcAbsorbRequested,
+    GcReclaimReason,
+    GcReclaimRequested,
+    GcRemovedContent,
+    current_gc_freeze_epoch,
+)
+from chrys.app.tui.util.removal import remove_all_shielded, remove_shielded
 from chrys.app.tui.util.source_text import sanitize_source_text
 from chrys.app.tui.widgets.chat.image_preview import ChatImagePreview, ImagePreviewGrid, extract_image_previews
+from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.app.tui.widgets.markdown.parser import create_user_text_markdown_parser
@@ -363,6 +372,11 @@ class UserMessage(Widget):
         """Whether this user message is a mid-turn injection."""
         return self._is_injection
 
+    @property
+    def is_compressed(self) -> bool:
+        """Whether this message belongs to archived, compressed history."""
+        return self._compressed
+
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """User message content is copied by its header/body children."""
         _ = selection
@@ -414,7 +428,7 @@ class _AgentHeader(Static):
         self.post_message(self.Clicked())
 
 
-class StreamedMarkdownMessage(Widget):
+class StreamedMarkdownMessage(ProcessMember):
     """A transcript message whose markdown body can stream in.
 
     Holds what streaming needs and what keeps it cheap: the body catches up at
@@ -699,6 +713,17 @@ class AgentMessage(StreamedMarkdownMessage):
     }
     """
 
+    @property
+    def is_process_final(self) -> bool:
+        """A visible answer to keep outside a successful turn's process."""
+        return (
+            self._is_final
+            and not self._is_intermediate
+            and not self._is_structured_completion
+            and not self.is_status
+            and bool(self.text)
+        )
+
     def __init__(
         self,
         text: str = "",
@@ -710,7 +735,10 @@ class AgentMessage(StreamedMarkdownMessage):
         timestamp: str = "",
         duration_ms: int | None = None,
         segment_ids: Iterable[str] = (),
+        is_status: bool = False,
     ) -> None:
+        self.is_status = is_status
+        """Persisted lifecycle prose is not an agent's successful final answer."""
         self.segment_ids = frozenset(segment_ids)
         """The content segments whose answer text this message shows, for a bare Continue to withdraw."""
         self._profile_name = profile_name
@@ -881,6 +909,8 @@ class ThinkingMessage(StreamedMarkdownMessage):
         self._channel = channel
         self._absorb_after_parse = False
         """The body was built on opening: its first parse is stable content the GC freeze can take."""
+        self._body_freeze_epoch: int | None = None
+        self._body_structure_lock = asyncio.Lock()
         super().__init__(text, is_final=is_final, classes="--compressed" if is_compressed else "")
         if collapsed:
             # Before mount, and without the watcher: the body is built when it first opens.
@@ -906,20 +936,44 @@ class ThinkingMessage(StreamedMarkdownMessage):
             yield self._new_body()
 
     def watch_collapsed(self, collapsed: bool) -> None:
-        if not collapsed and self._md_widget is None:
-            if self.is_mounted:
-                self._open_body()
-            else:
-                # Registered, not mounted yet (a replay batch mounting): its compose may have run already.
-                self.call_later(self._open_body)
         super().watch_collapsed(collapsed)
+        self.call_later(self._sync_thinking_body)
 
-    def _open_body(self) -> None:
-        """Build the body that a block folded at replay composed without, on its first opening."""
-        if self.collapsed or self._md_widget is not None:
-            return
-        self._absorb_after_parse = True
-        self.mount(self._new_body())
+    def _new_body(self) -> VirtualizedMarkdown:
+        self._body_freeze_epoch = current_gc_freeze_epoch()
+        return super()._new_body()
+
+    async def _sync_thinking_body(self) -> None:
+        """Release folded completed markdown; rebuild only the latest requested open state."""
+        async with self._body_structure_lock:
+            if not self.is_mounted or self._closing or self._pruning or not self.app.is_running:
+                return
+            body = self._md_widget
+            if self.collapsed and self.foldable and body is not None:
+                epoch = self._body_freeze_epoch
+                removed = (
+                    GcRemovedContent.watch(built_at_epoch=epoch, nodes=body.walk_children(with_self=True))
+                    if epoch is not None and epoch == current_gc_freeze_epoch()
+                    else None
+                )
+                self._absorb_after_parse = False
+                with self.app.batch_update():
+                    if self.app.focused in body.walk_children(with_self=True):
+                        self.screen.set_focus(None, scroll_visible=False)
+                    try:
+                        await remove_shielded(body)
+                    finally:
+                        self._md_widget = None
+                        self._body_freeze_epoch = None
+                        self._clear_arrangement_cache()
+                        _ = self.displayed_children
+                        self._give_back_held_rows()
+                self.post_message(
+                    GcReclaimRequested(GcReclaimReason.STABLE_CONTENT_REMOVED, prompt=False, removed=removed)
+                )
+            if not self.collapsed and self._md_widget is None and not self._closing and not self._pruning:
+                self._absorb_after_parse = True
+                await self.mount(self._new_body())
 
     def on_virtualized_markdown_table_of_contents_updated(
         self, event: VirtualizedMarkdown.TableOfContentsUpdated
@@ -973,7 +1027,7 @@ class ConversationStatusAction:
         """Posted when the inline retry/continue action is clicked."""
 
 
-class ErrorMessage(Widget):
+class ErrorMessage(ProcessMember):
     """Error display with red accent."""
 
     DEFAULT_CSS = """
@@ -1056,7 +1110,7 @@ class ErrorMessage(Widget):
         self.post_message(ConversationStatusAction.Pressed())
 
 
-class RetryMessage(Static):
+class RetryMessage(Static, ProcessMember):
     """Transient retry notice — shown while the executor waits before retrying."""
 
     DEFAULT_CSS = """
@@ -1096,7 +1150,7 @@ class RetryMessage(Static):
         return render_str(widget_localizer(self), reference)
 
 
-class InterruptedMessage(Widget):
+class InterruptedMessage(ProcessMember):
     """Interruption notice — yellow for user interrupts, red for errors."""
 
     DEFAULT_CSS = """

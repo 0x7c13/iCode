@@ -42,7 +42,9 @@ class _FakeMount:
         self.widgets.append(widget)
         return True
 
-    async def mount_transcript_widgets(self, widgets: list[Widget]) -> None:
+    async def mount_transcript_widgets(
+        self, widgets: list[Widget], *, process_failures_after: tuple[Widget, ...] = ()
+    ) -> None:
         self.calls.append(f"mount_batch:{len(widgets)}")
         self.widgets.extend(widgets)
 

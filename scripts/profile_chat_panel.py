@@ -34,6 +34,7 @@ apply_all()
 from chat_panel_workloads import (  # noqa: E402
     _populate_file_diff,
     _populate_mixed_markdown,
+    _populate_process_history,
     _populate_realistic_session,
     _populate_sub_agent_markdown,
     _populate_table_markdown,
@@ -58,6 +59,9 @@ class Metrics:
     tool_sets_per_turn: int
     expected_tool_calls: int
     collapsed: bool
+    fold_finished_turns: bool
+    displayed_transcript_entries: int
+    process_blocks: int
     wait_for_diffs: bool
     scroll_driver: str
     scroll_wait: str
@@ -151,8 +155,14 @@ class ChatProfileApp(TuiVariableDefaultsMixin, App[None]):
     }
     """
 
+    def __init__(self, *, fold_finished_turns: bool = False) -> None:
+        self._fold_finished_turns = fold_finished_turns
+        super().__init__()
+
     def compose(self) -> ComposeResult:
-        yield ChatPanel(cwd="/tmp/chrys-profile")
+        yield ChatPanel(
+            cwd="/tmp/chrys-profile", show_thinking=lambda: True, fold_finished_turns=lambda: self._fold_finished_turns
+        )
 
 
 def _rss_mb(process: psutil.Process) -> float:
@@ -205,6 +215,8 @@ async def _populate_panel(panel: ChatPanel, args: argparse.Namespace) -> None:
             turns=args.turns,
             collapsed=args.collapsed,
         )
+    elif args.workload == "process-history":
+        await _populate_process_history(panel, turns=args.turns, markdown_lines=args.markdown_lines)
     elif args.workload == "sub-agent-markdown":
         await _populate_sub_agent_markdown(
             panel,
@@ -239,6 +251,8 @@ async def _populate_panel(panel: ChatPanel, args: argparse.Namespace) -> None:
 
 
 def _expected_tool_calls(args: argparse.Namespace) -> int:
+    if args.workload == "process-history":
+        return args.turns * 2
     if args.workload == "file-diff":
         return args.turns * args.tool_sets_per_turn * 3
     if args.workload == "realistic-session":
@@ -273,7 +287,7 @@ async def run_profile(args: argparse.Namespace) -> Metrics:
         tracemalloc.start()
     rss_before = _rss_mb(process)
 
-    async with ChatProfileApp().run_test(size=tuple(args.size)) as pilot:
+    async with ChatProfileApp(fold_finished_turns=args.fold_finished_turns).run_test(size=tuple(args.size)) as pilot:
         panel = pilot.app.query_one(ChatPanel)
 
         async def wait_for_frame() -> None:
@@ -377,6 +391,9 @@ async def run_profile(args: argparse.Namespace) -> Metrics:
             tool_sets_per_turn=args.tool_sets_per_turn,
             expected_tool_calls=_expected_tool_calls(args),
             collapsed=args.collapsed,
+            fold_finished_turns=args.fold_finished_turns,
+            displayed_transcript_entries=sum(widget.display for widget in panel.transcript_content_children()),
+            process_blocks=len(panel.query("ProcessBlock")),
             wait_for_diffs=args.wait_for_diffs,
             scroll_driver=args.scroll_driver,
             scroll_wait=args.scroll_wait,
@@ -428,7 +445,14 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--workload",
-        choices=("file-diff", "realistic-session", "sub-agent-markdown", "table-markdown", "mixed-markdown"),
+        choices=(
+            "file-diff",
+            "realistic-session",
+            "sub-agent-markdown",
+            "table-markdown",
+            "mixed-markdown",
+            "process-history",
+        ),
         default="file-diff",
     )
     parser.add_argument(
@@ -501,6 +525,11 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--size", type=int, nargs=2, default=(120, 36), metavar=("WIDTH", "HEIGHT"))
     parser.add_argument("--expanded", dest="collapsed", action="store_false")
+    parser.add_argument(
+        "--fold-finished-turns",
+        action="store_true",
+        help="Fold successful process history, as the main chat does by default.",
+    )
     parser.set_defaults(collapsed=True)
     parser.add_argument("--instrument-markdown", action="store_true")
     parser.add_argument("--no-tracemalloc", action="store_true", help="Disable tracemalloc for latency-focused runs.")

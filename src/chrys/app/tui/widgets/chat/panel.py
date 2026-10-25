@@ -11,6 +11,7 @@ from __future__ import annotations
 import itertools
 import logging
 from collections.abc import Awaitable, Callable
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 from weakref import WeakKeyDictionary, WeakSet
 
@@ -62,6 +63,8 @@ from chrys.app.tui.widgets.chat.messages import (
     remove_withdrawn_answer,
 )
 from chrys.app.tui.widgets.chat.ports import ChatTranscriptPanelMarker, TranscriptLocalizationPort
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
+from chrys.app.tui.widgets.chat.process_controller import ProcessController
 from chrys.app.tui.widgets.chat.renderers.ask_user import AskUserInlineResized, AskUserToolCall
 from chrys.app.tui.widgets.chat.renderers.execute import ExecuteToolCall
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
@@ -128,13 +131,17 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         locale_controller: LocaleController | None = None,
         tool_groups_expanded: Callable[[], bool] | None = None,
         show_thinking: Callable[[], bool] | None = None,
+        fold_finished_turns: Callable[[], bool] | None = None,
         sub_agent_transcript_loader: Callable[[str], Awaitable[PersistedSubAgentTranscript | None]] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         # Document-order stamps for top-level transcript children; weak keys
         # so removed widgets drop their entries with the widget itself.
-        self._transcript_seqs: WeakKeyDictionary[Widget, int] = WeakKeyDictionary()
+        self._transcript_seqs: WeakKeyDictionary[Widget, Fraction] = WeakKeyDictionary()
+        self._fold_finished_turns = fold_finished_turns or (lambda: False)
+        self._process_controller = ProcessController(self)
+        self._replay_process_protect_last = False
         self._ask_user_tool_widgets: WeakSet[AskUserToolCall] = WeakSet()
         self._replay_progress_callback: Callable[[int, int], None] | None = None
         self._locale_controller = locale_controller
@@ -434,10 +441,10 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             kwargs["before"] = spacer
         for widget in widgets:
             if isinstance(widget, Widget) and widget not in self._transcript_seqs:
-                self._transcript_seqs[widget] = next(_transcript_seq_counter)
+                self._transcript_seqs[widget] = Fraction(next(_transcript_seq_counter))
         return super().mount(*widgets, **kwargs)
 
-    def transcript_seq(self, widget: Widget) -> int | None:
+    def transcript_seq(self, widget: Widget) -> Fraction | None:
         """Document-order stamp for a top-level child; ``None`` if never
         mounted through this panel."""
         return self._transcript_seqs.get(widget)
@@ -446,7 +453,43 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Stamp document order up front for entries mounted newest first."""
         for widget in widgets:
             if widget not in self._transcript_seqs:
-                self._transcript_seqs[widget] = next(_transcript_seq_counter)
+                self._transcript_seqs[widget] = Fraction(next(_transcript_seq_counter))
+
+    async def mount_transcript_after(self, anchor: Widget, widget: Widget) -> bool:
+        """Insert between neighboring exact order keys, without changing existing selection anchors."""
+        if anchor.parent is not self or not self.can_mount_replay():
+            return False
+        previous = self._transcript_seqs[anchor]
+        following = min(
+            (
+                seq
+                for node, seq in self._transcript_seqs.items()
+                if seq > previous and not self._chrome.is_infrastructure(node)
+            ),
+            default=previous + 1,
+        )
+        self._transcript_seqs[widget] = (previous + following) / 2
+        await self.mount(widget, after=anchor)
+        return widget.parent is self and not widget._pruning
+
+    def on_tool_group_process_state_changed(self, event: ToolGroup.ProcessStateChanged) -> None:
+        event.stop()
+        block = self._process_controller.block_for_group(event.group)
+        if block is None:
+            return
+        with self.app.batch_update():
+            self._process_controller.member_changed(block)
+
+    def on_process_block_toggle_requested(self, event: ProcessBlock.ToggleRequested) -> None:
+        event.stop()
+        if event.block.parent is not self:
+            return
+        self.note_user_scroll()
+        self.set_anchor_released(True)
+        self._auto_scroll_paused_by_user = True
+        with self.app.batch_update():
+            event.block.requested_collapsed = not event.block.requested_collapsed
+            event.block.try_finalize_fold()
 
     def on_mount(self) -> None:
         if self._locale_controller is not None:
@@ -749,13 +792,20 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             and not self._pruning
         )
 
-    async def mount_transcript_widgets(self, widgets: list[Widget]) -> None:
+    async def mount_transcript_widgets(
+        self, widgets: list[Widget], *, process_failures_after: tuple[Widget, ...] = ()
+    ) -> None:
         """Mount replayed entries, newest first, and return once the view is filled.
 
         Entries beyond the first few viewports are prepended above by a
         panel-owned task after this returns (see ``replay_mount``);
         :meth:`wait_replay_complete` waits for them.
         """
+        self._process_controller.remember_replay_failures(process_failures_after)
+        if self._fold_finished_turns():
+            widgets = self._process_controller.prepare_replay(
+                widgets, protect_last_turn=self._replay_process_protect_last
+            )
         await self._replay_mount.mount(widgets)
 
     @property
@@ -1039,6 +1089,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         # A prepend ends at a batch boundary first: never remove children
         # around a mount that is still registering.
         await self._replay_mount.stop()
+        self._process_controller.clear()
         self._scroll_controller.reset_for_clear()
         if self.is_attached:
             self.screen.clear_selection()
@@ -1075,26 +1126,34 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._chrome.set_update_notice(notice)
 
     def toggle_fold_all(self) -> bool:
-        """Collapse or expand all tool groups and thinking.
+        """Collapse or expand process sections, tool groups and thinking.
 
-        If any are expanded, collapses all.  If all are already collapsed,
-        expands all.  Returns the new collapsed state.
+        If any eligible visible item is expanded, collapse all; otherwise
+        expand all, including controls inside process sections. Return the
+        new collapsed state.
         """
         folds: list[ToolGroup | ThinkingMessage] = [
             group for group in self.query(ToolGroup) if not group.collapse_locked
         ]
         # Thinking that still streams stays open, as a click on its header leaves it.
         folds.extend(message for message in self.query(ThinkingMessage) if message.foldable)
+        processes_collapsed = self._process_controller.folds_collapsed()
         # Entries still waiting to be prepended take the choice as they mount.
         pending_collapsed = self._replay_mount.pending_folds_collapsed()
 
-        if not folds and pending_collapsed is None:
+        if not folds and pending_collapsed is None and processes_collapsed is None:
             return False
 
-        any_expanded = any(not fold.collapsed for fold in folds) or pending_collapsed is False
-        for fold in folds:
-            fold.collapsed = any_expanded
-        self._replay_mount.set_fold_state(any_expanded)
+        any_expanded = (
+            processes_collapsed is False
+            or any(not fold.process_hidden and not fold.collapsed for fold in folds)
+            or pending_collapsed is False
+        )
+        with self.app.batch_update():
+            self._process_controller.set_fold_state(any_expanded)
+            for fold in folds:
+                fold.collapsed = any_expanded
+            self._replay_mount.set_fold_state(any_expanded)
         return any_expanded
 
     def get_agent_responses(self) -> list[tuple[str, str]]:
@@ -1174,6 +1233,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             structured_output_completed=structured_output_completed,
             created_at=created_at,
         )
+        if self._fold_finished_turns():
+            with self.app.batch_update():
+                await self._process_controller.complete_live()
 
     def _schedule_anchor_sync(self) -> None:
         """Sync scroll position to the bottom after the next refresh.
@@ -1714,6 +1776,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         initial_profile: str = "",
         file_snapshots: dict[str, list[FileSnapshotPayload]] | None = None,
         compressed_blocks: dict[str, CompressedBlock] | None = None,
+        recovered_from_sidecar: bool = False,
     ) -> None:
         """Replay saved session messages into the chat panel.
 
@@ -1726,12 +1789,16 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         Args:
             messages: Deserialized session messages.
         """
-        await self._replay_renderer.replay_history(
-            messages,
-            initial_profile=initial_profile,
-            file_snapshots=file_snapshots,
-            compressed_blocks=compressed_blocks,
-        )
+        self._replay_process_protect_last = recovered_from_sidecar
+        try:
+            await self._replay_renderer.replay_history(
+                messages,
+                initial_profile=initial_profile,
+                file_snapshots=file_snapshots,
+                compressed_blocks=compressed_blocks,
+            )
+        finally:
+            self._replay_process_protect_last = False
 
     async def _replay_compressed_block(self, block: CompressedBlock, replay_profile: str) -> str:
         """Compatibility delegate for compressed-block replay rendering."""

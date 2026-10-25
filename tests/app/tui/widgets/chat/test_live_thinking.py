@@ -337,11 +337,14 @@ async def test_thinking_names_what_it_shows_and_folds_from_its_header_once_compl
 
         await click_when_settled(pilot, thinking.query_one(_AgentHeader))
         await wait_for(lambda: thinking.collapsed, pilot=pilot, description="complete thinking folded")
-        body = thinking.query_one(VirtualizedMarkdown)
-        assert body.display is False
+        await wait_for(lambda: not thinking.query(VirtualizedMarkdown), pilot=pilot, description="folded body removed")
         assert thinking.query_one(_AgentHeader).render().plain == "▶ Thinking"
         await click_when_settled(pilot, thinking.query_one(_AgentHeader))
-        await wait_for(lambda: not thinking.collapsed and body.display, pilot=pilot, description="unfolded")
+        await wait_for(
+            lambda: not thinking.collapsed and bool(thinking.query(VirtualizedMarkdown)),
+            pilot=pilot,
+            description="unfolded body rebuilt",
+        )
 
 
 async def test_fold_all_folds_complete_thinking_with_the_tool_groups_but_leaves_thinking_that_streams_open() -> None:

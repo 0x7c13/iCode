@@ -643,13 +643,19 @@ class ChatPanelApp(LocalizedApp):
         localization: TranscriptLocalizationPort | None = None,
         *,
         show_thinking: Callable[[], bool] | None = None,
+        fold_finished_turns: Callable[[], bool] | None = None,
     ) -> None:
         self._localization = localization
         self._show_thinking = show_thinking
+        self._fold_finished_turns = fold_finished_turns
         super().__init__()
 
     def compose(self) -> ComposeResult:
-        yield ChatPanel(localization=self._localization, show_thinking=self._show_thinking)
+        yield ChatPanel(
+            localization=self._localization,
+            show_thinking=self._show_thinking,
+            fold_finished_turns=self._fold_finished_turns,
+        )
 
 
 class GcMessageChatPanelApp(ChatPanelApp):

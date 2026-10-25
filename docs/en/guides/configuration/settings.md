@@ -55,6 +55,7 @@ The "Takes effect" column in the following tables describes each setting's usual
 | Theme | Changes the TUI theme. To adjust colors or create a custom theme, see [Customize themes](themes.md). | Immediately |
 | UI Language | Changes only iCode interface text, not conversation content, the model's output language, or existing records. You can also switch the interface language with `/language`. | Immediately |
 | Show model thinking | Shows the model's thinking above its reply as it arrives, when the model service returns it as readable text. Thinking the service returns only in encrypted form is never shown. Thinking already in the conversation stays as it is when you change this. | New replies and sessions you open afterwards |
+| Automatically fold completed turns | Enabled by default (`ui.chat.fold_finished_turns`). After a successful reply, folds thinking, tool calls and intermediate replies under **Made N tool calls**, or **Activity** when there were no tools or the turn is in compressed history. User messages, including mid-turn additions, and the final reply remain visible. Click the header to toggle one section, or type `/fold` to collapse or expand activity sections, tool groups and thinking with the keyboard. Errors, interruptions and the last turn recovered after a crash stay visible; a turn without a visible final reply is not automatically folded. Existing folds keep your choice. | Future completed turns and sessions you open afterwards |
 
 #### Input
 

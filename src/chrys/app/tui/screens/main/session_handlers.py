@@ -807,6 +807,7 @@ class SessionHandler:
                     initial_profile=event.initial_agent_profile or display,
                     file_snapshots=file_snapshots or None,
                     compressed_blocks=compressed_blocks_map or None,
+                    recovered_from_sidecar=event.recovered_from_sidecar,
                 )
                 s.update_toc()
 

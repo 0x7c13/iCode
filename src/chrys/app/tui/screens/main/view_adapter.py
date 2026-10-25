@@ -797,12 +797,14 @@ class MainScreenViewAdapter:
         initial_profile: str,
         file_snapshots: dict[str, list[FileSnapshotPayload]] | None,
         compressed_blocks: dict[str, CompressedBlock] | None,
+        recovered_from_sidecar: bool = False,
     ) -> None:
         await self._screen.query_one(ChatPanel).replay_history(
             messages,
             initial_profile=initial_profile,
             file_snapshots=file_snapshots,
             compressed_blocks=compressed_blocks,
+            recovered_from_sidecar=recovered_from_sidecar,
         )
 
     async def add_answer_delta(self, segment_id: str, text: str) -> None:
