@@ -57,6 +57,7 @@ from chrys.app.tui.widgets.chat.messages import (
     InterruptedMessage,
     RetryMessage,
     SystemMessage,
+    ThinkingMessage,
     UserMessage,
     remove_withdrawn_answer,
 )
@@ -1074,21 +1075,25 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._chrome.set_update_notice(notice)
 
     def toggle_fold_all(self) -> bool:
-        """Collapse or expand all tool groups.
+        """Collapse or expand all tool groups and thinking.
 
         If any are expanded, collapses all.  If all are already collapsed,
         expands all.  Returns the new collapsed state.
         """
-        tool_groups = [group for group in self.query(ToolGroup) if not group.collapse_locked]
-        # Groups still waiting to be prepended take the choice as they mount.
-        pending_collapsed = self._replay_mount.pending_tool_groups_collapsed()
+        folds: list[ToolGroup | ThinkingMessage] = [
+            group for group in self.query(ToolGroup) if not group.collapse_locked
+        ]
+        # Thinking that still streams stays open, as a click on its header leaves it.
+        folds.extend(message for message in self.query(ThinkingMessage) if message.foldable)
+        # Entries still waiting to be prepended take the choice as they mount.
+        pending_collapsed = self._replay_mount.pending_folds_collapsed()
 
-        if not tool_groups and pending_collapsed is None:
+        if not folds and pending_collapsed is None:
             return False
 
-        any_expanded = any(not group.collapsed for group in tool_groups) or pending_collapsed is False
-        for group in tool_groups:
-            group.collapsed = any_expanded
+        any_expanded = any(not fold.collapsed for fold in folds) or pending_collapsed is False
+        for fold in folds:
+            fold.collapsed = any_expanded
         self._replay_mount.set_fold_state(any_expanded)
         return any_expanded
 

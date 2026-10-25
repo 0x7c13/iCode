@@ -342,3 +342,28 @@ async def test_thinking_names_what_it_shows_and_folds_from_its_header_once_compl
         assert thinking.query_one(_AgentHeader).render().plain == "▶ Thinking"
         await click_when_settled(pilot, thinking.query_one(_AgentHeader))
         await wait_for(lambda: not thinking.collapsed and body.display, pilot=pilot, description="unfolded")
+
+
+async def test_fold_all_folds_complete_thinking_with_the_tool_groups_but_leaves_thinking_that_streams_open() -> None:
+    async with ChatPanelApp(show_thinking=_shown).run_test() as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await cp.add_user_message("prompt")
+        await _tool(cp, "read-1")
+        await _think(cp, "r1", "Step one.")
+        await cp.add_thinking_delta("s1", "reasoning_summary", "In short, ")
+        (group,) = cp.query(ToolGroup)
+        thinking, streaming = cp.query(ThinkingMessage)
+        group.collapsed = True
+
+        # The open thinking is what is expanded, so fold-all folds.
+        assert cp.toggle_fold_all() is True
+        assert (group.collapsed, thinking.collapsed, streaming.collapsed) == (True, True, False)
+        assert thinking.query_one(VirtualizedMarkdown).display is False
+
+        assert cp.toggle_fold_all() is False
+        assert (group.collapsed, thinking.collapsed, streaming.collapsed) == (False, False, False)
+        assert thinking.query_one(VirtualizedMarkdown).display is True
+
+        cp.finish_thinking_segment("s1")
+        assert cp.toggle_fold_all() is True
+        assert (group.collapsed, thinking.collapsed, streaming.collapsed) == (True, True, True)

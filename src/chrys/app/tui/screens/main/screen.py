@@ -1901,7 +1901,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._copy_actions.copy_agent_responses(arg)
 
     def _toggle_fold(self) -> None:
-        """Handle /fold slash command — collapse or expand all tool groups."""
+        """Handle /fold slash command — collapse or expand all tool groups and thinking."""
         self._copy_actions.toggle_fold()
 
     def action_show_rollback(self, arg: str = "") -> None:

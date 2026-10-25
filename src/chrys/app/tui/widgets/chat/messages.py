@@ -886,6 +886,11 @@ class ThinkingMessage(StreamedMarkdownMessage):
             # Before mount, and without the watcher: the body is built when it first opens.
             self.set_reactive(StreamedMarkdownMessage.collapsed, True)
 
+    @property
+    def foldable(self) -> bool:
+        """Whether it can fold now: once its text is complete."""
+        return self._is_final
+
     def _label(self) -> str:
         label = _THINKING_SUMMARY_LABEL if self._channel == "reasoning_summary" else _THINKING_LABEL
         return render_str(widget_localizer(self), label.bind())
@@ -901,10 +906,20 @@ class ThinkingMessage(StreamedMarkdownMessage):
             yield self._new_body()
 
     def watch_collapsed(self, collapsed: bool) -> None:
-        if not collapsed and self._md_widget is None and self.is_mounted:
-            self._absorb_after_parse = True
-            self.mount(self._new_body())
+        if not collapsed and self._md_widget is None:
+            if self.is_mounted:
+                self._open_body()
+            else:
+                # Registered, not mounted yet (a replay batch mounting): its compose may have run already.
+                self.call_later(self._open_body)
         super().watch_collapsed(collapsed)
+
+    def _open_body(self) -> None:
+        """Build the body that a block folded at replay composed without, on its first opening."""
+        if self.collapsed or self._md_widget is not None:
+            return
+        self._absorb_after_parse = True
+        self.mount(self._new_body())
 
     def on_virtualized_markdown_table_of_contents_updated(
         self, event: VirtualizedMarkdown.TableOfContentsUpdated
@@ -919,7 +934,7 @@ class ThinkingMessage(StreamedMarkdownMessage):
             self.query_one(_AgentHeader).update(self._header_text())
 
     def on__agent_header_clicked(self) -> None:
-        if self._is_final:
+        if self.foldable:
             self.collapsed = not self.collapsed
 
 

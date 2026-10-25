@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from textual.widget import AwaitMount, Widget
 
 from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcAbsorbRequested
 from chrys.app.tui.widgets.chat.messages import AgentMessage, ThinkingMessage, UserMessage, _AgentHeader
@@ -349,6 +350,61 @@ async def test_a_replayed_block_builds_its_body_when_first_opened_and_hands_it_t
         await click_when_settled(pilot, thinking.query_one(_AgentHeader))
         assert thinking.query_one(VirtualizedMarkdown) is body
         assert body.display is True
+
+
+async def test_fold_all_opens_and_folds_replayed_thinking_with_the_tool_groups() -> None:
+    async with ChatPanelApp(show_thinking=lambda: True).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.replay_history(_A_TURN_WITH_THINKING)
+        await panel.wait_replay_complete()
+        (group,) = panel.query(ToolGroup)
+        thinking = list(panel.query(ThinkingMessage))
+
+        assert panel.toggle_fold_all() is False
+        assert [group.collapsed, *(message.collapsed for message in thinking)] == [False, False, False]
+        bodies = [message.query_one(VirtualizedMarkdown) for message in thinking]
+        assert [body.display for body in bodies] == [True, True]
+
+        assert panel.toggle_fold_all() is True
+        assert [group.collapsed, *(message.collapsed for message in thinking)] == [True, True, True]
+        assert [body.display for body in bodies] == [False, False]
+
+
+async def test_fold_all_between_a_batch_registering_and_mounting_still_opens_its_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with ChatPanelApp(show_thinking=lambda: True).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        real_mount = panel.mount
+        mounted_when_folded: list[bool] = []
+
+        def mount(*widgets: Widget, **kwargs: Any) -> AwaitMount:
+            awaitable = real_mount(*widgets, **kwargs)
+            if thinking := list(panel.query(ThinkingMessage)):
+                mounted_when_folded.extend(message.is_mounted for message in thinking)
+                assert panel.toggle_fold_all() is False
+            return awaitable
+
+        with monkeypatch.context() as patch:
+            patch.setattr(panel, "mount", mount)
+            await panel.replay_history(_A_TURN_WITH_THINKING)
+            await panel.wait_replay_complete()
+        thinking = list(panel.query(ThinkingMessage))
+
+        def shown_bodies() -> list[str]:
+            return [body.shown_source for message in thinking for body in message.query(VirtualizedMarkdown)]
+
+        # Folded as the block was composed, so its body is built once it mounts.
+        assert mounted_when_folded == [False, False]
+        await wait_for(
+            lambda: shown_bodies() == ["Let me look first.", "The file says yes."],
+            pilot=pilot,
+            description="each opened block shows its body",
+        )
+        assert [(message.collapsed, message.query_one(VirtualizedMarkdown).display) for message in thinking] == [
+            (False, True),
+            (False, True),
+        ]
 
 
 async def test_a_resumed_session_shows_its_thinking_by_default(tmp_path: Path) -> None:

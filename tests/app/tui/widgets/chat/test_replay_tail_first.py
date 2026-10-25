@@ -15,12 +15,14 @@ import pytest
 from textual import events
 from textual.widget import AwaitMount, Widget
 
-from chrys.app.tui.widgets.chat.messages import AgentMessage, ErrorMessage, UserMessage
+from chrys.app.tui.widgets.chat.messages import AgentMessage, ErrorMessage, ThinkingMessage, UserMessage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.replay_mount import REPLAY_MOUNT_BATCH_SIZE
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
+from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from chrys.app.tui.widgets.welcome import WelcomeWidget
 from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY
+from chrys.kernel import Content
 from tests.app.tui.widgets._scroll_gc import install_fake_chat_panel_gc
 from tests.support.tui_helpers import (
     ChatPanelApp,
@@ -850,6 +852,34 @@ async def test_fold_all_during_prepend_reaches_tool_groups_mounted_later(monkeyp
         assert len(groups) == _TOOL_TURNS
         assert [group.collapsed for group in groups] == [False] * _TOOL_TURNS
         # Everything is expanded now, so the next fold-all collapses.
+        assert cp.toggle_fold_all() is True
+
+
+async def test_fold_all_during_prepend_reaches_thinking_mounted_later(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the oldest turns thought, so fold-all finds no fold mounted yet: the pending thinking takes the choice."""
+    thought_turns = 4
+    messages = _turns()
+    for message in messages[: 2 * thought_turns]:
+        if message["role"] == "assistant":
+            message["contents"] = [Content.from_text_reasoning(text="Thinking first.").to_dict(), *message["contents"]]
+
+    async with ChatPanelApp(show_thinking=lambda: True).run_test(size=_SIZE) as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        gate = _PrependGate(cp, monkeypatch)
+        await cp.replay_history(messages)
+        await gate.wait_held(pilot)
+        assert not cp.query(ThinkingMessage)
+        assert any(isinstance(widget, ThinkingMessage) for widget in cp.pending_transcript_widgets())
+
+        assert cp.toggle_fold_all() is False
+
+        gate.release.set()
+        await _wait_complete(cp)
+        thinking = list(cp.query(ThinkingMessage))
+
+        assert len(thinking) == thought_turns
+        assert [message.collapsed for message in thinking] == [False] * len(thinking)
+        assert all(message.query(VirtualizedMarkdown) for message in thinking)
         assert cp.toggle_fold_all() is True
 
 

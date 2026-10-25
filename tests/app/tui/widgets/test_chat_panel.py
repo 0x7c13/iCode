@@ -373,7 +373,7 @@ async def test_chat_panel_timestamps_only_final_agent_response() -> None:
         assert [message._ts for message in agent_messages] == ["", expected]
 
 
-async def test_chat_panel_toggle_fold_all_only_toggles_tool_groups() -> None:
+async def test_chat_panel_toggle_fold_all_leaves_agent_messages() -> None:
     async with ChatPanelApp().run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         tool_group = ToolGroup()

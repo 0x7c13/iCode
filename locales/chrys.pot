@@ -5030,8 +5030,8 @@ msgstr ""
 msgid "tui.commands.description.exit"
 msgstr ""
 
-#. English: Toggle collapse on all tool groups
-#. chrys-meta={"fingerprint":"f3d95b98ecf754b497a8683c659321295cc270ed2aa37405b6b74adc9e9fb8d7","multiline":false,"placeholders":[]}
+#. English: Toggle collapse on all tool groups and thinking
+#. chrys-meta={"fingerprint":"0a350fec3d8fb98f2e2079d424e9db64a7d92cb018ef1b2960ad05aa44cd0691","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.commands.description.fold"
 msgstr ""
@@ -7219,10 +7219,11 @@ msgstr ""
 msgid "tui.man.exit.body"
 msgstr ""
 
-#. English: Toggle collapse state on all tool groups in the current
-#. conversation view.  Collapsed items show only a summary header. Useful for
-#. decluttering the view when reviewing long sessions.
-#. chrys-meta={"fingerprint":"37a0fd0ea50a69d919afe758ae14237c1ed6df082defd6b940fb04a4dedd880b","multiline":true,"placeholders":[]}
+#. English: Toggle collapse state on all tool groups and thinking in the
+#. current conversation view.  Collapsed items show only a summary header.
+#. Thinking that is still being written stays open. Useful for decluttering the
+#. view when reviewing long sessions.
+#. chrys-meta={"fingerprint":"483797533da9798bf665088afe22021ed15359b62af8166f236e619781309453","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.fold.body"
 msgstr ""
