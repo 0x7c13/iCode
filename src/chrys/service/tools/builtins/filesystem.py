@@ -19,6 +19,8 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated
 
+from pydantic import Field
+
 from chrys.foundation.platform import get_platform
 from chrys.foundation.platform.files import replace_with_retry, surrogate_safe_text
 from chrys.foundation.platform.paths import resolve_existing_path, resolve_workspace_path
@@ -41,12 +43,43 @@ if TYPE_CHECKING:
 
     from chrys.foundation.models.session_env import SessionEnvironment
 
-_DEFAULT_MAX_TOKENS = 5000
+_DEFAULT_MAX_TOKENS = 10000
+_DEFAULT_READ_OFFSET = 1
+_DEFAULT_READ_LIMIT = 2000
 _MAX_LINE_DISPLAY_CHARS = 2048
 _NEW_FILE_MODE = 0o644
 _NEW_EXECUTABLE_FILE_MODE = 0o755
 _ATOMIC_TEMP_CREATE_ATTEMPTS = 100
 _SHELL_SCRIPT_EXTENSIONS = frozenset({".sh", ".bash", ".zsh", ".fish", ".ksh", ".csh", ".tcsh", ".command"})
+
+# Runtime Annotated aliases keep the schema flat and expose int to argument validation.
+_ReadMaxTokens = Annotated[
+    int,
+    Field(
+        ge=1,
+        description=(
+            f"Optional token budget for file content, estimated by iCode. Defaults to {_DEFAULT_MAX_TOKENS}. "
+            "Takes priority over limit: content is truncated when this budget is reached, even with fewer lines."
+        ),
+    ),
+]
+_ReadOffset = Annotated[
+    int,
+    Field(
+        ge=1,
+        description=f"Line number to start reading from (1-indexed). Defaults to {_DEFAULT_READ_OFFSET}.",
+    ),
+]
+_ReadLimit = Annotated[
+    int,
+    Field(
+        ge=1,
+        description=(
+            f"Optional maximum number of lines to read. Defaults to {_DEFAULT_READ_LIMIT}; "
+            "max_tokens may truncate earlier. Use 1 to read a long line in full, within max_tokens."
+        ),
+    ),
+]
 
 
 @dataclass(slots=True)
@@ -313,7 +346,8 @@ def plan_write_file(
 def _read_file_impl(
     path: str,
     max_tokens: int = _DEFAULT_MAX_TOKENS,
-    line_range: list[int] | None = None,
+    offset: int = _DEFAULT_READ_OFFSET,
+    limit: int = _DEFAULT_READ_LIMIT,
     *,
     base_cwd: str | None = None,
     session_dir: Path | None = None,
@@ -321,7 +355,14 @@ def _read_file_impl(
     from pathlib import Path
 
     from chrys.foundation.text.encoding import EncodingDetector
-    from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
+    from chrys.foundation.text.tokenizer import TOKEN_UNITS_PER_TOKEN, MixedLanguageTokenizer
+
+    if type(offset) is not int or offset < 1:
+        return tool_error("invalid_offset", "offset must be an integer >= 1 (the first line is 1).")
+    if type(limit) is not int or limit < 1:
+        return tool_error("invalid_limit", "limit must be an integer >= 1 (the maximum number of lines to read).")
+    if type(max_tokens) is not int or max_tokens < 1:
+        return tool_error("invalid_max_tokens", "max_tokens must be an integer >= 1 (the file content token budget).")
 
     missing_base = missing_base_cwd_error(path, base_cwd)
     if missing_base is not None:
@@ -371,73 +412,66 @@ def _read_file_impl(
         total_lines = len(lines)
         total_chars = len(content)
 
-        # Validate and apply line_range
-        offset = 0  # 0-indexed offset into `lines`
-        if line_range is not None:
-            if len(line_range) != 2:
-                return tool_error(
-                    "invalid_line_range",
-                    "line_range must be a list of exactly 2 integers [start, end].",
-                    details={"line_range": line_range},
-                )
-            start, end = line_range
-            if start < 1:
-                return tool_error(
-                    "invalid_line_range",
-                    "line_range start must be >= 1.",
-                    details={"line_range": line_range},
-                )
-            if end != -1 and end < start:
-                return tool_error(
-                    "invalid_line_range",
-                    "line_range end must be >= start or -1 for EOF.",
-                    details={"line_range": line_range},
-                )
-            if start > total_lines:
-                return tool_error(
-                    "invalid_line_range",
-                    f"line_range start ({start}) is beyond the end of the file ({total_lines} lines).",
-                    details={"line_range": line_range, "total_lines": total_lines},
-                )
-            offset = start - 1
-            end_idx = total_lines if end == -1 else min(end, total_lines)
-            lines = lines[offset:end_idx]
+        # The default offset also admits an empty file.
+        if offset > max(total_lines, 1):
+            return tool_error(
+                "invalid_offset",
+                f"offset ({offset}) is beyond the end of the file ({total_lines} lines).",
+                details={"offset": offset, "total_lines": total_lines},
+            )
+        lines = lines[offset - 1 : offset - 1 + limit]
 
         header = f"File: {display_resolved} ({total_lines} lines, {total_chars} chars)\n"
-        header_tokens = tokenizer.count_tokens(header)
-        remaining = max_tokens - header_tokens
+        # Keep fractional estimates across lines instead of rounding each line.
+        remaining_units = max_tokens * TOKEN_UNITS_PER_TOKEN - tokenizer.count_token_units(header)
 
         output_lines: list[str] = []
-        truncated = False
-        last_line_num = 0
+        truncation_position = ""
+        truncated_line_chars = 0
+        full_line_hint = ""
+        last_line_num = offset - 1
+        next_line = offset
         long_lines: list[tuple[int, int]] = []
 
         for i, line in enumerate(lines):
-            line_num = offset + i + 1
-            if line_range is None and len(line) > _MAX_LINE_DISPLAY_CHARS:
-                long_lines.append((line_num, len(line)))
+            line_num = offset + i
+            original_length = len(line)
+            # A single-line read can recover a long line, within the token budget.
+            char_truncated = limit != 1 and original_length > _MAX_LINE_DISPLAY_CHARS
+            if char_truncated:
                 line = line[:_MAX_LINE_DISPLAY_CHARS] + "... [truncated]"
             formatted = f"{line_num}|{line}\n"
-            line_tokens = tokenizer.count_tokens(formatted)
-            if line_tokens > remaining:
+            line_units = tokenizer.count_token_units(formatted)
+            if line_units > remaining_units:
+                truncation_position = f"before line {line_num}"
+                truncated_line_chars = original_length
+                if char_truncated:
+                    full_line_hint = (
+                        f" To read this line in full, use offset={line_num}, limit=1 "
+                        "with a sufficient max_tokens budget."
+                    )
                 # Include a partial line instead of dropping it entirely
-                if remaining > 0:
-                    fraction = remaining / line_tokens
-                    cut = max(int(len(line) * fraction), 1)
-                    output_lines.append(f"{line_num}|{line[:cut]}... [truncated]\n")
-                    # Record for targeted reads so the LLM knows the actual length.
-                    # Without line_range the char-level truncation (above) or the
-                    # standard "[Truncated at line N]" message already covers it.
-                    if line_range is not None:
-                        long_lines.append((line_num, len(line)))
-                    last_line_num = line_num
-                truncated = True
-                if last_line_num == 0:
-                    last_line_num = line_num - 1 if i > 0 else offset
+                if remaining_units > 0:
+                    # Token density can differ along a mixed-language line.
+                    # Measure the returned prefix, including its truncation marker.
+                    low, high = 0, len(line)
+                    while low < high:
+                        mid = (low + high + 1) // 2
+                        partial = f"{line_num}|{line[:mid]}... [truncated]\n"
+                        if tokenizer.count_token_units(partial) <= remaining_units:
+                            low = mid
+                        else:
+                            high = mid - 1
+                    if low > 0:
+                        output_lines.append(f"{line_num}|{line[:low]}... [truncated]\n")
+                        truncation_position = f"at line {line_num}"
                 break
-            remaining -= line_tokens
+            remaining_units -= line_units
             output_lines.append(formatted)
+            if char_truncated:
+                long_lines.append((line_num, original_length))
             last_line_num = line_num
+            next_line = line_num + 1
 
         result = header + "".join(output_lines)
 
@@ -445,15 +479,20 @@ def _read_file_impl(
             details = ", ".join(f"line {ln} ({length} chars)" for ln, length in long_lines)
             result += (
                 f"\n[Long lines truncated to {_MAX_LINE_DISPLAY_CHARS} chars: {details}."
-                " Use line_range to read specific lines in full.]"
+                f" Use offset={long_lines[0][0]}, limit=1 with a sufficient max_tokens budget to read a line in full.]"
             )
 
-        if truncated:
-            next_line = last_line_num + 1
+        if truncation_position:
             result += (
-                f"\n[Truncated at line {last_line_num}, file has {total_lines} lines. "
+                f"\n[Truncated {truncation_position}, file has {total_lines} lines. "
                 f"Content exceeds max_tokens={max_tokens}. "
-                f"Use line_range=[{next_line}, -1] to continue reading.]"
+                f"Use offset={next_line}, limit={limit} to continue reading, increasing max_tokens if needed. "
+                f"Source line {next_line} has {truncated_line_chars} chars.{full_line_hint}]"
+            )
+        elif next_line <= total_lines:
+            result += (
+                f"\n[Showing lines {offset}-{last_line_num} of {total_lines}. "
+                f"Use offset={next_line}, limit={limit} to continue reading if needed.]"
             )
 
         return result
@@ -478,17 +517,12 @@ def _read_file_impl(
 @tool(kind=KIND_FILESYSTEM_READ)
 def read_file(
     path: Annotated[str, "Absolute or relative path to the file to read."],
-    max_tokens: Annotated[
-        int,
-        "Token budget for the returned content. Large files are truncated to fit.",
-    ] = _DEFAULT_MAX_TOKENS,
-    line_range: Annotated[
-        list[int] | None,
-        "Optional [start, end] 1-indexed line range. Use -1 for end to read to EOF.",
-    ] = None,
+    max_tokens: _ReadMaxTokens = _DEFAULT_MAX_TOKENS,
+    offset: _ReadOffset = _DEFAULT_READ_OFFSET,
+    limit: _ReadLimit = _DEFAULT_READ_LIMIT,
 ) -> str:
-    """Read the contents of a text file and return them with line numbers."""
-    return _read_file_impl(path, max_tokens=max_tokens, line_range=line_range)
+    """Read a text file with line numbers. For lines 10-20, use offset=10, limit=11."""
+    return _read_file_impl(path, max_tokens=max_tokens, offset=offset, limit=limit)
 
 
 def _view_image_impl(
@@ -972,20 +1006,16 @@ class FilesystemTools:
     def read_file(
         self,
         path: Annotated[str, "Absolute or relative path to the file to read."],
-        max_tokens: Annotated[
-            int,
-            "Token budget for the returned content. Large files are truncated to fit.",
-        ] = _DEFAULT_MAX_TOKENS,
-        line_range: Annotated[
-            list[int] | None,
-            "Optional [start, end] 1-indexed line range. Use -1 for end to read to EOF.",
-        ] = None,
+        max_tokens: _ReadMaxTokens = _DEFAULT_MAX_TOKENS,
+        offset: _ReadOffset = _DEFAULT_READ_OFFSET,
+        limit: _ReadLimit = _DEFAULT_READ_LIMIT,
     ) -> str:
-        """Read the contents of a text file and return them with line numbers."""
+        """Read a text file with line numbers. For lines 10-20, use offset=10, limit=11."""
         return _read_file_impl(
             path,
             max_tokens=max_tokens,
-            line_range=line_range,
+            offset=offset,
+            limit=limit,
             base_cwd=self._runtime.cwd,
             session_dir=self._session_dir,
         )

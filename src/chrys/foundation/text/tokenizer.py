@@ -1,10 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Token counting for compaction budget management."""
+"""Token counting for compaction and tool output budgets."""
 
 from __future__ import annotations
 
 import re
+
+TOKEN_UNITS_PER_TOKEN = 100
+"""Fixed-point scale for accumulating estimates without per-chunk rounding."""
 
 _CJK_IDEOGRAPH_RANGES = (
     (0x4E00, 0x9FFF),  # CJK Unified Ideographs
@@ -25,7 +28,16 @@ class MixedLanguageTokenizer:
     """
 
     def count_tokens(self, text: str) -> int:
+        return max(1, self.count_token_units(text) // TOKEN_UNITS_PER_TOKEN)
+
+    def count_token_units(self, text: str) -> int:
+        """Return additive hundredths of a token, with zero for empty text.
+
+        Sum these units across chunks before comparing with a token budget
+        multiplied by ``TOKEN_UNITS_PER_TOKEN``. No fractional estimate is
+        lost or charged again at a chunk boundary.
+        """
         # Counted in C: compaction estimates whole conversations on the event
         # loop, where a per-character Python loop held it for seconds.
         ideographs = sum(map(len, _CJK_IDEOGRAPH_RUN.findall(text)))
-        return max(1, (len(text) * 25 + ideographs * 35) // 100)
+        return len(text) * 25 + ideographs * 35

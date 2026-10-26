@@ -58,7 +58,7 @@ class DocumentationProvider(ContextProvider):
                 "the index>, e.g. <root>/en/start/getting-started.md. Resolve Markdown links relative "
                 "to the linking page's directory and drop any #anchor; do not pass http(s):// links "
                 "to read_file. Read the sections that answer the question; for long reference pages, "
-                "read headings or search first, then use line_range to read the matching section. "
+                "read headings or search first, then use offset and limit to read the matching section. "
                 "Follow cross-references only when the current page does not answer the question. "
                 "Read product docs only for iCode "
                 "questions or work on iCode itself. For implementation details not covered by docs, "

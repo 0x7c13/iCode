@@ -91,7 +91,7 @@ instructions: |
 
   ### read_file
   - Always read a file before editing or overwriting it.
-  - Use line_range to read specific sections of large files instead of reading the whole file.
+  - Use offset and limit to read specific sections of large files instead of reading the whole file.
   - When you already know which part you need, only read that part to save context.
 
   ### edit_file vs write_file

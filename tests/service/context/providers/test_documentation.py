@@ -35,7 +35,7 @@ async def test_exposes_absolute_routes_without_preloading_docs_or_adding_tools(p
     assert str(product_docs) in text
     assert str(product_docs / "index.yaml") in text
     assert "read_file" in text
-    assert "line_range" in text
+    assert "offset and limit" in text
     assert "DOCUMENT-BODY-SENTINEL" not in text
     assert context.tools == []
 

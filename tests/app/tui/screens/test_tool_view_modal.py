@@ -1043,6 +1043,68 @@ async def test_read_file_view_preserves_long_line_notice() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [3, 6])
+async def test_read_file_pagination_notice_preserved_without_false_truncation(tmp_path, limit: int) -> None:
+    from chrys.service.tools.builtins.filesystem import read_file
+
+    path = tmp_path / "pages.txt"
+    path.write_text("\n".join(f"content_{i}" for i in range(1, 51)) + "\n", encoding="utf-8")
+    result = read_file(str(path), offset=10, limit=limit)
+
+    class ToolApp(_ToolViewHostApp):
+        def compose(self) -> ComposeResult:
+            yield ReadFileToolCall("c1", "read_file", args={"path": str(path), "offset": 10, "limit": limit})
+
+    async with ToolApp().run_test() as pilot:
+        tool = pilot.app.query_one(ReadFileToolCall)
+        tool.set_complete(result)
+        card = tool.query_one("#rf-panel", Static).content
+        if limit > 5:
+            assert isinstance(card, Group)
+            card = card.renderables[0]
+        assert isinstance(card, Syntax)
+        assert card.start_line == 10
+        assert card.code == "\n".join(f"content_{i}" for i in range(10, 10 + min(limit, 5)))
+
+        widgets = tool._tool_view_output_widgets()
+        joined = "\n".join(_static_text(w) for w in widgets if isinstance(w, Static))
+        assert (
+            f"[Showing lines 10-{9 + limit} of 50. "
+            f"Use offset={10 + limit}, limit={limit} to continue reading if needed.]"
+        ) in joined
+        assert "[Truncated" not in joined
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_tokens", [1, 100])
+@pytest.mark.parametrize("limit", [1, 3])
+async def test_read_file_view_preserves_actual_token_budget_notice(tmp_path, max_tokens: int, limit: int) -> None:
+    from chrys.service.tools.builtins.filesystem import read_file
+
+    path = tmp_path / "large-line.txt"
+    path.write_text("x" * 50_000 + "\n", encoding="utf-8")
+    result = read_file(str(path), limit=limit, max_tokens=max_tokens)
+    notice = next(line for line in result.splitlines() if line.startswith("[Truncated"))
+    assert "Source line 1 has 50000 chars." in notice
+    assert "[Long lines" not in result
+    if limit != 1:
+        assert "To read this line in full, use offset=1, limit=1" in notice
+
+    class ToolApp(_ToolViewHostApp):
+        def compose(self) -> ComposeResult:
+            yield ReadFileToolCall("c1", "read_file", args={"path": str(path)})
+
+    async with ToolApp().run_test() as pilot:
+        tool = pilot.app.query_one(ReadFileToolCall)
+        tool.set_complete(result, duration_ms=10)
+        await pilot.pause()
+
+        widgets = tool._tool_view_output_widgets()
+        joined = "\n".join(_static_text(w) for w in widgets if isinstance(w, Static))
+        assert notice in joined
+
+
+@pytest.mark.asyncio
 async def test_ask_user_view_input_includes_options() -> None:
     class ToolApp(_ToolViewHostApp):
         def compose(self) -> ComposeResult:
