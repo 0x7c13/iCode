@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -212,7 +214,7 @@ def test_platform_clipboard_bitmap_is_saved_to_session_png(
     platform = SimpleNamespace(is_macos=os_name == "macos", is_windows=os_name == "windows")
 
     monkeypatch.setattr(image_paste, "get_platform", lambda: platform)
-    monkeypatch.setattr(image_paste, "_grab_clipboard", lambda: image)
+    monkeypatch.setattr(image_paste, "_grab_clipboard", lambda _directory: image)
     directory = tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR
 
     path = save_clipboard_image_to_file(directory)
@@ -228,12 +230,15 @@ def test_clipboard_bitmap_without_session_directory_is_ignored(monkeypatch: pyte
     platform = SimpleNamespace(is_macos=False, is_windows=True)
 
     monkeypatch.setattr(image_paste, "get_platform", lambda: platform)
-    monkeypatch.setattr(image_paste, "_grab_clipboard", lambda: pytest.fail("clipboard should not be read"))
+    monkeypatch.setattr(image_paste, "_grab_clipboard", lambda _directory: pytest.fail("clipboard should not be read"))
 
     assert save_clipboard_image_to_file(None) is None
 
 
-def test_windows_clipboard_grab_retries_transient_open_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_windows_clipboard_grab_retries_transient_open_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     image = Image.new("RGB", (2, 2), color=(80, 120, 160))
     calls = 0
 
@@ -248,7 +253,7 @@ def test_windows_clipboard_grab_retries_transient_open_failure(monkeypatch: pyte
     monkeypatch.setattr("PIL.ImageGrab.grabclipboard", grabclipboard)
     monkeypatch.setattr(image_paste.time, "sleep", lambda _delay: None)
 
-    assert image_paste._grab_clipboard() is image
+    assert image_paste._grab_clipboard(tmp_path) is image
     assert calls == 2
 
 
@@ -261,7 +266,7 @@ def test_windows_clipboard_file_list_uses_first_supported_image(
     image = _write_image(tmp_path / "from file list.png")
 
     monkeypatch.setattr(image_paste, "get_platform", lambda: SimpleNamespace(is_macos=False, is_windows=True))
-    monkeypatch.setattr(image_paste, "_grab_clipboard", lambda: [str(doc), str(image)])
+    monkeypatch.setattr(image_paste, "_grab_clipboard", lambda _directory: [str(doc), str(image)])
 
     assert (
         save_clipboard_image_to_file(tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR)
@@ -269,51 +274,115 @@ def test_windows_clipboard_file_list_uses_first_supported_image(
     )
 
 
-def test_macos_clipboard_reader_tries_non_png_clipboard_formats(
+def test_macos_jxa_grab_moves_png_bytes_without_reencoding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    platform = SimpleNamespace(is_macos=True, is_windows=False)
-    calls: list[str] = []
+    payload = png_bytes((80, 120, 160), size=(2, 2))
 
-    def read_clipboard_class(class_code: str) -> bytes | None:
-        calls.append(class_code)
-        return png_bytes((80, 120, 160), size=(2, 2)) if class_code == "TIFF" else None
+    def write_png(destination: Path) -> bool:
+        destination.write_bytes(payload)
+        return True
 
-    monkeypatch.setattr(image_paste, "get_platform", lambda: platform)
-    monkeypatch.setattr(image_paste, "_read_macos_clipboard_class", read_clipboard_class)
+    monkeypatch.setattr(image_paste, "get_platform", lambda: SimpleNamespace(is_macos=True, is_windows=False))
+    monkeypatch.setattr(image_paste, "_run_macos_jxa_fetch", write_png)
     directory = tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR
 
     path = save_clipboard_image_to_file(directory)
 
-    assert calls == ["PNGf", "TIFF"]
     assert path is not None
-    assert path.suffix == ".png"
+    assert path.read_bytes() == payload
+    assert not list(directory.glob(".clipboard-grab-*.tmp"))
 
 
-def test_macos_clipboard_reader_decodes_only_the_clipboard_image_formats(
+def test_macos_jxa_grab_converts_tiff_payload_to_png(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payloads = {"PNGf": image_bytes("PCX"), "TIFF": image_bytes("TIFF")}
-    calls: list[str] = []
-
-    def read_clipboard_class(class_code: str) -> bytes | None:
-        calls.append(class_code)
-        return payloads.get(class_code)
+    def write_tiff(destination: Path) -> bool:
+        destination.write_bytes(image_bytes("TIFF"))
+        return True
 
     monkeypatch.setattr(image_paste, "get_platform", lambda: SimpleNamespace(is_macos=True, is_windows=False))
-    monkeypatch.setattr(image_paste, "_read_macos_clipboard_class", read_clipboard_class)
+    monkeypatch.setattr(image_paste, "_run_macos_jxa_fetch", write_tiff)
+    directory = tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR
 
-    path = save_clipboard_image_to_file(tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR)
+    path = save_clipboard_image_to_file(directory)
 
-    assert calls == ["PNGf", "TIFF"]
     assert path is not None
     assert path.suffix == ".png"
+    with Image.open(path) as saved:
+        assert saved.format == "PNG"
+        assert saved.size == (2, 2)
+    assert not list(directory.glob(".clipboard-grab-*.tmp"))
 
 
-def test_decode_macos_clipboard_data_extracts_hex_payload() -> None:
-    assert image_paste._decode_macos_clipboard_data(b"\xc2\xabdata PNGf616263\xc2\xbb\n") == b"abc"
+def test_macos_jxa_grab_rejects_unsupported_clipboard_image_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def write_pcx(destination: Path) -> bool:
+        destination.write_bytes(image_bytes("PCX"))
+        return True
+
+    monkeypatch.setattr(image_paste, "get_platform", lambda: SimpleNamespace(is_macos=True, is_windows=False))
+    monkeypatch.setattr(image_paste, "_run_macos_jxa_fetch", write_pcx)
+    directory = tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR
+
+    assert save_clipboard_image_to_file(directory) is None
+    assert not list(directory.glob(".clipboard-grab-*.tmp"))
+
+
+def test_macos_jxa_fetch_timeout_is_swallowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def slow_osascript(*_args: object, **_kwargs: object) -> object:
+        raise subprocess.TimeoutExpired("/usr/bin/osascript", image_paste._MACOS_JXA_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(image_paste, "get_platform", lambda: SimpleNamespace(is_macos=True, is_windows=False))
+    monkeypatch.setattr(image_paste.subprocess, "run", slow_osascript)
+
+    assert save_clipboard_image_to_file(tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR) is None
+
+
+def test_macos_jxa_fetch_without_image_writes_no_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def idle_osascript(*_args: object, **_kwargs: object) -> object:
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(image_paste, "get_platform", lambda: SimpleNamespace(is_macos=True, is_windows=False))
+    monkeypatch.setattr(image_paste.subprocess, "run", idle_osascript)
+    directory = tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR
+
+    assert save_clipboard_image_to_file(directory) is None
+    assert not list(directory.glob(".clipboard-grab-*.tmp"))
+
+
+def test_macos_jxa_script_prefers_png_and_escapes_destination() -> None:
+    script = image_paste._macos_jxa_fetch_script("/tmp/some 'dir'/grab.tmp")
+
+    assert script.index("public.png") < script.index("public.tiff")
+    # JXA does not bridge the pasteboard's NSString elements to JS strings;
+    # only containsObject matches (verified against a real pasteboard).
+    assert "pasteboard.types.containsObject(type)" in script
+    assert ".js.includes" not in script
+    assert "writeToFileAtomically('/tmp/some \\'dir\\'/grab.tmp', true)" in script
+
+
+def test_windows_clipboard_grab_gives_up_after_backoff_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def busy_clipboard() -> Image.Image:
+        nonlocal calls
+        calls += 1
+        raise OSError("clipboard held by the snipping tool")
+
+    monkeypatch.setattr(image_paste, "get_platform", lambda: SimpleNamespace(is_macos=False, is_windows=True))
+    monkeypatch.setattr("PIL.ImageGrab.grabclipboard", busy_clipboard)
+    monkeypatch.setattr(image_paste.time, "sleep", lambda _delay: None)
+
+    assert save_clipboard_image_to_file(tmp_path) is None
+    assert calls == len(image_paste._WINDOWS_CLIPBOARD_GRAB_DELAYS_SECONDS) + 1
 
 
 def test_clipboard_image_save_failure_is_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -463,9 +532,11 @@ async def test_chat_input_paste_action_and_shift_insert_convert_os_clipboard_ima
                 text_area.action_paste()
             else:
                 await pilot.press(paste_key)
-        await pilot.pause()
-
-        assert input_bar.value == _expected_mention(image)
+            await wait_for(
+                lambda: input_bar.value == _expected_mention(image),
+                pilot=pilot,
+                description="clipboard image path pasted as a mention",
+            )
 
 
 @pytest.mark.asyncio
@@ -479,7 +550,7 @@ async def test_chat_input_shift_insert_in_browser_uses_only_session_clipboard(
     def fail_server_clipboard_read() -> str:
         raise AssertionError("server clipboard must stay isolated from browser sessions")
 
-    def fail_server_image_read() -> object:
+    def fail_server_image_read(_directory: Path) -> object:
         raise AssertionError("server image clipboard must stay isolated from browser sessions")
 
     monkeypatch.setenv("TEXTUAL_DRIVER", "textual.drivers.web_driver:WebDriver")
@@ -496,9 +567,12 @@ async def test_chat_input_shift_insert_in_browser_uses_only_session_clipboard(
         await pilot.pause()
 
         await pilot.press("shift+insert")
-        await pilot.pause()
+        await wait_for(
+            lambda: input_bar.value == "browser-session-text",
+            pilot=pilot,
+            description="browser session clipboard text pasted",
+        )
 
-        assert input_bar.value == "browser-session-text"
         assert not clipboard_dir.exists()
 
 
@@ -524,9 +598,12 @@ async def test_chat_input_action_paste_saves_clipboard_bitmap(
             lambda directory: seen_dirs.append(directory) or image,
         )
         text_area.action_paste()
-        await pilot.pause()
+        await wait_for(
+            lambda: input_bar.value == _expected_mention(image),
+            pilot=pilot,
+            description="clipboard bitmap saved and inserted as a mention",
+        )
 
-        assert input_bar.value == _expected_mention(image)
         assert seen_dirs == [clipboard_dir]
 
 
@@ -553,9 +630,11 @@ async def test_chat_input_action_paste_inserts_clipboard_path_when_image_detecti
             "chrys.app.tui.widgets.chrome.input_bar.convert_pasted_image_paths_to_mentions", fail_convert
         )
         text_area.action_paste()
-        await pilot.pause()
-
-        assert input_bar.value == str(image)
+        await wait_for(
+            lambda: input_bar.value == str(image),
+            pilot=pilot,
+            description="clipboard image path inserted unchanged when mention conversion fails",
+        )
 
 
 @pytest.mark.asyncio
@@ -579,9 +658,12 @@ async def test_chat_input_empty_paste_event_saves_clipboard_bitmap(
             lambda directory: seen_dirs.append(directory) or image,
         )
         await text_area._on_paste(Paste(""))
-        await pilot.pause()
+        await wait_for(
+            lambda: input_bar.value == _expected_mention(image),
+            pilot=pilot,
+            description="clipboard bitmap saved from an empty paste event",
+        )
 
-        assert input_bar.value == _expected_mention(image)
         assert seen_dirs == [clipboard_dir]
 
 
@@ -607,6 +689,11 @@ async def test_chat_input_empty_paste_without_bitmap_does_not_reprobe_in_screen_
         )
         event = Paste("")
         await text_area._on_paste(event)
+        await wait_for(
+            lambda: not text_area._clipboard_paste_in_flight,
+            pilot=pilot,
+            description="clipboard grab settled before the screen fallback runs",
+        )
         app.main_screen.on_paste(event)
         await pilot.pause()
 
@@ -614,6 +701,172 @@ async def test_chat_input_empty_paste_without_bitmap_does_not_reprobe_in_screen_
         assert calls == [clipboard_dir]
         assert event._no_default_action is True
         assert event._stop_propagation is True
+
+
+@pytest.mark.asyncio
+async def test_chat_input_action_paste_falls_back_to_stale_text_when_grab_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed bitmap grab still pastes the last copied text — preserved fallback semantics."""
+    clipboard_dir = tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR
+
+    async with _InputBarApp().run_test() as pilot:
+        input_bar = pilot.app.query_one(InputBar)
+        input_bar.set_clipboard_image_dir(clipboard_dir)
+        text_area = input_bar.query_one("#chat-input", _ChatTextArea)
+        text_area.focus()
+        await wait_for(lambda: text_area.has_focus, pilot=pilot, description="control focus before interaction")
+        pilot.app.copy_to_clipboard("stale copied text")
+        await pilot.pause()
+
+        monkeypatch.setattr("chrys.app.tui.widgets.chrome.input_bar.save_clipboard_image_to_file", lambda _dir: None)
+        with patch("chrys.app.tui.clipboard.platform_helpers.clipboard_paste", return_value=""):
+            text_area.action_paste()
+            await wait_for(
+                lambda: input_bar.value == "stale copied text",
+                pilot=pilot,
+                description="stale in-app clipboard text pasted after the grab failed",
+            )
+
+
+@pytest.mark.asyncio
+async def test_chat_input_grab_does_not_block_typing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = _write_image(tmp_path / "late bitmap.png")
+    clipboard_dir = tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR
+    release = threading.Event()
+
+    def slow_grab(_directory: Path | None) -> Path | None:
+        release.wait(timeout=30)
+        return image
+
+    async with _InputBarApp().run_test() as pilot:
+        input_bar = pilot.app.query_one(InputBar)
+        input_bar.set_clipboard_image_dir(clipboard_dir)
+        text_area = input_bar.query_one("#chat-input", _ChatTextArea)
+        text_area.focus()
+        await wait_for(lambda: text_area.has_focus, pilot=pilot, description="control focus before interaction")
+
+        monkeypatch.setattr("chrys.app.tui.widgets.chrome.input_bar.save_clipboard_image_to_file", slow_grab)
+        text_area.action_paste()
+        await pilot.press("a")
+        assert input_bar.value == "a"
+
+        release.set()
+        await wait_for(
+            lambda: input_bar.value == f"{_expected_mention(image)}a",
+            pilot=pilot,
+            description="mention inserted at the captured anchor after the grab finished",
+        )
+
+
+@pytest.mark.asyncio
+async def test_chat_input_grab_inserts_at_anchor_with_space_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = _write_image(tmp_path / "anchored bitmap.png")
+    clipboard_dir = tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR
+    release = threading.Event()
+
+    def slow_grab(_directory: Path | None) -> Path | None:
+        release.wait(timeout=30)
+        return image
+
+    async with _InputBarApp().run_test() as pilot:
+        input_bar = pilot.app.query_one(InputBar)
+        input_bar.set_clipboard_image_dir(clipboard_dir)
+        text_area = input_bar.query_one("#chat-input", _ChatTextArea)
+        input_bar.value = "look at"
+        text_area.focus()
+        text_area.move_cursor((0, len("look at")))
+        await pilot.pause()
+
+        monkeypatch.setattr("chrys.app.tui.widgets.chrome.input_bar.save_clipboard_image_to_file", slow_grab)
+        text_area.action_paste()
+        await pilot.press("!")
+        assert input_bar.value == "look at!"
+
+        release.set()
+        await wait_for(
+            lambda: input_bar.value == f"look at {_expected_mention(image)}!",
+            pilot=pilot,
+            description="mention inserted between the anchor and text typed during the grab",
+        )
+
+
+@pytest.mark.asyncio
+async def test_chat_input_rapid_paste_starts_single_grab(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clipboard_dir = tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR
+    release = threading.Event()
+    calls: list[Path | None] = []
+
+    def slow_grab(directory: Path | None) -> Path | None:
+        calls.append(directory)
+        release.wait(timeout=30)
+        return None
+
+    async with _InputBarApp().run_test() as pilot:
+        input_bar = pilot.app.query_one(InputBar)
+        input_bar.set_clipboard_image_dir(clipboard_dir)
+        text_area = input_bar.query_one("#chat-input", _ChatTextArea)
+        text_area.focus()
+        await wait_for(lambda: text_area.has_focus, pilot=pilot, description="control focus before interaction")
+
+        monkeypatch.setattr("chrys.app.tui.widgets.chrome.input_bar.save_clipboard_image_to_file", slow_grab)
+        with patch("chrys.app.tui.clipboard.platform_helpers.clipboard_paste", return_value=""):
+            text_area.action_paste()
+            await wait_for(lambda: len(calls) == 1, pilot=pilot, description="first clipboard grab started")
+            text_area.action_paste()
+            assert len(calls) == 1
+
+            release.set()
+            await wait_for(
+                lambda: not text_area._clipboard_paste_in_flight,
+                pilot=pilot,
+                description="single clipboard grab settled",
+            )
+            assert calls == [clipboard_dir]
+
+
+@pytest.mark.asyncio
+async def test_chat_input_grab_result_is_dropped_when_input_turns_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = _write_image(tmp_path / "read only bitmap.png")
+    clipboard_dir = tmp_path / "session" / image_paste.CLIPBOARD_IMAGE_SESSION_SUBDIR
+    release = threading.Event()
+
+    def slow_grab(_directory: Path | None) -> Path | None:
+        release.wait(timeout=30)
+        return image
+
+    async with _InputBarApp().run_test() as pilot:
+        input_bar = pilot.app.query_one(InputBar)
+        input_bar.set_clipboard_image_dir(clipboard_dir)
+        text_area = input_bar.query_one("#chat-input", _ChatTextArea)
+        text_area.focus()
+        await wait_for(lambda: text_area.has_focus, pilot=pilot, description="control focus before interaction")
+
+        monkeypatch.setattr("chrys.app.tui.widgets.chrome.input_bar.save_clipboard_image_to_file", slow_grab)
+        with patch("chrys.app.tui.clipboard.platform_helpers.clipboard_paste", return_value=""):
+            text_area.action_paste()
+            text_area.read_only = True
+            release.set()
+            await wait_for(
+                lambda: not text_area._clipboard_paste_in_flight,
+                pilot=pilot,
+                description="clipboard grab settled against a read-only input",
+            )
+
+        assert input_bar.value == ""
 
 
 @pytest.mark.asyncio
@@ -697,9 +950,12 @@ async def test_main_screen_empty_paste_fallback_routes_clipboard_bitmap_to_input
         monkeypatch.setattr("chrys.app.tui.widgets.chrome.input_bar.save_clipboard_image_to_file", lambda _dir: image)
         event = Paste("")
         app.main_screen.on_paste(event)
-        await pilot.pause()
+        await wait_for(
+            lambda: input_bar.value == _expected_mention(image),
+            pilot=pilot,
+            description="screen-routed clipboard bitmap inserted as a mention",
+        )
 
-        assert input_bar.value == _expected_mention(image)
         assert event._no_default_action is True
         assert event._stop_propagation is True
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from secrets import token_hex
@@ -209,6 +210,7 @@ class _ChatTextArea(EnhancedTextArea):
     _history_draft: str | None
     _instance_id: str
     _right_placeholder: str
+    _clipboard_paste_in_flight: bool = False
 
     class Submitted(Message):
         """Posted when the user presses Enter."""
@@ -383,22 +385,84 @@ class _ChatTextArea(EnhancedTextArea):
         """Set the session-scoped directory used for clipboard image attachments."""
         self._clipboard_image_dir = Path(directory) if directory is not None else None
 
-    def _prepare_clipboard_image_paste_text(self) -> str | None:
-        """Return paste text for a bitmap image currently on the platform clipboard."""
-        # TODO(perf): Clipboard capture may run osascript/PIL/file I/O. Move
-        # this boundary to a worker when paste completion can remain ordered
-        # with subsequent input events.
-        path = save_clipboard_image_to_file(self._clipboard_image_dir)
-        if path is None:
-            return None
-        try:
-            return self._prepare_image_path_paste_text(str(path)) or str(path)
-        except OSError, RuntimeError, ValueError:
-            return str(path)
+    def start_clipboard_image_paste(
+        self,
+        *,
+        fallback_to_text: bool,
+        on_inserted: Callable[[], None] | None = None,
+    ) -> bool:
+        """Start reading the clipboard bitmap off the UI thread.
 
-    def _insert_paste_text(self, text: str) -> bool:
-        text = self._sanitize_paste_text(text)
-        if result := self._replace_via_keyboard(text, *self.selection):
+        Returns ``True`` when a grab is now in flight (or already was). The
+        anchor is captured here, before the worker runs, so text typed while
+        the grab runs keeps its place around the inserted mention.
+        """
+        if self.read_only or not self.is_mounted:
+            return False
+        if self._clipboard_paste_in_flight:
+            return True
+        anchor, needs_space = self._clipboard_paste_anchor()
+        self._clipboard_paste_in_flight = True
+        self.run_worker(
+            self._clipboard_paste_flow(
+                anchor=anchor,
+                needs_space=needs_space,
+                fallback_to_text=fallback_to_text,
+                on_inserted=on_inserted,
+            ),
+            exit_on_error=False,
+            name="clipboard-image-paste",
+        )
+        return True
+
+    async def _clipboard_paste_flow(
+        self,
+        *,
+        anchor: int,
+        needs_space: bool,
+        fallback_to_text: bool,
+        on_inserted: Callable[[], None] | None,
+    ) -> None:
+        """Save the clipboard bitmap in a worker thread and insert its mention."""
+        inserted = False
+        try:
+            path = await asyncio.to_thread(save_clipboard_image_to_file, self._clipboard_image_dir)
+            if path is not None and self.is_mounted and not self.read_only:
+                inserted = self._insert_clipboard_image_at(anchor, needs_space, path)
+        except Exception:
+            inserted = False
+        finally:
+            self._clipboard_paste_in_flight = False
+        if inserted:
+            if on_inserted is not None:
+                on_inserted()
+        elif fallback_to_text:
+            super().action_paste()
+
+    def _clipboard_paste_anchor(self) -> tuple[int, bool]:
+        """Capture the cursor index and whether a space separates it from the text before it."""
+        start, _end = self.selection
+        index = self.document.get_index_from_location(start)
+        needs_space = index > 0 and not self.text[index - 1].isspace()
+        return index, needs_space
+
+    def _clipboard_mention_text(self, path: Path, *, needs_space: bool) -> str:
+        """Return the ``@`` mention for a saved clipboard image, or its plain path."""
+        path_text = str(path)
+        try:
+            converted = convert_pasted_image_paths_to_mentions(path_text, cwd=Path(self._paste_cwd))
+        except OSError, RuntimeError, ValueError:
+            return path_text
+        if converted == path_text:
+            return path_text
+        return f" {converted}" if needs_space else converted
+
+    def _insert_clipboard_image_at(self, anchor: int, needs_space: bool, path: Path) -> bool:
+        """Insert the saved clipboard image at the captured anchor, clamped to the document."""
+        text = self._sanitize_paste_text(self._clipboard_mention_text(path, needs_space=needs_space))
+        index = min(anchor, len(self.text))
+        location = self.document.get_location_from_index(index)
+        if result := self._replace_via_keyboard(text, location, location):
             self.move_cursor(result.end_location)
             return True
         return False
@@ -407,23 +471,16 @@ class _ChatTextArea(EnhancedTextArea):
         """Handle text paste events and terminal image-clipboard no-ops."""
         if not event.text:
             event.prevent_default()
-            if not self.read_only:
-                self._insert_clipboard_image_paste()
+            self.start_clipboard_image_paste(fallback_to_text=False)
             event.stop()
             return
         await super()._on_paste(event)
 
-    def _insert_clipboard_image_paste(self) -> bool:
-        text = self._prepare_clipboard_image_paste_text()
-        if not text:
-            return False
-        return self._insert_paste_text(text)
-
     def action_paste(self) -> None:
-        """Paste text or a platform clipboard image into the chat input."""
+        """Paste a platform clipboard image, falling back to text when no image was read."""
         if self.read_only:
             return
-        if not self._insert_clipboard_image_paste():
+        if not self.start_clipboard_image_paste(fallback_to_text=True):
             super().action_paste()
 
     async def _on_key(self, event) -> None:
@@ -1296,11 +1353,14 @@ class InputBar(Widget):
         ta = self.query_one("#chat-input", _ChatTextArea)
         if ta.read_only:
             return False
-        if not ta._insert_clipboard_image_paste():
-            return False
+        return ta.start_clipboard_image_paste(
+            fallback_to_text=False,
+            on_inserted=self._after_clipboard_image_insert,
+        )
+
+    def _after_clipboard_image_insert(self) -> None:
         self.focus_input()
         self._refresh_interaction_state()
-        return True
 
     def replace_trigger_text(self, trigger: str, replacement: str) -> None:
         """Replace the trigger token (e.g. ``/query`` or ``@query``) with *replacement*.
