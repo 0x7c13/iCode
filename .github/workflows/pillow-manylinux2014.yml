@@ -6,9 +6,11 @@ name: Pillow manylinux2014 wheels
 # offline distribution bundles with Pillow's own recipe — its cibuildwheel
 # config, native dependency script and test suite — inside the manylinux2014
 # image. The Pillow, pillow-depends and test-images repositories and
-# cibuildwheel are pinned by commit, the build images by digest, and the native
-# library sources Pillow's dependency script would download by SHA-256; the
-# build fails if the script downloads any source archive. libavif's build
+# cibuildwheel are pinned by commit and the build images by digest. Every
+# Linux dependency archive comes from the pinned pillow-depends checkout and
+# is checked against the SHA-256 manifest below before building. The post-build
+# manifest comparison rejects downloaded or changed archives; it does not
+# independently authenticate their upstream origin. libavif's build
 # clones the libraries it bundles at the revisions libavif names: libyuv by
 # commit, and aom, dav1d and libwebp (for libsharpyuv) by tag. The rest is
 # fetched unpinned, as in Pillow's own wheel builds: from PyPI cibuildwheel's
@@ -16,12 +18,21 @@ name: Pillow manylinux2014 wheels
 # ninja; from the image's yum repositories rsync for the dependency script and
 # fribidi for the tests; and the libraqm release files Pillow's SBOM script
 # compares its vendored copy with.
+# libjpeg-turbo 3.2.0 also receives the pinned upstream libspng fix below:
+# its unused gamma code otherwise fails to link on glibc 2.17. The committed
+# patch is checked out at this run's revision, SHA-256 checked and recorded in
+# the embedded SBOM and release notes.
 #
 # A run uploads the wheels as artifacts. With "publish" set, a run from the
 # default branch also releases them, with their SHA-256 sums, as a pre-release
 # of this repository tagged pillow-<version>-manylinux2014.<build>, for the
 # offline distribution to download by URL and hash. A published tag is never
 # replaced: rebuilding the same version takes the next build number.
+# The release also carries offline_wheel_overrides.txt: copy its two rows into
+# scripts/offline_wheel_overrides.txt together with the dependency pin bump.
+# Every build, including a dry run, uploads its checksums and override row and
+# shows the candidate release URL in the job summary. Those URLs are usable
+# only after that run publishes; a later rebuild can produce different hashes.
 #
 # This repository is synced from GitCode, and the sync deletes tags GitCode
 # lacks: the release then reverts to a draft and its wheels stop downloading.
@@ -55,57 +66,92 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PILLOW_VERSION: "12.3.0"
-  PILLOW_COMMIT: bb1d8e8ab8d29048624d96e3ee53cecf7c13d13d
+  PILLOW_VERSION: "13.0.0"
+  PILLOW_COMMIT: 293218ad059d994baf1777d882911bed6a49704a
   # Pillow's build and test scripts download each repository's main branch;
-  # these are the main commits current at the 12.3.0 release.
-  PILLOW_DEPENDS_COMMIT: 8aa03253ae251784d8cbee25d783fefde7589a70
-  TEST_IMAGES_COMMIT: 7077675d2cda485d63de4aefe0fefbf6f655c5a0
+  # these are the main commits current at the 13.0.0 release.
+  PILLOW_DEPENDS_COMMIT: 93950a8f9ada1165a4ab8c719326d5017e3f6c72
+  TEST_IMAGES_COMMIT: 073ab5ff1895abf8cf5c8d797c1066ed394ce207
+  # Upstream source: https://github.com/libjpeg-turbo/libjpeg-turbo/commit/0da22762971551462cfad8f0b11cfb037472a4e8
+  # Store the exact -p0 patch in Git instead of relying on GitHub's generated
+  # commit.patch response retaining the same bytes across rebuilds.
+  JPEGTURBO_PATCH_URL: ${{ github.server_url }}/${{ github.repository }}/raw/${{ github.sha }}/.github/patches/libjpeg-turbo-3.2.0.tar.gz.patch
+  JPEGTURBO_PATCH_SHA256: e35c530d6a3dbcbb3900f7b4c20fe6a6e2a065007aa53d3406b76641f0d5d92e
   GLIBC_FLOOR: "2.17"
+  PYTHON_TAG: cp314
+  WHEEL_PLATFORM_PATTERN: '(?:manylinux2014_{machine}|manylinux_2_17_{machine})'
+  WHEEL_FILENAME_PATTERN: 'pillow-{version}-{python_tag}-{python_tag}-{platform}(?:\.{platform})*\.whl'
   FORCE_COLOR: 1
 
 jobs:
+  prepare:
+    name: Check release coordinates
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      python_version: ${{ steps.release.outputs.python_version }}
+    steps:
+      - name: Check build number and release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_NUMBER: ${{ inputs.build }}
+          PUBLISH: ${{ inputs.publish }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          # Generate the tag once for both builds and publication. Dry runs
+          # must also use an unused tag, so their hashes cannot be paired with
+          # URLs already serving a different build.
+          if [[ ! "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::build must be a positive integer, got '$BUILD_NUMBER'" >&2
+            exit 1
+          fi
+          if [[ ! "$PYTHON_TAG" =~ ^cp([0-9])([0-9]+)$ ]]; then
+            echo "::error::expected a CPython tag such as cp314, got '$PYTHON_TAG'" >&2
+            exit 1
+          fi
+          python_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          if [ "$PUBLISH" = "true" ] && [ "$GITHUB_REF" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+            echo "::error::only a run from the ${DEFAULT_BRANCH} branch publishes; this one is on ${GITHUB_REF}" >&2
+            exit 1
+          fi
+          tag="pillow-${PILLOW_VERSION}-manylinux2014.${BUILD_NUMBER}"
+          # This read-only job sees tags and published releases. The publish
+          # job separately lists releases with write access to include drafts.
+          for resource in "git/ref/tags/${tag}" "releases/tags/${tag}"; do
+            if lookup=$(gh api "repos/${GITHUB_REPOSITORY}/${resource}" 2>&1); then
+              echo "::error::tag or release ${tag} already exists; use the next build number" >&2
+              exit 1
+            elif [[ "$lookup" != *"(HTTP 404)"* ]]; then
+              lookup=${lookup//'%'/'%25'}
+              lookup=${lookup//$'\r'/'%0D'}
+              lookup=${lookup//$'\n'/'%0A'}
+              echo "::error::could not check ${resource}: ${lookup}" >&2
+              exit 1
+            fi
+          done
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "python_version=${python_version}" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.arch }}
+    needs: prepare
     runs-on: ${{ matrix.os }}
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # These images include the certifi 2026.10.23 bundle and manylinux's
+          # EOL-system trust-store replacement (pypa/manylinux@c6afd89).
           - arch: x86_64
             os: ubuntu-24.04
-            image: quay.io/pypa/manylinux2014_x86_64@sha256:5e3012db7af44490157351ba6726fd92e8dba9b421ea819ac7925b4478ad3f17 # 2026.06.04-1
+            image: quay.io/pypa/manylinux2014_x86_64@sha256:692d8cc20cda555d8d8f3cd45dfa5bd499c543407425228c2edb54266715a1de # 2026.10.25-1
           - arch: aarch64
             os: ubuntu-24.04-arm
-            image: quay.io/pypa/manylinux2014_aarch64@sha256:88be65bf6654ffb068b2c07fb321ce1a128ccc092b62bbb79027217dbdec12ae # 2026.06.04-1
+            image: quay.io/pypa/manylinux2014_aarch64@sha256:91bd6b14c15fe85c75118bc69dcbc7cb885abdb2436b5323c1ac29fcb1a81623 # 2026.10.25-1
     steps:
-      - name: Check release tag
-        if: inputs.publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUILD_NUMBER: ${{ inputs.build }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          # Fail before the build, not after it: a publishing run comes from
-          # the default branch (the full ref, so a tag of the same name never
-          # passes) and names a new tag.
-          if [ "$GITHUB_REF" != "refs/heads/${DEFAULT_BRANCH}" ]; then
-            echo "::error::only a run from the ${DEFAULT_BRANCH} branch publishes; this one is on ${GITHUB_REF}"
-            exit 1
-          fi
-          if [[ ! "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::build must be a positive integer, got '$BUILD_NUMBER'"
-            exit 1
-          fi
-          tag="pillow-${PILLOW_VERSION}-manylinux2014.${BUILD_NUMBER}"
-          if lookup=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" 2>&1); then
-            echo "::error::tag ${tag} already exists; rebuild with the next build number"
-            exit 1
-          elif [[ "$lookup" != *"(HTTP 404)"* ]]; then
-            echo "::error::could not check whether tag ${tag} exists: ${lookup}"
-            exit 1
-          fi
-
       - name: Check out Pillow
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -125,9 +171,33 @@ jobs:
             ! grep -qxF 'ARCHIVE_SDIR=pillow-depends-main' "$script"; then
             grep -n before-all pyproject.toml || true
             grep -n -E 'WORKDIR=|ARCHIVE_SDIR=' "$script" || true
-            echo "::error::Pillow's before-all or its source archive directory changed; update the pillow-depends checkout path, Stage pinned dependency sources and CIBW_BEFORE_ALL_LINUX"
+            echo "::error::Pillow's before-all or source archive directory changed; update the pillow-depends checkout path, Check pinned dependency sources and CIBW_BEFORE_ALL_LINUX. Missing archives require a newer pinned pillow-depends checkout or an explicit SHA-256-checked copy/download step." >&2
             exit 1
           fi
+
+      - name: Check out committed build patches
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # The workspace root is Pillow; fetch our patch from the same
+          # immutable revision as this workflow, including on branch dry runs.
+          ref: ${{ github.sha }}
+          path: build/workflow-source
+          sparse-checkout: .github/patches
+          persist-credentials: false
+
+      - name: Stage libjpeg-turbo's upstream glibc compatibility fix
+        run: |
+          # multibuild's fetch_unpack applies patches/<archive>.patch with
+          # -p0. The committed file is already in that form; keep its bytes
+          # unchanged so reviewers and the wheel's SBOM see the applied patch.
+          if [ "$(python3 -I -c 'import json; print(json.load(open(".github/dependencies.json"))["jpegturbo"])')" != "3.2.0" ] ||
+            [ -e patches/libjpeg-turbo-3.2.0.tar.gz.patch ]; then
+            echo "::error::libjpeg-turbo or its patches changed; review whether the upstream libspng fix is still needed" >&2
+            exit 1
+          fi
+          patch_source=build/workflow-source/.github/patches/libjpeg-turbo-3.2.0.tar.gz.patch
+          echo "$JPEGTURBO_PATCH_SHA256  $patch_source" | sha256sum --strict -c -
+          cp "$patch_source" patches/libjpeg-turbo-3.2.0.tar.gz.patch
 
       - name: Check out Pillow's dependency sources
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -138,32 +208,154 @@ jobs:
           path: build/pillow-depends-main
           persist-credentials: false
 
-      - name: Stage pinned dependency sources
+      - name: Check pinned dependency sources
         working-directory: build/pillow-depends-main
         run: |
-          # wheels-dependencies.sh takes each source archive from this
-          # directory and downloads, unchecked, only the ones it lacks. Supply
-          # those here under the file names the script looks for, each checked
-          # against its SHA-256: a copy where pillow-depends has the archive
-          # under another name, a download otherwise. After a Pillow bump the
-          # build check names any archive still missing.
-          while read -r sha256 name source; do
-            case $source in
-              https://*) curl -fsSL --retry 3 -o "$name" "$source" ;;
-              *) cp -- "$source" "$name" ;;
-            esac
-            echo "$sha256  $name" | sha256sum --strict -c -
-          done <<'EOF'
-          f9c65aa9c852eb8255b636fd9f07ce1c406f061ec19a2e7d508b318ca0c907d1 2.3.3.tar.gz zlib-ng-2.3.3.tar.gz
+          # All 17 archives used by the Linux recipe, including nasm on x86_64.
+          # SHA-256 values were measured from PILLOW_DEPENDS_COMMIT above; the
+          # URL column records each upstream fetch location in Pillow's pinned
+          # wheels-dependencies.sh or its multibuild submodule. It does not claim
+          # independent upstream verification of every hash. HarfBuzz 14.5.0
+          # was also checked against its upstream GitHub release asset digest.
+          # A missing archive needs a newer pinned pillow-depends checkout or
+          # an explicit SHA-256-checked copy/download step before this check.
+          cat > ../source-pins.txt <<'EOF'
+          0014c7886930454fe8bd4228665b51af55eeae560ea135c9c4cd33f55b2591d9 xz-5.8.4.tar.gz https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.gz
+          f9c65aa9c852eb8255b636fd9f07ce1c406f061ec19a2e7d508b318ca0c907d1 2.3.3.tar.gz https://github.com/zlib-ng/zlib-ng/archive/2.3.3.tar.gz
+          392d3c9690f8c8202a68fdb89c16fd55159ab8d65000a6da213f4a1576e97a16 xcb-proto-1.17.0.tar.gz https://xorg.freedesktop.org/archive/individual/proto/xcb-proto-1.17.0.tar.gz
+          2c69287424c9e2128cb47ffe92171e10417041ec2963bceafb65cb3fcf8f0b85 libxcb-1.17.0.tar.gz https://www.x.org/releases/individual/lib/libxcb-1.17.0.tar.gz
+          6f30092cef9fb839779646608f4ee14ae3cbac989c47fa05e841b0841f09878e libjpeg-turbo-3.2.0.tar.gz https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.0/libjpeg-turbo-3.2.0.tar.gz
           eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3 zstd-1.5.7.tar.gz https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+          672bd7d10aee4606171afb864f3570b83340f6a33e2c186dc0512f7145ffdf6a tiff-4.7.2.tar.gz https://download.osgeo.org/libtiff/tiff-4.7.2.tar.gz
+          f504227b2f529e658d41629075f0503b38d67d790af345f34eba4af60c6a5998 nasm-3.02.tar.gz https://www.nasm.us/pub/nasm/releasebuilds/3.02/nasm-3.02.tar.gz
           2b645287340ba5a631d268b551dc2d72bd73ac33335962dd36dcdb6d8366921d libavif-1.4.2.tar.gz https://github.com/AOMediaCodec/libavif/archive/refs/tags/v1.4.2.tar.gz
+          a9d4df463d36a6e5f9c29bd6f4967312d17e996c1854f3511f833924eb1993cf libpng-1.6.58.tar.gz https://download.sourceforge.net/libpng/libpng-1.6.58.tar.gz
           bfc54f7bab59fbc921012014a8032e4cba4abd46db47d46b76416a8c0b2815c8 lcms2-2.19.1.tar.gz https://downloads.sourceforge.net/project/lcms/lcms/2.19.1/lcms2-2.19.1.tar.gz
-          a695fbe19c0165f295a8531b1e4e855cd94d0875d2f88ec4b61080677e27188a v2.5.4.tar.gz openjpeg-2.5.4.tar.gz
-          a54a5d8e9380a41fbb762ce367bcbf7704792dfca0d93f1bbca86c5a57902e0e harfbuzz-14.2.1.tar.xz https://github.com/harfbuzz/harfbuzz/releases/download/14.2.1/harfbuzz-14.2.1.tar.xz
+          a695fbe19c0165f295a8531b1e4e855cd94d0875d2f88ec4b61080677e27188a v2.5.4.tar.gz https://github.com/uclouvain/openjpeg/archive/v2.5.4.tar.gz
+          e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564 libwebp-1.6.0.tar.gz https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz
+          816c96e8e8f193b40151dad7e8ff37b1221d019dbcb9c35cd3fadbfe6477dfec brotli-1.2.0.tar.gz https://github.com/google/brotli/archive/v1.2.0.tar.gz
+          ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269 bzip2-1.0.8.tar.gz https://mirrors.kernel.org/sourceware/bzip2/bzip2-1.0.8.tar.gz
+          e61b31ab26358b946e767ed7eb7f4bb2e507da1cfefeb7a8861ace7fd5c899a1 freetype-2.14.3.tar.gz https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.gz
+          b7132e148358a45185c9feafd049dbaf243649d3c44414b3534d9c95d18592b9 harfbuzz-14.5.0.tar.xz https://github.com/harfbuzz/harfbuzz/releases/download/14.5.0/harfbuzz-14.5.0.tar.xz
           EOF
-          # The build checks the directory against this manifest afterwards.
-          find . -maxdepth 1 ! -type d -printf '%P\n' | LC_ALL=C sort \
-            | xargs -d '\n' sha256sum -- > ../pinned-sources.sha256
+          cat > ../check_sources.py <<'PYCODE'
+          import hashlib
+          import json
+          import re
+          import stat
+          import sys
+          from pathlib import Path
+
+          def snapshot():
+              entries = {}
+              for path in sorted(Path.cwd().iterdir()):
+                  if path.is_symlink():
+                      entries[path.name] = {"symlink": str(path.readlink())}
+                  elif path.is_file():
+                      with path.open("rb") as stream:
+                          entries[path.name] = hashlib.file_digest(stream, "sha256").hexdigest()
+                  elif path.is_dir():
+                      entries[path.name] = {"directory": True}
+                  else:
+                      entries[path.name] = {"special": stat.S_IFMT(path.lstat().st_mode)}
+              return entries
+
+          # Both phases use the same enumeration, symlink handling and hash
+          # function. JSON preserves unusual names without shell escaping.
+          actual = snapshot()
+          snapshot_path = Path("../pinned-sources.json")
+          if sys.argv[1:] == ["--after-build"]:
+              try:
+                  before = json.loads(snapshot_path.read_text(encoding="utf-8"))
+              except (OSError, ValueError) as exc:
+                  sys.exit(f"::error::cannot read source baseline {snapshot_path}: {exc}")
+              if not isinstance(before, dict):
+                  sys.exit(f"::error::invalid source baseline {snapshot_path}: expected an object")
+              changed = sorted(name for name in before.keys() | actual.keys() if before.get(name) != actual.get(name))
+              if changed:
+                  sys.exit(
+                      "::error::source archive directory changed: " + ", ".join(repr(name) for name in changed)
+                      + "; update PILLOW_DEPENDS_COMMIT and the source manifest, or add a SHA-256-checked copy/download step before Check pinned dependency sources"
+                  )
+              sys.exit(0)
+          if sys.argv[1:]:
+              sys.exit("::error::unsupported source-check arguments")
+
+          versions = json.loads(Path("../../.github/dependencies.json").read_text(encoding="utf-8"))
+          templates = {
+              "brotli": "brotli-{}.tar.gz",
+              "bzip2": "bzip2-{}.tar.gz",
+              "freetype": "freetype-{}.tar.gz",
+              "harfbuzz": "harfbuzz-{}.tar.xz",
+              "jpegturbo": "libjpeg-turbo-{}.tar.gz",
+              "lcms2": "lcms2-{}.tar.gz",
+              "libavif": "libavif-{}.tar.gz",
+              "libpng": "libpng-{}.tar.gz",
+              "libwebp": "libwebp-{}.tar.gz",
+              "libxcb": "libxcb-{}.tar.gz",
+              "openjpeg": "v{}.tar.gz",
+              "tiff": "tiff-{}.tar.gz",
+              "xz": "xz-{}.tar.gz",
+              "zlib-ng": "{}.tar.gz",
+              "zstd": "zstd-{}.tar.gz",
+          }
+          errors = []
+          # FriBiDi is installed by yum for tests; libimagequant is disabled.
+          known = set(templates) | {"fribidi", "libimagequant"}
+          if set(versions) != known:
+              errors.append(f"review changed dependencies.json keys: {sorted(set(versions) ^ known)}")
+          expected = {template.format(versions[key]) for key, template in templates.items() if key in versions}
+          recipe = Path("../../.github/workflows/wheels-dependencies.sh").read_text(encoding="utf-8")
+          # Fail early if the recipe stops taking its version variables from
+          # this JSON file. A changed getter or assignment needs review.
+          getter = "_get_ver() { python3 -c \"import json; print(json.load(open('$VERSIONS_FILE'))['$1'])\"; }"
+          version_files = re.findall(r"^\s*VERSIONS_FILE=(.*)$", recipe, re.MULTILINE)
+          getters = re.findall(r"^_get_ver\(\).*", recipe, re.MULTILINE)
+          if version_files != ['"$PROJECTDIR/.github/dependencies.json"'] or getters != [getter]:
+              errors.append("review changed dependencies.json version getter in the build recipe")
+          for key in templates:
+              variable = key.upper().replace("-", "_") + "_VERSION"
+              assignments = re.findall(rf"^\s*{variable}=(.*)$", recipe, re.MULTILINE)
+              if assignments != [f"$(_get_ver {key})"]:
+                  errors.append(f"{variable} must read {key} from dependencies.json; review the recipe")
+          # These versions live in the recipe instead of dependencies.json.
+          for project in ("nasm", "xcb-proto"):
+              matches = re.findall(rf"^\s*build_simple {project} ([0-9]+(?:\.[0-9]+)*)\s", recipe, re.MULTILINE)
+              if len(matches) != 1:
+                  errors.append(f"expected one literal build_simple version for {project}; review the recipe")
+              else:
+                  expected.add(f"{project}-{matches[0]}.tar.gz")
+
+          pins = {}
+          for number, line in enumerate(Path("../source-pins.txt").read_text(encoding="utf-8").splitlines(), 1):
+              line = line.strip()
+              if not line or line.startswith("#"):
+                  continue
+              fields = line.split()
+              if len(fields) != 3:
+                  errors.append(f"source manifest line {number}: expected SHA-256, filename and URL")
+                  continue
+              sha256, name, source = fields
+              if name in pins or re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
+                  errors.append(f"duplicate archive or invalid SHA-256: {name}")
+              pins[name] = sha256
+              print(f"Checking {name} (upstream: {source})")
+          if expected - set(pins):
+              errors.append(f"archive manifest is missing required names: {sorted(expected - set(pins))}")
+          if set(pins) - expected:
+              errors.append(f"archive manifest contains stale names: {sorted(set(pins) - expected)}")
+
+          # Hash each file once before the build, reusing the measurements for
+          # both the explicit pins and the snapshot compared after building.
+          for name, sha256 in pins.items():
+              if actual.get(name) != sha256:
+                  errors.append(f"missing or changed source archive: {name}")
+          if errors:
+              errors.append("update PILLOW_DEPENDS_COMMIT and the manifest, or supply missing archives through an explicit SHA-256-checked copy/download step")
+              sys.exit("\n".join(f"::error::{error}" for error in errors))
+          snapshot_path.write_text(json.dumps(actual, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          PYCODE
+          python3 -I ../check_sources.py
 
       - name: Check out Pillow's test images
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -180,24 +372,21 @@ jobs:
           mv test-images-main/* Tests/images/
 
       - name: Build and test wheel
-        uses: pypa/cibuildwheel@f03ac7617d6cff873ccf24cc0d567ef5ba5a9e6d # v4.0.0
+        uses: pypa/cibuildwheel@b9e566a2b284570af229f6c2a33673410d0389a3 # v4.3.4
         env:
           CIBW_PLATFORM: linux
           CIBW_ARCHS: ${{ matrix.arch }}
-          CIBW_BUILD: cp314-manylinux_${{ matrix.arch }}
+          CIBW_BUILD: ${{ env.PYTHON_TAG }}-manylinux_${{ matrix.arch }}
           # Only the image for this leg's architecture is used.
           CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.image }}
           CIBW_MANYLINUX_AARCH64_IMAGE: ${{ matrix.image }}
-          CIBW_ENVIRONMENT_PASS_LINUX: FORCE_COLOR
+          CIBW_ENVIRONMENT_PASS_LINUX: FORCE_COLOR PYTHON_TAG
           # Pillow's before-all (as checked above), then fail if it downloaded
           # or changed a source archive instead of taking the pinned set.
           CIBW_BEFORE_ALL_LINUX: >-
             .github/workflows/wheels-dependencies.sh &&
             cd build/pillow-depends-main &&
-            if ! find . -maxdepth 1 ! -type d -printf '%P\n' | LC_ALL=C sort |
-            xargs -d '\n' sha256sum -- | diff ../pinned-sources.sha256 -; then
-            echo "::error::the dependency script downloaded or changed the source archives diff marks >; pin them in Stage pinned dependency sources";
-            exit 1; fi
+            "/opt/python/$PYTHON_TAG-$PYTHON_TAG/bin/python" -I ../check_sources.py --after-build
           # NumPy publishes no CPython 3.14 wheel for glibc 2.17 and its source
           # build needs GCC 10.3 (the image has 10.2.1). Pillow's NumPy tests
           # skip without it; the rest of the suite runs as upstream.
@@ -209,11 +398,32 @@ jobs:
         run: |
           mkdir sbom
           python3 .github/generate-sbom.py "sbom/pillow-${PILLOW_VERSION}.cdx.json"
+          python3 -I - <<'PYCODE'
+          import base64
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          path = Path(f"sbom/pillow-{os.environ['PILLOW_VERSION']}.cdx.json")
+          sbom = json.loads(path.read_text(encoding="utf-8"))
+          jpeg = [c for c in sbom["components"] if c["bom-ref"] == "pkg:generic/libjpeg"]
+          if len(jpeg) != 1 or jpeg[0]["version"] != "3.2.0" or "pedigree" in jpeg[0]:
+              sys.exit("::error::libjpeg-turbo SBOM entry changed; review the compatibility patch pedigree")
+          jpeg[0]["pedigree"] = {
+              "patches": [{"type": "cherry-pick", "diff": {"text": {
+                  "content": base64.b64encode(Path("patches/libjpeg-turbo-3.2.0.tar.gz.patch").read_bytes()).decode(),
+                  "encoding": "base64",
+              }, "url": os.environ["JPEGTURBO_PATCH_URL"]}}],
+              "notes": "Removed unused libspng gamma code to avoid a libm link failure on glibc 2.17.",
+          }
+          path.write_text(json.dumps(sbom, indent=2) + "\n", encoding="utf-8")
+          PYCODE
           python3 .github/embed-sbom.py wheelhouse sbom
 
       - name: Check glibc floor
         run: |
-          python3 - wheelhouse "$GLIBC_FLOOR" <<'PYCODE'
+          python3 -I - wheelhouse "$GLIBC_FLOOR" <<'PYCODE'
           import re
           import sys
           import zipfile
@@ -223,7 +433,7 @@ jobs:
           floor = tuple(int(part) for part in floor_text.split("."))
           wheels = sorted(wheelhouse.glob("*.whl"))
           if len(wheels) != 1:
-              sys.exit(f"expected exactly one wheel, found {[w.name for w in wheels]}")
+              sys.exit(f"::error::expected exactly one wheel, found {[w.name for w in wheels]}")
           worst, offenders, scanned = (0,), [], 0
           with zipfile.ZipFile(wheels[0]) as archive:
               for name in archive.namelist():
@@ -241,31 +451,76 @@ jobs:
                       offenders.append(f"GLIBC_{'.'.join(map(str, top))}  {name}")
           print(f"{wheels[0].name}: {scanned} ELF objects, highest GLIBC_{'.'.join(map(str, worst))}")
           if not scanned:
-              sys.exit("no ELF objects found in the wheel")
+              sys.exit("::error::no ELF objects found in the wheel")
           if offenders:
-              sys.exit("objects above the glibc floor:\n  " + "\n  ".join(offenders))
+              sys.exit("\n".join(f"::error::object above glibc {floor_text}: {offender}" for offender in offenders))
           PYCODE
 
-      - name: Record wheel hash
+      - name: Record wheel hash and candidate override
+        env:
+          WHEEL_ARCH: ${{ matrix.arch }}
         run: |
           cd wheelhouse
-          sha256sum -- *.whl | tee -a "$GITHUB_STEP_SUMMARY"
+          sha256sum -- *.whl > "SHA256SUMS-${WHEEL_ARCH}"
+          python3 -I - <<'PYCODE'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          machine = os.environ["WHEEL_ARCH"]
+          version = os.environ["PILLOW_VERSION"]
+          python_tag = os.environ["PYTHON_TAG"]
+          rows = Path(f"SHA256SUMS-{machine}").read_text(encoding="utf-8").splitlines()
+          if len(rows) != 1:
+              sys.exit(f"::error::expected one wheel for {machine}, found {len(rows)}")
+          sha256, wheel = rows[0].split(maxsplit=1)
+          # Read the actual filename; auditwheel may reorder or omit equivalent
+          # platform tags. Validate before upload, while this build owns it.
+          platform = os.environ["WHEEL_PLATFORM_PATTERN"].replace("{machine}", re.escape(machine))
+          pattern = (
+              os.environ["WHEEL_FILENAME_PATTERN"]
+              .replace("{version}", re.escape(version))
+              .replace("{python_tag}", re.escape(python_tag))
+              .replace("{platform}", platform)
+          )
+          if re.fullmatch(pattern, wheel) is None:
+              sys.exit(f"::error::unexpected wheel version, ABI or platform for {machine}: {wheel}")
+          tag = os.environ["RELEASE_TAG"]
+          url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}/{wheel}"
+          row = f"pillow {version} {machine} {sha256} {url}\n"
+          Path(f"offline_wheel_overrides-{machine}.txt").write_text(row, encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+              summary.write(
+                  f"### {machine} candidate wheel reference\n\n"
+                  "The preparation job found no tag or published release; this is not a reservation. "
+                  "Another ref can publish meanwhile, and retried build jobs reuse that earlier result. "
+                  "Use this row only if this run publishes; a later rebuild can have a different hash.\n\n"
+                  "```text\n" + row + "```\n"
+              )
+          PYCODE
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pillow-${{ env.PILLOW_VERSION }}-${{ matrix.arch }}
-          path: wheelhouse/*.whl
+          path: |
+            wheelhouse/*.whl
+            wheelhouse/SHA256SUMS-*
+            wheelhouse/offline_wheel_overrides-*.txt
           if-no-files-found: error
 
   publish:
     name: Publish pre-release
-    needs: build
+    needs: [prepare, build]
     # Only the reviewed workflow on the default branch publishes. As a
     # pre-release it never becomes the repository's latest release, and
     # GitHub's generated notes for the next iCode release keep comparing
     # against the previous full release.
     if: inputs.publish && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      PYTHON_VERSION: ${{ needs.prepare.outputs.python_version }}
     permissions:
       contents: write
     steps:
@@ -281,26 +536,120 @@ jobs:
           BUILD_NUMBER: ${{ inputs.build }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          tag="pillow-${PILLOW_VERSION}-manylinux2014.${BUILD_NUMBER}"
           cd wheelhouse
           wheels=(*.whl)
           if [ "${#wheels[@]}" -ne 2 ]; then
-            echo "::error::expected the x86_64 and aarch64 wheels, found: ${wheels[*]}"
+            echo "::error::expected the x86_64 and aarch64 wheels, found: ${wheels[*]}" >&2
             exit 1
           fi
-          sha256sum -- "${wheels[@]}" > SHA256SUMS
+          # Each build already validated its actual filename and generated its
+          # row from SHA256SUMS. Keep those exact bytes and verify the artifacts
+          # after download, before creating the release tag.
+          for machine in x86_64 aarch64; do
+            if [ ! -f "SHA256SUMS-${machine}" ] || [ ! -f "offline_wheel_overrides-${machine}.txt" ]; then
+              echo "::error::missing wheel checksum or override manifest for ${machine}" >&2
+              exit 1
+            fi
+          done
+          cat SHA256SUMS-x86_64 SHA256SUMS-aarch64 > SHA256SUMS
+          cat offline_wheel_overrides-x86_64.txt offline_wheel_overrides-aarch64.txt > offline_wheel_overrides.txt
+          python3 -I - <<'PYCODE'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          version = os.environ["PILLOW_VERSION"]
+          python_tag = os.environ["PYTHON_TAG"]
+          pattern_template = (
+              os.environ["WHEEL_FILENAME_PATTERN"]
+              .replace("{version}", re.escape(version))
+              .replace("{python_tag}", re.escape(python_tag))
+          )
+          base_url = (
+              f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+              f"/releases/download/{os.environ['RELEASE_TAG']}/"
+          )
+          checksums = {}
+          for line in Path("SHA256SUMS").read_text(encoding="utf-8").splitlines():
+              fields = line.split()
+              if len(fields) != 2 or re.fullmatch(r"[0-9a-f]{64}", fields[0]) is None:
+                  sys.exit(f"::error::invalid wheel checksum row: {line}")
+              sha256, wheel = fields
+              if wheel in checksums:
+                  sys.exit(f"::error::duplicate wheel checksum: {wheel}")
+              checksums[wheel] = sha256
+          actual_wheels = {path.name for path in Path.cwd().glob("*.whl")}
+          if len(checksums) != 2 or set(checksums) != actual_wheels:
+              sys.exit("::error::checksums must name exactly the two downloaded wheels")
+
+          machines, referenced_wheels = set(), set()
+          for line in Path("offline_wheel_overrides.txt").read_text(encoding="utf-8").splitlines():
+              fields = line.split()
+              if len(fields) != 5:
+                  sys.exit(f"::error::invalid override row: {line}")
+              project, row_version, machine, sha256, url = fields
+              if project != "pillow" or row_version != version or machine not in {"x86_64", "aarch64"}:
+                  sys.exit(f"::error::unexpected override project, version or architecture: {line}")
+              wheel = url.rsplit("/", 1)[-1]
+              platform = os.environ["WHEEL_PLATFORM_PATTERN"].replace("{machine}", re.escape(machine))
+              if re.fullmatch(pattern_template.replace("{platform}", platform), wheel) is None:
+                  sys.exit(f"::error::override wheel has an unexpected version, ABI or platform: {wheel}")
+              if url != base_url + wheel or checksums.get(wheel) != sha256:
+                  sys.exit(f"::error::override URL or hash disagrees with this release and SHA256SUMS: {line}")
+              if machine in machines:
+                  sys.exit(f"::error::duplicate override architecture: {machine}")
+              machines.add(machine)
+              referenced_wheels.add(wheel)
+          if machines != {"x86_64", "aarch64"} or referenced_wheels != actual_wheels:
+              sys.exit("::error::overrides must cover both downloaded architectures exactly once")
+          PYCODE
+          sha256sum --strict -c SHA256SUMS
           {
-            echo "Pillow ${PILLOW_VERSION} (python-pillow/Pillow@${PILLOW_COMMIT}) for CPython 3.14 on glibc ${GLIBC_FLOOR}, built and tested by ${RUN_URL}."
+            echo "Pillow ${PILLOW_VERSION} (python-pillow/Pillow@${PILLOW_COMMIT}) for CPython ${PYTHON_VERSION} on glibc ${GLIBC_FLOOR}, built and tested by ${RUN_URL}."
+            echo
+            echo "libjpeg-turbo 3.2.0 includes the upstream libspng link fix: ${JPEGTURBO_PATCH_URL} (committed patch SHA-256: ${JPEGTURBO_PATCH_SHA256}). The applied patch is recorded in the wheel's SBOM."
             echo
             echo '```'
             cat SHA256SUMS
             echo '```'
+            echo
+            echo 'The attached offline_wheel_overrides.txt contains the exact wheel URLs and hashes for scripts/offline_wheel_overrides.txt. Copy its two rows together with the dependency pin bump.'
           } > notes.md
+          # The tag endpoint only returns published releases. Listing with
+          # this job's write token also finds drafts whose tags were removed
+          # by GitCode sync. Check every page immediately before creating a tag.
+          release_filter=$(python3 -I - <<'PYCODE'
+          import json
+          import os
+
+          tag = json.dumps(os.environ["RELEASE_TAG"])
+          print('.[] | select(.tag_name == ' + tag + ') | "id=\\(.id), draft=\\(.draft)"')
+          PYCODE
+          )
+          release_errors=$(mktemp)
+          trap 'rm -f -- "$release_errors"' EXIT
+          # Filter each page to matching releases. Successful gh warnings stay
+          # on stderr and cannot corrupt the query output.
+          if ! existing=$(gh api --paginate --jq "$release_filter" "repos/${GITHUB_REPOSITORY}/releases?per_page=100" 2>"$release_errors"); then
+            detail=$(cat "$release_errors")
+            detail=${detail//'%'/'%25'}
+            detail=${detail//$'\r'/'%0D'}
+            detail=${detail//$'\n'/'%0A'}
+            echo "::error::could not check existing releases: ${detail}" >&2
+            exit 1
+          fi
+          cat "$release_errors" >&2
+          if [ -n "$existing" ]; then
+            existing=${existing//$'\n'/, }
+            echo "::error::release ${RELEASE_TAG} already exists: ${existing}; recover that release or use a new build number" >&2
+            exit 1
+          fi
           # Creating the tag fails when it exists, even without a release (one
           # deleted by hand keeps its tag), so no build ever lands on an old tag.
           # GitCode needs the same tag too (see the top of this file).
-          gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${tag}" -f "sha=${GITHUB_SHA}" --silent
-          gh release create "$tag" "${wheels[@]}" SHA256SUMS \
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/tags/${RELEASE_TAG}" -f "sha=${GITHUB_SHA}" --silent
+          gh release create "$RELEASE_TAG" "${wheels[@]}" SHA256SUMS offline_wheel_overrides.txt \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --prerelease \

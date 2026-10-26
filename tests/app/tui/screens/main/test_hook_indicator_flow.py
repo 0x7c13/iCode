@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from rich.cells import cell_len
@@ -25,6 +26,7 @@ from chrys.app.tui.widgets.chat.messages import AgentMessage
 from chrys.app.tui.widgets.chat.messages import UserMessage as UserMessageWidget
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
+from chrys.app.tui.widgets.chrome import hook_indicator as hook_indicator_module
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
 from chrys.app.tui.widgets.chrome.hook_indicator import HOOK_INDICATOR_WIDTH, HookIndicator
 from chrys.app.tui.widgets.chrome.input_bar import InputBar
@@ -129,13 +131,34 @@ def _view(
     waited_at: str = "call",
     age: float = 5.0,
     queued: bool = False,
+    now: float | None = None,
 ) -> HookExecutionView:
     return HookExecutionView(
         hook_id=hook_id,
         waited_at=waited_at,  # type: ignore[arg-type]
         queued=queued,
-        started_at=time.monotonic() - age,
+        started_at=(time.monotonic() if now is None else now) - age,
     )
+
+
+class _IndicatorClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def indicator_clock(monkeypatch: pytest.MonkeyPatch) -> _IndicatorClock:
+    # Only hook ages are controlled. Textual timers, waits and the event loop
+    # keep their real clock so the rendered frame still changes on real ticks.
+    clock = _IndicatorClock()
+    shadow = ModuleType("time")
+    shadow.__dict__.update(vars(time))
+    shadow.monotonic = clock.monotonic
+    monkeypatch.setattr(hook_indicator_module, "time", shadow)
+    return clock
 
 
 async def _snapshot(bus: EventBus, *views: HookExecutionView, session_id: str = _SESSION) -> None:
@@ -244,46 +267,65 @@ async def test_idle_shows_hooks_where_the_quit_hint_was(tmp_path: Path) -> None:
         assert "Quit" not in last_row
 
 
-async def test_a_run_shows_after_a_second_and_goes_back_to_hooks_when_it_ends(tmp_path: Path) -> None:
+async def test_a_run_shows_after_a_second_and_goes_back_to_hooks_when_it_ends(
+    tmp_path: Path, indicator_clock: _IndicatorClock
+) -> None:
     bus = EventBus()
     app = _make_app(tmp_path, bus)
     async with app.run_test(size=(160, 40)) as pilot:
         main = await _ready(pilot)
         await _start_turn(pilot, bus, main)
-        await _snapshot(bus, _view("protect-env", age=0.0))
-        await _keeps(pilot, "Hooks")
+        run = _view("protect-env", age=0.0, now=indicator_clock.now)
+        await _snapshot(bus, run)
+        indicator_clock.now = run.started_at + 0.999
+        # Observe longer than the display threshold in real time. GC pauses
+        # or slow paints must not advance the hook age under test.
+        await _keeps(pilot, "Hooks", seconds=1.1)
+        indicator_clock.now = run.started_at + 1.0
         await _shows(pilot, "protect-env", timeout=4.0, what="shown after its first second")
         assert "protect-env" in _indicator(app)
         await _snapshot(bus)
         await _shows(pilot, "Hooks")
 
 
-async def test_a_run_under_a_second_never_shows(tmp_path: Path) -> None:
+async def test_a_run_under_a_second_never_shows(tmp_path: Path, indicator_clock: _IndicatorClock) -> None:
     bus = EventBus()
     app = _make_app(tmp_path, bus)
     async with app.run_test(size=(160, 40)) as pilot:
         main = await _ready(pilot)
         await _start_turn(pilot, bus, main)
-        await _snapshot(bus, _view("quick", age=0.0))
-        await _keeps(pilot, "Hooks", seconds=0.6)
+        run = _view("quick", age=0.0, now=indicator_clock.now)
+        await _snapshot(bus, run)
+        indicator_clock.now = run.started_at + 0.999
+        await _keeps(pilot, "Hooks", seconds=1.1)
         await _snapshot(bus)
-        await _keeps(pilot, "Hooks", seconds=1.5)
+        await wait_for(
+            lambda: not main.query_one(HookIndicator)._executions,
+            pilot=pilot,
+            description="the finished hook snapshot applied",
+        )
+        indicator_clock.now = run.started_at + 2.0
+        await _keeps(pilot, "Hooks")
 
 
-async def test_the_latest_started_run_shows_and_the_previous_one_comes_back(tmp_path: Path) -> None:
+async def test_the_latest_started_run_shows_and_the_previous_one_comes_back(
+    tmp_path: Path, indicator_clock: _IndicatorClock
+) -> None:
     bus = EventBus()
     app = _make_app(tmp_path, bus)
     async with app.run_test(size=(160, 40)) as pilot:
         main = await _ready(pilot)
         await _start_turn(pilot, bus, main)
-        a = _view("hook-a", age=2.0)
+        a = _view("hook-a", age=2.0, now=indicator_clock.now)
         await _snapshot(bus, a)
         await _shows(pilot, "hook-a")
 
         # B starts later: under a second it does not take over yet, then it does.
-        b = _view("hook-b", waited_at="turn", age=0.0)
+        b = _view("hook-b", waited_at="turn", age=0.0, now=indicator_clock.now)
         await _snapshot(bus, a, b)
-        await _keeps(pilot, "hook-a")
+        indicator_clock.now = b.started_at + 0.999
+        await _keeps(pilot, "hook-a", seconds=1.1)
+        indicator_clock.now = b.started_at + 1.0
         await _shows(pilot, "hook-b", timeout=4.0, what="B once it lasted a second")
 
         await _snapshot(bus, a)
