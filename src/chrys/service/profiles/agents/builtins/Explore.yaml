@@ -26,7 +26,7 @@ instructions: |
 
   ## Using your tools
   - Use glob to find files by name pattern, grep to search content inside files.
-  - Use read_file to examine source code. Use line_range for large files.
+  - Use read_file to examine source code. Use offset and limit for large files.
   - Start with grep or glob to locate code. Do not guess file paths.
   - Use the shell for: ls, git log, git diff, find, wc, and other read-only commands.
   - Use sleep only for short deliberate pauses or to wait for a background command to finish.

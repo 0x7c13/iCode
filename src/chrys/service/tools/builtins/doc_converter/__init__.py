@@ -387,7 +387,7 @@ class DocConverterTools:
         preview = "\n\n".join(section for section in preview_sections if section)
         saved_location = f"Saved Markdown handle: {saved.handle}\n"
         summary_location = f"- Saved handle: {saved.handle}\n"
-        access_instruction = "Use the handle above as a session-bound read_file path argument with line_range."
+        access_instruction = "Use the handle above as a session-bound read_file path argument with offset and limit."
         if saved_path is not None:
             saved_location += f"Saved Markdown path: {saved_path}\n"
             summary_location += f"- Saved path: {saved_path}\n"
@@ -425,7 +425,7 @@ class DocConverterTools:
         documents the output is saved to the session folder and a table of
         contents with file metadata is returned. A session handle is always
         returned, plus an absolute path when it is strict-UTF-8 representable.
-        Use ``read_file`` with ``line_range`` when available. When ``view_image`` is
+        Use ``read_file`` with ``offset`` and ``limit`` when available. When ``view_image`` is
         available, embedded raster assets from PDF, DOCX, and PPTX files are
         saved as lazy references.  XLS/XLSX conversion remains text/table-only.
         This does not render complete pages/slides or preserve document layout.

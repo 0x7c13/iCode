@@ -76,7 +76,11 @@ async def test_main_and_child_approval_edits_reach_their_own_cards(tmp_path, mon
         assert events[1].origin.invocation_id != events[0].origin.invocation_id
         assert cards == [
             ("turn", events[0].call_id, {"prompt": "edited prompt"}),
-            (events[1].origin.invocation_id, events[1].call_id, {"path": str(target), "max_tokens": 5000}),
+            (
+                events[1].origin.invocation_id,
+                events[1].call_id,
+                {"path": str(target), "max_tokens": 10000, "offset": 1, "limit": 2000},
+            ),
         ]
         assert "edited prompt" in child.call_history[0][0][-1].text
         assert any(

@@ -43,7 +43,7 @@ instructions: |
   other read-only system commands.
 
   ### read_file
-  - Use line_range to read specific sections of large files instead of reading the whole file.
+  - Use offset and limit to read specific sections of large files instead of reading the whole file.
   - When you already know which part you need, only read that part to save context.
 
   ### grep vs glob
