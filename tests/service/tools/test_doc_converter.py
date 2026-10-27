@@ -470,7 +470,7 @@ async def test_large_document_toc_numbers_lines_as_read_file_does(
     assert "1|- Part 1" in result
     assert f"{heading_line}|- Part 2" in result
     saved_path = os.fspath(_saved_markdown_absolute_path(result))
-    assert read_file(saved_path, line_range=[heading_line, heading_line]).endswith(f"{heading_line}|# Part 2\n")
+    assert f"{heading_line}|# Part 2\n" in read_file(saved_path, offset=heading_line, limit=1)
 
 
 async def test_concurrent_same_name_large_conversions_keep_different_markdown(tmp_path: Path) -> None:

@@ -58,8 +58,8 @@ _HEADER_RE = re.compile(r"^File:\s+(.+?)\s+\((\d+)\s+lines?,\s+(\d+)\s+chars?\)"
 _LINE_RE = re.compile(r"^(\d+)\|(.*)$")
 """Matches numbered content lines like '13|def foo():'."""
 
-_TRUNCATION_NOTICE_PREFIXES = ("[Truncated", "[Long lines truncated")
-"""Footer notices emitted by the read_file tool when it caps output."""
+_READ_NOTICE_PREFIXES = ("[Truncated", "[Long lines truncated", "[Showing lines ")
+"""Footer notices emitted by read_file for truncation and pagination."""
 
 
 _LEXER_BY_EXTENSION: dict[str, str] = {
@@ -277,13 +277,11 @@ class ReadFileToolCall(BaseToolCard):
             start_line=content_lines[0][0],
         )
         widgets: list[Widget] = [Static(syntax, classes="tool-view-code")]
-        # The read tool truncates at source (line-count and long-line caps);
-        # surface every notice so the modal never presents partial content as
-        # complete.
+        # Preserve both truncation warnings and optional pagination hints.
         widgets.extend(
             Static(Text(line, style="dim"), classes="tool-view-text")
             for line in self.result_text.split("\n")
-            if line.startswith(_TRUNCATION_NOTICE_PREFIXES)
+            if line.startswith(_READ_NOTICE_PREFIXES)
         )
         return widgets
 

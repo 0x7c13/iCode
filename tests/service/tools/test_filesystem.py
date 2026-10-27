@@ -8,6 +8,7 @@ import base64
 import codecs
 import json
 import os
+import re
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -119,45 +120,268 @@ def test_read_file_truncation(tmp_path: Path) -> None:
     result = read_file(str(f), max_tokens=100)
     assert "[Truncated" in result
     assert "200 lines" in result
-    assert "line_range=" in result
+    assert "Use offset=" in result
 
 
-def test_read_file_line_range(tmp_path: Path) -> None:
-    """line_range=[3, 7] returns only lines 3-7, header still shows total."""
+def test_read_file_pagination(tmp_path: Path) -> None:
+    """offset=3, limit=5 returns only lines 3-7, header still shows total."""
     f = tmp_path / "ten.txt"
     lines = [f"L{i}" for i in range(1, 11)]
     f.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    result = read_file(str(f), line_range=[3, 7])
+    result = read_file(str(f), offset=3, limit=5)
     assert "10 lines" in result  # header shows total
     assert "3|L3" in result
     assert "7|L7" in result
     assert "2|L2" not in result
     assert "8|L8" not in result
+    assert result.endswith("[Showing lines 3-7 of 10. Use offset=8, limit=5 to continue reading if needed.]")
+    assert "[Truncated" not in result
 
 
-def test_read_file_line_range_to_eof(tmp_path: Path) -> None:
-    """line_range=[8, -1] returns lines 8 through end."""
+def test_read_file_pagination_to_eof(tmp_path: Path) -> None:
+    """offset=8 returns lines 8 through end."""
     f = tmp_path / "ten.txt"
     lines = [f"L{i}" for i in range(1, 11)]
     f.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    result = read_file(str(f), line_range=[8, -1])
+    result = read_file(str(f), offset=8)
     assert "8|L8" in result
     assert "9|L9" in result
     assert "10|L10" in result
     assert "7|L7" not in result
 
 
-def test_read_file_line_range_with_truncation(tmp_path: Path) -> None:
+def test_read_file_pagination_with_truncation(tmp_path: Path) -> None:
     """Range exceeds max_tokens → correct truncation hint."""
     f = tmp_path / "big.txt"
     lines = [f"line content number {i}" for i in range(1, 101)]
     f.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    result = read_file(str(f), max_tokens=50, line_range=[10, 80])
+    result = read_file(str(f), max_tokens=50, offset=10, limit=71)
     assert "[Truncated" in result
     assert "100 lines" in result
+
+
+def test_read_file_default_limit_and_continuation(tmp_path: Path) -> None:
+    f = tmp_path / "pages.txt"
+    f.write_text("x\n" * 2001, encoding="utf-8")
+
+    result = read_file(str(f), max_tokens=20_000)
+    assert "2000|x\n" in result
+    assert "2001|x\n" not in result
+    assert result.endswith("[Showing lines 1-2000 of 2001. Use offset=2001, limit=2000 to continue reading if needed.]")
+    assert "[Truncated" not in result
+    continuation = read_file(str(f), offset=2001)
+    assert continuation.endswith("2001|x\n")
+    assert "[Truncated" not in continuation
+
+
+@pytest.mark.parametrize("bound", [False, True], ids=["standalone", "runtime-bound"])
+async def test_read_file_explicit_limit_can_exceed_default(tmp_path: Path, bound: bool) -> None:
+    f = tmp_path / "larger-page.txt"
+    f.write_text("x\n" * 2500, encoding="utf-8")
+    runtime = SessionEnvironment.capture(workspace=Workspace.from_cwd(str(tmp_path)))
+    reader = FilesystemTools(runtime).read_file if bound else read_file
+
+    contents = await reader.invoke(arguments={"path": str(f), "limit": 2500, "max_tokens": 20_000})
+    result = "".join(content.text or "" for content in contents)
+
+    assert result.endswith("2500|x\n")
+    assert "[Truncated" not in result
+
+
+def test_read_file_token_budget_hint_preserves_single_line_read(tmp_path: Path) -> None:
+    f = tmp_path / "long-line.txt"
+    line = "x" * 5000
+    f.write_text(line + "\n", encoding="utf-8")
+
+    result = read_file(str(f), limit=1, max_tokens=100)
+    continuation = re.search(r"Use offset=(\d+), limit=(\d+) to continue reading", result)
+    assert continuation is not None
+    resumed = read_file(str(f), offset=int(continuation[1]), limit=int(continuation[2]), max_tokens=2000)
+
+    assert resumed.endswith(f"1|{line}\n")
+    assert "[truncated]" not in resumed
+    assert "[Truncated" not in resumed
+    assert "[Long lines" not in resumed
+
+
+@pytest.mark.parametrize("limit", [None, 3], ids=["default-limit", "explicit-limit"])
+@pytest.mark.parametrize(("max_tokens", "position"), [(1, "before"), (100, "at")])
+def test_read_file_combined_truncation_advertises_full_line_recovery(
+    tmp_path: Path, limit: int | None, max_tokens: int, position: str
+) -> None:
+    f = tmp_path / "combined-limits.txt"
+    line = "x" * 5000
+    f.write_text(f"short\n{line}\n", encoding="utf-8")
+    arguments = {} if limit is None else {"limit": limit}
+
+    result = read_file(str(f), offset=2, max_tokens=max_tokens, **arguments)
+
+    assert f"[Truncated {position} line 2," in result
+    assert f"Use offset=2, limit={limit or 2000} to continue reading" in result
+    assert "[Long lines" not in result
+    assert result.count("\n[") == 1
+    recovery = re.search(r"To read this line in full, use offset=(\d+), limit=(\d+)", result)
+    assert recovery is not None
+    resumed = read_file(str(f), offset=int(recovery[1]), limit=int(recovery[2]), max_tokens=2000)
+
+    assert resumed.endswith(f"2|{line}\n")
+    assert "[truncated]" not in resumed
+    assert "[Truncated" not in resumed
+    assert "[Long lines" not in resumed
+
+
+def test_read_file_max_tokens_takes_priority_and_repeats_partial_line(tmp_path: Path) -> None:
+    f = tmp_path / "budget.txt"
+    f.write_text("short\n" + "x" * 1000 + "\nthird\n", encoding="utf-8")
+
+    result = read_file(str(f), limit=3, max_tokens=100)
+    assert "1|short\n" in result
+    assert "2|xxx" in result
+    assert "3|third" not in result
+    assert "Content exceeds max_tokens=100. Use offset=2" in result
+    assert "Content exceeds limit=" not in result
+    continuation = read_file(str(f), offset=2, limit=1, max_tokens=1000)
+    assert "2|" + "x" * 1000 + "\n" in continuation
+    assert "Use offset=3, limit=1" in continuation
+
+
+@pytest.mark.parametrize("content", ["汉" * 1000 + "x" * 10000 + "\n", "a\n" * 2000])
+def test_read_file_token_budget_bounds_returned_content(tmp_path: Path, content: str) -> None:
+    from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
+
+    f = tmp_path / "budget.txt"
+    f.write_text(content, encoding="utf-8")
+    result = read_file(str(f), max_tokens=200)
+    header_and_content = result.split("\n\n[", 1)[0]
+    assert "1|" in header_and_content
+    assert MixedLanguageTokenizer().count_tokens(header_and_content) <= 200
+    assert "Content exceeds max_tokens=200" in result
+
+
+@pytest.mark.parametrize("offset", [1, 2])
+@pytest.mark.parametrize("budget_mode", ["below-header", "below-partial-marker"])
+def test_read_file_empty_budget_reports_before_requested_line(tmp_path: Path, offset: int, budget_mode: str) -> None:
+    from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
+
+    f = tmp_path / "tiny-budget.txt"
+    f.write_text(("x" * 200 + "\n") * 2, encoding="utf-8")
+    header = read_file(str(f)).partition("\n")[0] + "\n"
+    max_tokens = 1 if budget_mode == "below-header" else MixedLanguageTokenizer().count_tokens(header) + 2
+
+    result = read_file(str(f), offset=offset, limit=1, max_tokens=max_tokens)
+
+    assert f"\n{offset}|" not in result
+    assert f"[Truncated before line {offset}," in result
+    assert f"Use offset={offset}" in result
+    assert "Truncated at line 0" not in result
+    assert "[Long lines" not in result
+
+
+def test_read_file_token_truncation_has_one_notice_for_a_short_line(tmp_path: Path) -> None:
+    from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
+
+    f = tmp_path / "short-line.txt"
+    f.write_text("x" * 200 + "\n", encoding="utf-8")
+    header = read_file(str(f)).partition("\n")[0] + "\n"
+    result = read_file(str(f), limit=1, max_tokens=MixedLanguageTokenizer().count_tokens(header) + 20)
+
+    assert "1|xxx" in result
+    assert "... [truncated]" in result
+    assert "Source line 1 has 200 chars." in result
+    assert "To read this line in full" not in result
+    assert "[Long lines" not in result
+    assert result.count("\n[") == 1
+    assert "Use offset=1" in result
+
+
+def test_read_file_short_lines_use_the_cumulative_budget(tmp_path: Path) -> None:
+    f = tmp_path / "short-lines.txt"
+    f.write_text("abc\n" * 2000, encoding="utf-8")
+
+    result = read_file(str(f), max_tokens=5000)
+
+    assert "2000|abc\n" in result
+    assert "[Truncated" not in result
+
+
+def test_read_file_default_budget_allows_more_than_8000_tokens(tmp_path: Path) -> None:
+    f = tmp_path / "larger-default.txt"
+    f.write_text(("x" * 20 + "\n") * 1400, encoding="utf-8")
+
+    result = read_file(str(f))
+
+    assert result.endswith("1400|" + "x" * 20 + "\n")
+    assert "[Truncated" not in result
+    assert "Content exceeds max_tokens=8000" in read_file(str(f), max_tokens=8000)
+
+
+def test_read_file_budget_exhausted_after_a_complete_line_reports_next_line(tmp_path: Path) -> None:
+    from chrys.foundation.text.tokenizer import MixedLanguageTokenizer
+
+    f = tmp_path / "next-line.txt"
+    f.write_text("abc\n" + "x" * 200 + "\n", encoding="utf-8")
+    header = read_file(str(f)).partition("\n")[0] + "\n"
+    budget = MixedLanguageTokenizer().count_tokens(header + "1|abc\n") + 1
+
+    result = read_file(str(f), max_tokens=budget)
+
+    assert "1|abc\n" in result
+    assert "2|" not in result
+    assert "[Truncated before line 2," in result
+    assert "Source line 2 has 200 chars." in result
+    assert "Use offset=2" in result
+
+
+@pytest.mark.parametrize("bound", [False, True], ids=["standalone", "runtime-bound"])
+async def test_read_file_glm_schema_and_json_arguments(tmp_path: Path, bound: bool) -> None:
+    """The provider sees optional scalar fields, and JSON arguments reach the real tool."""
+    from chrys.kernel import Content, Message
+    from chrys.service.llm.chat_completions.client import GLM
+    from chrys.service.llm.chat_completions.request import build_request
+
+    f = tmp_path / "wire.txt"
+    f.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+    runtime = SessionEnvironment.capture(workspace=Workspace.from_cwd(str(tmp_path)))
+    reader = FilesystemTools(runtime).read_file if bound else read_file
+    request = build_request([Message("user", ["Read lines 2-3."])], {"tools": [reader]}, model="glm-5.2", variant=GLM)
+    schema = request["tools"][0]["function"]["parameters"]
+    assert "$defs" not in schema
+    assert schema["required"] == ["path"]
+    assert set(schema["properties"]) == {"path", "offset", "limit", "max_tokens"}
+    for name, default in (("offset", 1), ("limit", 2000), ("max_tokens", 10000)):
+        field = schema["properties"][name]
+        assert field["type"] == "integer"
+        assert field["minimum"] == 1
+        assert field["default"] == default
+        assert f"Defaults to {default}" in field["description"]
+        assert "$ref" not in field
+        assert "anyOf" not in field
+    assert "Optional" in schema["properties"]["limit"]["description"]
+    assert "Optional" in schema["properties"]["max_tokens"]["description"]
+    assert "Takes priority over limit" in schema["properties"]["max_tokens"]["description"]
+
+    call = Content.from_function_call(
+        "read", "read_file", arguments=json.dumps({"path": str(f), "offset": "2", "limit": "2"})
+    )
+    contents = await reader.invoke(arguments=call.parse_arguments())
+    result = "".join(content.text or "" for content in contents)
+    assert "2|two\n3|three\n" in result
+    assert "1|one" not in result
+    assert "4|four" not in result
+    assert "Use offset=4, limit=2" in result
+    default_contents = await reader.invoke(arguments={"path": str(f)})
+    defaults = "".join(content.text or "" for content in default_contents)
+    assert defaults.endswith("1|one\n2|two\n3|three\n4|four\n")
+
+
+@pytest.mark.parametrize("parameter", ["offset", "limit", "max_tokens"])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, None, [1, 2]])
+async def test_read_file_json_arguments_reject_invalid_numbers(parameter: str, value: object) -> None:
+    with pytest.raises(TypeError, match=f"(?s)Invalid arguments for 'read_file'.*{parameter}"):
+        await read_file.invoke(arguments={"path": "unused.txt", parameter: value})
 
 
 def test_read_file_empty_file(tmp_path: Path) -> None:
@@ -233,49 +457,46 @@ def test_read_file_directory(tmp_path: Path) -> None:
     assert "directory" in result
 
 
-def test_read_file_line_range_validation(tmp_path: Path) -> None:
-    """Invalid line_range values return errors."""
+@pytest.mark.parametrize("parameter", ["offset", "limit", "max_tokens"])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, None, "2", [1, 2]])
+def test_read_file_pagination_validation(tmp_path: Path, parameter: str, value: object) -> None:
+    """Direct Python callers also receive actionable errors for invalid pagination."""
     f = tmp_path / "val.txt"
     f.write_text("a\nb\nc\n", encoding="utf-8")
 
-    # start < 1
-    assert "Error" in read_file(str(f), line_range=[0, 5])
-    # end < start (and not -1)
-    assert "Error" in read_file(str(f), line_range=[5, 3])
-    # wrong length
-    assert "Error" in read_file(str(f), line_range=[1])
-    assert "Error" in read_file(str(f), line_range=[1, 2, 3])
+    result = read_file(str(f), **{parameter: value})
+    assert result.startswith(f"Error: {parameter} must be an integer >= 1")
 
 
-def test_read_file_line_range_beyond_file(tmp_path: Path) -> None:
+def test_read_file_pagination_beyond_file(tmp_path: Path) -> None:
     """Start past EOF returns error."""
     f = tmp_path / "short.txt"
     f.write_text("one\ntwo\n", encoding="utf-8")
 
-    result = read_file(str(f), line_range=[10, -1])
+    result = read_file(str(f), offset=10)
     assert "Error" in result
     assert "beyond" in result
 
 
-def test_read_file_line_range_end_beyond_file(tmp_path: Path) -> None:
-    """end > total_lines is silently clamped to EOF, no error."""
+def test_read_file_pagination_end_beyond_file(tmp_path: Path) -> None:
+    """A limit extending beyond EOF returns the remaining lines without error."""
     f = tmp_path / "short.txt"
     f.write_text("one\ntwo\nthree\n", encoding="utf-8")
 
-    result = read_file(str(f), line_range=[2, 999])
+    result = read_file(str(f), offset=2, limit=998)
     assert "Error" not in result
     assert "2|two" in result
     assert "3|three" in result
     assert "3 lines" in result  # header still shows total
 
 
-def test_read_file_line_range_single_line(tmp_path: Path) -> None:
-    """start == end returns exactly that one line."""
+def test_read_file_pagination_single_line(tmp_path: Path) -> None:
+    """limit=1 returns exactly the requested line."""
     f = tmp_path / "five.txt"
     lines = [f"L{i}" for i in range(1, 6)]
     f.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    result = read_file(str(f), line_range=[3, 3])
+    result = read_file(str(f), offset=3, limit=1)
     assert "3|L3" in result
     assert "2|L2" not in result
     assert "4|L4" not in result
@@ -1250,7 +1471,7 @@ def test_read_file_long_line_truncated(tmp_path: Path) -> None:
     assert "x" * (_MAX_LINE_DISPLAY_CHARS + 1) not in result
     # Summary footer reports original length
     assert f"line 2 ({len(long_line)} chars)" in result
-    assert "Use line_range to read specific lines in full." in result
+    assert "Use offset=2, limit=1 with a sufficient max_tokens budget" in result
 
 
 def test_read_file_line_exactly_at_limit(tmp_path: Path) -> None:
@@ -1287,34 +1508,35 @@ def test_read_file_multiple_long_lines(tmp_path: Path) -> None:
     assert "5|normal" in result
 
 
-def test_read_file_line_range_bypasses_truncation(tmp_path: Path) -> None:
-    """line_range skips the _MAX_LINE_DISPLAY_CHARS cap — full content returned."""
+def test_read_file_pagination_bypasses_truncation(tmp_path: Path) -> None:
+    """limit=1 skips the _MAX_LINE_DISPLAY_CHARS cap — full content returned."""
     long_line = "z" * 3000
     f = tmp_path / "long.txt"
     f.write_text(f"short\n{long_line}\nshort\n", encoding="utf-8")
 
-    result = read_file(str(f), line_range=[2, 2])
+    result = read_file(str(f), offset=2, limit=1)
     # Full line content should be present
     assert "z" * 3000 in result
     assert "[Long lines" not in result
     assert "[truncated]" not in result
 
 
-def test_read_file_line_range_token_overflow_partial(tmp_path: Path) -> None:
-    """line_range targets a huge line with small max_tokens — partial content, not empty."""
+def test_read_file_pagination_token_overflow_partial(tmp_path: Path) -> None:
+    """limit=1 targets a huge line with small max_tokens — partial content, not empty."""
     long_line = "A" * 50_000
     f = tmp_path / "huge.txt"
     f.write_text(f"{long_line}\n", encoding="utf-8")
 
-    result = read_file(str(f), max_tokens=100, line_range=[1, 1])
+    result = read_file(str(f), max_tokens=100, offset=1, limit=1)
     # Should have SOME content (partial line), not just the header
     assert "1|" in result
     assert "AAAA" in result
     # Partial marker present
     assert "... [truncated]" in result
-    # long_lines summary reports the actual length
-    assert "50000 chars" in result
-    # Token-budget truncation message also present
+    # The token-budget notice reports the length without a second long-line notice.
+    assert "Source line 1 has 50000 chars." in result
+    assert "[Long lines" not in result
+    assert result.count("\n[") == 1
     assert "[Truncated at line 1" in result
 
 
@@ -1328,10 +1550,10 @@ def test_read_file_token_overflow_after_char_truncation(tmp_path: Path) -> None:
     # Should have some partial content, not empty
     assert "1|" in result
     assert "... [truncated]" in result
-    # Original length recorded by char-level truncation (no duplicate from token overflow)
-    assert "5000 chars" in result
-    # No duplicate entry for the same line
-    assert result.count("line 1 (") == 1
+    # Token truncation cuts before the character cap; report only its actual cause.
+    assert "Source line 1 has 5000 chars." in result
+    assert "[Long lines" not in result
+    assert result.count("\n[") == 1
 
 
 def test_read_file_all_lines_long(tmp_path: Path) -> None:
