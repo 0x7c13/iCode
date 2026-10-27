@@ -161,7 +161,9 @@ class ChatProfileApp(TuiVariableDefaultsMixin, App[None]):
 
     def compose(self) -> ComposeResult:
         yield ChatPanel(
-            cwd="/tmp/chrys-profile", show_thinking=lambda: True, fold_finished_turns=lambda: self._fold_finished_turns
+            cwd="/tmp/chrys-profile",
+            thinking_expanded=lambda: True,
+            fold_finished_turns=lambda: self._fold_finished_turns,
         )
 
 

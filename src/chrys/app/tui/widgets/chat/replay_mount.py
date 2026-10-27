@@ -38,7 +38,12 @@ import logging
 
 from textual.widget import Widget
 
-from chrys.app.tui.widgets.chat.messages import AgentMessage, ThinkingMessage, UserMessage
+from chrys.app.tui.widgets.chat.messages import (
+    AgentMessage,
+    StreamedMarkdownMessage,
+    UserMessage,
+    folds_with_turn,
+)
 from chrys.app.tui.widgets.chat.ports import ReplayMountHost
 from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.scroll_controller import ChatGcPauseClaim
@@ -62,12 +67,15 @@ def estimated_rows(widget: Widget, width: int) -> int:
     """Rough rendered height of an unmounted transcript entry.
 
     Only sizes batches, so it favors being cheap over exact: message text
-    counts its lines plus soft wraps at ``width``; other entries replay
-    collapsed and count as their header and margins.
+    counts its lines plus soft wraps at ``width``; folded thinking and tool
+    groups are one row with no margin, and other entries replay collapsed
+    and count as their header and margins.
     """
     if not widget.display:
         return 0
-    if isinstance(widget, ProcessBlock):
+    if isinstance(widget, ProcessBlock) or (
+        isinstance(widget, (StreamedMarkdownMessage, ToolGroup)) and widget.collapsed
+    ):
         return 1
     if not isinstance(widget, (AgentMessage, UserMessage)):
         return _ENTRY_CHROME_ROWS
@@ -177,7 +185,8 @@ class ReplayMountController:
     def pending_folds_collapsed(self) -> bool | None:
         """Collapsed state pending tool groups and thinking will mount with; None without any."""
         if not any(
-            isinstance(widget, ToolGroup | ThinkingMessage) and not widget.process_hidden for widget in self._pending
+            (isinstance(widget, ToolGroup) or folds_with_turn(widget)) and not widget.process_hidden
+            for widget in self._pending
         ):
             return None
         # Replay builds every tool group and thinking block collapsed.
@@ -275,7 +284,7 @@ class ReplayMountController:
             for root in batch:
                 if not root.is_attached:
                     continue
-                if isinstance(root, ThinkingMessage):
+                if isinstance(root, StreamedMarkdownMessage):
                     if root.foldable and not root.process_hidden:
                         root.collapsed = collapsed
                     continue

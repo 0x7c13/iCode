@@ -38,7 +38,7 @@ _SECTION_DIAGNOSTICS = msg("tui.settings.section.diagnostics", fallback="Diagnos
 _SECTION_TELEMETRY = msg("tui.settings.section.telemetry", fallback="Telemetry")
 _SECTION_LOCATION = msg("tui.settings.section.location", fallback="Location")
 _SECTION_ROLLBACK = msg("tui.settings.section.rollback", fallback="Rollback")
-_SECTION_DISPLAY = msg("tui.settings.section.display", fallback="Display")
+_SECTION_DISPLAY = msg("tui.settings.section.display", fallback="Display preferences")
 _SECTION_WORKSPACE_NOTICE = msg("tui.settings.section.workspace_notice", fallback="Workspace notice")
 _SECTION_NOTIFICATIONS = msg("tui.settings.section.notifications", fallback="Notifications")
 _SECTION_FILE_SEARCH = msg("tui.settings.section.file_search", fallback="File search")
@@ -51,11 +51,12 @@ _HINT_UI_LOCALE = msg(
     "tui.settings.hint.ui.locale",
     fallback="Language of menus, hints and messages; changes apply immediately.",
 )
-_HINT_UI_CHAT_SHOW_THINKING = msg(
+_HINT_UI_CHAT_THINKING_EXPANDED = msg(
     "tui.settings.hint.ui.chat.show_thinking",
     fallback=(
-        "Show the model's thinking in the chat as it arrives, when the model service returns it as readable "
-        "text. Applies to new replies and to sessions opened afterwards."
+        "Show new thinking expanded while the model writes it. When off, it stays on one line, its newest words "
+        "running along it. Either way it folds to one line once the turn moves on; click it at any time to read it "
+        "in full."
     ),
 )
 _HINT_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
@@ -311,7 +312,13 @@ TABS: tuple[SettingsTab, ...] = (
                 (
                     SettingRowSpec("ui.theme", hint=_HINT_UI_THEME),
                     SettingRowSpec("ui.locale", hint=_HINT_UI_LOCALE),
-                    SettingRowSpec("ui.chat.show_thinking", hint=_HINT_UI_CHAT_SHOW_THINKING),
+                ),
+            ),
+            SettingsSection(
+                _SECTION_DISPLAY,
+                (
+                    SettingRowSpec("ui.chat.show_thinking", hint=_HINT_UI_CHAT_THINKING_EXPANDED),
+                    SettingRowSpec("ui.chat.tool_groups_expanded", hint=_HINT_UI_CHAT_TOOL_GROUPS_EXPANDED),
                     SettingRowSpec("ui.chat.fold_finished_turns", hint=_HINT_UI_CHAT_FOLD_FINISHED_TURNS),
                 ),
             ),
@@ -473,10 +480,6 @@ TABS: tuple[SettingsTab, ...] = (
                         hint_args=HintArgs.FIELD_DEFAULT,
                     ),
                 ),
-            ),
-            SettingsSection(
-                _SECTION_DISPLAY,
-                (SettingRowSpec("ui.chat.tool_groups_expanded", hint=_HINT_UI_CHAT_TOOL_GROUPS_EXPANDED),),
             ),
             SettingsSection(
                 _SECTION_WORKSPACE_NOTICE,

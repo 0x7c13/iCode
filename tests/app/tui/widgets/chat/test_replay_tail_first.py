@@ -89,6 +89,11 @@ def _assert_document_order(panel: ChatPanel) -> None:
     assert len(set(seqs)) == len(seqs)
 
 
+def _placement(before: Widget | None, after: Widget | None) -> dict[str, Widget]:
+    """The placement a wrapped ``mount`` was given: an explicit ``None`` would skip the panel's own place above its chrome."""
+    return {key: widget for key, widget in (("before", before), ("after", after)) if widget is not None}
+
+
 class _PrependGate:
     """Hold the background prepend right after its first batch mounted."""
 
@@ -457,7 +462,7 @@ def _jump_into_a_prepended_batch(
             panel.scroll_to_turn(turn.id)
 
     def mount(*widgets: Widget, before: Widget | None = None, after: Widget | None = None) -> AwaitMount:
-        mounting = real_mount(*widgets, before=before, after=after)
+        mounting = real_mount(*widgets, **_placement(before, after))
         if when == "registered" and before is not None and chosen():
             jump(list(widgets))
         return mounting
@@ -577,7 +582,7 @@ async def test_a_view_moved_before_the_last_batch_lays_out_stays_on_its_turn(
                 _simulate_chat_panel_user_scroll_y(cp, turns[0].virtual_region.y)
 
         def mount(*widgets: Widget, before: Widget | None = None, after: Widget | None = None) -> AwaitMount:
-            mounting = real_mount(*widgets, before=before, after=after)
+            mounting = real_mount(*widgets, **_placement(before, after))
             if before is not None and not turns:
                 turns.append(next(widget for widget in widgets if isinstance(widget, UserMessage)))
                 if move == "held_jump" and turns[0].id is not None:
@@ -867,7 +872,7 @@ async def test_fold_all_during_prepend_reaches_thinking_mounted_later(monkeypatc
         if message["role"] == "assistant":
             message["contents"] = [Content.from_text_reasoning(text="Thinking first.").to_dict(), *message["contents"]]
 
-    async with ChatPanelApp(show_thinking=lambda: True).run_test(size=_SIZE) as pilot:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test(size=_SIZE) as pilot:
         cp = pilot.app.query_one(ChatPanel)
         gate = _PrependGate(cp, monkeypatch)
         await cp.replay_history(messages)

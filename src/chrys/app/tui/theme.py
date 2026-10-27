@@ -278,6 +278,11 @@ def with_tui_css_variables(theme: Theme, variables: dict[str, str]) -> dict[str,
     for alias, source in _BORDER_TITLE_COLOR_VARIABLE_SOURCES.items():
         resolved[alias] = resolved[source]
     resolved["tui-tool-group-title"] = theme.variables.get("tool-group-title-color", resolved["warning"])
+    # A user message stands apart from the turn it opens: the foreground faintly over the background, lighter in a
+    # dark theme and darker in a light one.
+    resolved["tui-user-message-background"] = theme.variables.get(
+        "user-message-background", f"{resolved['foreground']} 6%"
+    )
     resolved = _with_button_css_variables(theme, resolved)
     # The editable palette uses concrete colors. Internal contrast roles are
     # shared across different fills (e.g. warning badges and primary buttons);
@@ -347,6 +352,7 @@ _CHRYS_LEGACY_VARIABLES = {
     "block-hover-background": "#4E4E4E",
     "footer-background": "#262626",
     "footer-foreground": "#EEEEEE",
+    "user-message-background": "#262626",
     "footer-key-foreground": "#AF87FF",
     "footer-key-background": "transparent",
     "footer-description-foreground": "#D0D0D0",

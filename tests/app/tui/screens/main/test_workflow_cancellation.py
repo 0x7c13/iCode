@@ -15,13 +15,13 @@ from chrys.app.tui.widgets.chat.agent_transcript_surface import AgentTranscriptS
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard
 from chrys.app.tui.widgets.chat.messages import InterruptedMessage
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup, ToolGroupTitle
-from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
 from chrys.foundation.events import types as events
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.models.execution import ExecutionSnapshot
 from chrys.foundation.models.invocations import InvocationOrigin
 from tests.orchestration.workflows._hosting import make_project
 from tests.support.tui_app_harness import make_chrys_app
+from tests.support.tui_helpers import title_runs
 from tests.support.waiting import wait_for
 
 from ._workflow_support import WorkflowEngine, confirm_workflow_cancel, open_workflow
@@ -148,7 +148,7 @@ async def test_stop_settles_node_process_and_rejects_late_activity(
         await wait_for(
             lambda: (
                 "pending.py" not in group.query_one(ToolGroupTitle).render().plain
-                and not group.query_one(ChrysLoadingIndicator).display
+                and not title_runs(group.query_one(ToolGroupTitle))
             ),
             pilot=pilot,
             description="cancelled tool activity header settled",
@@ -159,8 +159,9 @@ async def test_stop_settles_node_process_and_rejects_late_activity(
         assert group._tool_records["finished"].canonical_status == "completed"
         assert group._tool_records["finished"].result == "completed result"
         assert "pending.py" not in group.query_one(ToolGroupTitle).render().plain
-        assert not group.query_one(ChrysLoadingIndicator).display
-        assert not group.query_one(ChrysLoadingIndicator)._auto_refresh_timer._active.is_set()
+        title = group.query_one(ToolGroupTitle)
+        assert not title_runs(title)
+        assert title._auto_refresh_timer is None or not title._auto_refresh_timer._active.is_set()
         assert surface.query_one(CompactionCard).status != "running"
         assert len(surface.query(InterruptedMessage)) == 1
         notice = surface.query_one(InterruptedMessage)

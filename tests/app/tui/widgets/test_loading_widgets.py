@@ -1,18 +1,25 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for ChrysLoadingIndicator and WelcomeWidget: unattached render, live-locale resolution, and hidden-widget refresh skipping."""
+"""Tests for ChrysLoadingIndicator and WelcomeWidget: unattached render, live-locale resolution, and hidden-widget refresh skipping.
+
+Also the component styles an animated widget keeps between its frames.
+"""
 
 from __future__ import annotations
+
+from typing import ClassVar
+from unittest.mock import patch
 
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.geometry import Region
+from textual.widgets import Static
 
 from chrys.app.tui import i18n as tui_i18n
 from chrys.app.tui.i18n import LocaleController, LocaleSwitchStatus
 from chrys.app.tui.util.logo import CHAT_LOGO
-from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
+from chrys.app.tui.widgets.loading import ChrysLoadingIndicator, GatedAnimation
 from chrys.app.tui.widgets.welcome import WelcomeWidget
 from chrys.foundation.config.settings import Settings
 from tests.support.tui_helpers import (
@@ -182,3 +189,65 @@ async def test_loading_indicator_resumed_spinner_animates_after_a_geometry_read_
 
         await wait_for(timer._active.is_set, pilot=pilot, description="the shown spinner animates")
         assert indicator._composited
+
+
+class LitRow(GatedAnimation, Static):
+    COMPONENT_CLASSES: ClassVar[set[str]] = {"litrow--lit"}
+
+    DEFAULT_CSS = """
+    LitRow > .litrow--lit {
+        color: $primary;
+        background: red;
+        text-style: bold;
+    }
+    """
+
+
+class LitRowApp(App[None]):
+    CSS = """
+    .warm LitRow > .litrow--lit {
+        color: #c04000;
+    }
+    LitRow.-cool > .litrow--lit {
+        color: #0040c0;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Container(id="holder"):
+            yield LitRow("row")
+
+
+async def test_an_animated_row_keeps_its_component_style_between_frames_until_a_restyle_changes_it() -> None:
+    async with LitRowApp().run_test() as pilot:
+        row = pilot.app.query_one(LitRow)
+        holder = pilot.app.query_one("#holder")
+
+        def resolved() -> object:
+            return row.get_component_rich_style("litrow--lit").color
+
+        lit = row.text_style_of("litrow--lit")
+        assert (lit.color, lit.bgcolor, lit.bold) == (resolved(), None, True)
+        with patch.object(
+            row, "get_component_rich_style", autospec=True, side_effect=row.get_component_rich_style
+        ) as resolve:
+            # Each frame repaints the row, which drops Textual's own cache of its component styles.
+            row.refresh()
+            assert row.text_style_of("litrow--lit") == lit
+            assert resolve.call_count == 0
+
+        seen = [lit.color]
+        # An ancestor's class that changes the component's rules, not the row's own; then the row's own class.
+        for restyle in (lambda: holder.add_class("warm"), lambda: row.add_class("-cool")):
+            restyle()
+            color = row.text_style_of("litrow--lit").color
+            assert color == resolved()
+            assert color not in seen
+            seen.append(color)
+
+        holder.remove_class("warm")
+        row.remove_class("-cool")
+        assert row.text_style_of("litrow--lit") == lit
+        pilot.app.theme = "textual-light" if pilot.app.theme != "textual-light" else "textual-dark"
+        await wait_for(lambda: resolved() not in seen, pilot=pilot, description="the new theme restyles the component")
+        assert row.text_style_of("litrow--lit").color == resolved()

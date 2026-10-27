@@ -291,7 +291,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         locale_controller: LocaleController | None = None,
         on_editor_keymap_changed: Callable[[str], None] | None = None,
         tool_groups_expanded: Callable[[], bool] | None = None,
-        show_thinking: Callable[[], bool] | None = None,
+        thinking_expanded: Callable[[], bool] | None = None,
         fold_finished_turns: Callable[[], bool] | None = None,
         approval_mode: ApprovalMode = ApprovalMode.MANUAL,
         reset_program_status: Callable[[], None] | None = None,
@@ -313,7 +313,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._trajectory_verify_commands = trajectory_verify_commands
         self._on_editor_keymap_changed = on_editor_keymap_changed
         self._tool_groups_expanded = tool_groups_expanded or (lambda: True)
-        self._show_thinking = show_thinking
+        self._thinking_expanded = thinking_expanded
         self._fold_finished_turns = fold_finished_turns
         self._localization = localization
         self._locale_controller = locale_controller
@@ -591,9 +591,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """Put the choice in force; requests already waiting keep the choice they arrived under."""
         cast("ChrysApp", self.app).settings_handle.override(approval_defer_while_judging=value)
 
-    def _apply_show_thinking(self, value: bool) -> None:
-        """Put the choice in force; thinking already shown, or already left out, stays as it is."""
-        cast("ChrysApp", self.app).settings_handle.override(chat_show_thinking=value)
+    def _apply_thinking_expanded(self, value: bool) -> None:
+        """Put the choice in force; thinking already in the chat keeps its state."""
+        cast("ChrysApp", self.app).settings_handle.override(chat_thinking_expanded=value)
 
     def _apply_fold_finished_turns(self, value: bool) -> None:
         """Existing process headers keep the user's choice."""
@@ -633,7 +633,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 apply_trajectory_verify_commands=self._apply_trajectory_verify_commands,
                 apply_tool_groups_expanded=self._apply_tool_groups_expanded,
                 apply_approval_defer_while_judging=self._apply_approval_defer_while_judging,
-                apply_show_thinking=self._apply_show_thinking,
+                apply_thinking_expanded=self._apply_thinking_expanded,
                 apply_fold_finished_turns=self._apply_fold_finished_turns,
                 list_themes=lambda: sorted(app.available_themes),
                 save_notifications=self._schedule_notification_settings_save,
@@ -1050,7 +1050,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 localization=self._localization,
                 locale_controller=self._locale_controller,
                 tool_groups_expanded=self._tool_groups_expanded,
-                show_thinking=self._show_thinking,
+                thinking_expanded=self._thinking_expanded,
                 fold_finished_turns=self._fold_finished_turns,
                 sub_agent_transcript_loader=self._load_sub_agent_transcript,
             ).data_bind(

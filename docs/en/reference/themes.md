@@ -112,6 +112,7 @@ Place the following fields under `variables` as well. Omitted fields use the def
 | --- | --- | --- |
 | `border-color` | Each area's existing colors | Unifies ordinary interface borders; message, warning, and error borders retain their respective colors, and button borders still follow button backgrounds |
 | `tool-group-title-color` | `warning` | Tool call group titles |
+| `user-message-background` | `foreground` blended at 6% opacity (`chrys` and `chrys-legacy`: `#262626`) | The background of your messages in the chat; ANSI themes keep the terminal's background |
 | `control-background`, `control-background-muted` | `surface` | Widget backgrounds and muted backgrounds |
 | `control-disabled-background` | `background` | Disabled widget backgrounds |
 | `control-foreground-muted` | `text-disabled` | Muted widget text |

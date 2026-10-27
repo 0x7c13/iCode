@@ -8,7 +8,7 @@ import pytest
 from textual.theme import Theme
 from textual.widgets import Input
 
-from chrys.app.tui.screens.themes.palette import _ANSI_ONLY_EDITOR_VARIABLES
+from chrys.app.tui.screens.themes.palette import _ANSI_ONLY_EDITOR_VARIABLES, _RGB_ONLY_EDITOR_VARIABLES
 from chrys.app.tui.theme import CHRYS_ANSI_THEME, CHRYS_THEME
 from chrys.app.tui.themes.document import copy_theme
 from chrys.app.tui.themes.store import UserThemeStore
@@ -45,6 +45,10 @@ async def test_curated_fields_follow_color_mode_and_keep_hidden_overrides_on_sav
         assert (visible >= _ANSI_ONLY_EDITOR_VARIABLES) is ansi
         if not ansi:
             assert not _ANSI_ONLY_EDITOR_VARIABLES & visible
+        # An ANSI theme's user messages keep the terminal's background: no colour to edit.
+        assert (visible >= _RGB_ONLY_EDITOR_VARIABLES) is not ansi
+        if ansi:
+            assert not _RGB_ONLY_EDITOR_VARIABLES & visible
         assert {
             "footer-background",
             "footer-key-foreground",
@@ -84,9 +88,11 @@ async def test_curated_fields_follow_color_mode_and_keep_hidden_overrides_on_sav
         await wait_for(lambda: editor.document.draft.name == other and not editor._switching, pilot=pilot)
         if ansi:
             assert not _ANSI_ONLY_EDITOR_VARIABLES & editor._variable_swatches.keys()
+            assert editor._variable_swatches.keys() >= _RGB_ONLY_EDITOR_VARIABLES
             assert {"surface", "panel", "boost"} <= editor._color_buttons.keys()
         else:
             assert editor._variable_swatches.keys() >= _ANSI_ONLY_EDITOR_VARIABLES
+            assert not _RGB_ONLY_EDITOR_VARIABLES & editor._variable_swatches.keys()
             assert not {"surface", "panel", "boost"} & editor._color_buttons.keys()
 
 

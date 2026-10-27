@@ -10,7 +10,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from rich.text import Text
 from textual.containers import Horizontal, Vertical
@@ -55,7 +55,7 @@ from chrys.app.tui.widgets.chat.tool_view_builders import (
     build_code_view,
     build_params_view,
 )
-from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
+from chrys.app.tui.widgets.loading import RunningTitle
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
@@ -152,23 +152,28 @@ class _InnerToolEntry:
     completion_counted: bool = False
 
 
-class _SubAgentActivityText(Static):
-    """Single-line latest activity with a real narrow-width ellipsis."""
+class _SubAgentActivityText(RunningTitle, Static):
+    """Single-line latest activity with a real narrow-width ellipsis, after the running dot while the agent runs."""
 
-    def __init__(self, text: Text) -> None:
+    COMPONENT_CLASSES: ClassVar[set[str]] = {"sa-activity-text--shimmer"}
+    SHIMMER_COMPONENT = "sa-activity-text--shimmer"
+
+    def __init__(self, text: Text, *, running: bool) -> None:
         super().__init__(text, markup=False, id="sa-activity-text")
         self._full_text = text.copy()
+        self.set_running(running)
 
-    def set_text(self, text: Text) -> None:
+    def set_text(self, text: Text, *, running: bool) -> None:
         self._full_text = text.copy()
+        self.set_running(running)
         self.refresh(layout=False)
 
     def render(self) -> Text:
         text = self._full_text.copy()
-        available = self.content_size.width or self.size.width
+        available = (self.content_size.width or self.size.width) - (2 if self._work_running else 0)
         if available > 0:
             text.truncate(available, overflow="ellipsis")
-        return text
+        return self.running_title(text) if self._work_running else text
 
 
 # Custom Textual messages — bubble up to MainScreen so it can publish the
@@ -258,18 +263,16 @@ class SubAgentToolCall(BaseToolCard):
         height: 1;
         width: 100%;
     }
-    SubAgentToolCall #sa-latest > ChrysLoadingIndicator {
-        color: $tui-tool-group-title;
-        height: 1;
-        width: 6;
-        min-width: 6;
-        max-width: 6;
-    }
     SubAgentToolCall #sa-activity-text {
         color: $text-muted;
         height: 1;
         width: 1fr;
         overflow: hidden;
+    }
+    /* What the running dot, lit, and the middle of the band sweeping across the activity brighten to. */
+    SubAgentToolCall #sa-activity-text > .sa-activity-text--shimmer {
+        color: $text;
+        text-style: not bold;
     }
     SubAgentToolCall #sa-task {
         height: auto;
@@ -404,15 +407,9 @@ class SubAgentToolCall(BaseToolCard):
 
     def _sync_activity_summary(self) -> None:
         with suppress(Exception):
-            self.query_one("#sa-activity-text", _SubAgentActivityText).set_text(self._activity_text())
-        with suppress(Exception):
-            indicator = self.query_one("#sa-activity-indicator", ChrysLoadingIndicator)
-            active = self.status == "running"
-            indicator.display = active
-            if active:
-                indicator.resume_animation()
-            else:
-                indicator.pause_animation()
+            self.query_one("#sa-activity-text", _SubAgentActivityText).set_text(
+                self._activity_text(), running=self.status == "running"
+            )
 
     def _label_text(self, duration_ms: int = 0) -> Text:
         t = Text()
@@ -446,8 +443,7 @@ class SubAgentToolCall(BaseToolCard):
         with Vertical(id="sa-panel") as panel:
             panel.border_title = Text(self._render_title())
             with Horizontal(id="sa-latest"):
-                yield ChrysLoadingIndicator(id="sa-activity-indicator")
-                yield _SubAgentActivityText(self._activity_text())
+                yield _SubAgentActivityText(self._activity_text(), running=self.status == "running")
             with Horizontal(id="sa-sleep-actions"):
                 skip = Button(
                     render_text(widget_localizer(self), _SUB_AGENT_SKIP_SLEEP.bind()),

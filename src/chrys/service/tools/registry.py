@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from chrys.service.profiles.agents.schema import ALWAYS_LOADED_TOOL_CATEGORIES
 from chrys.service.tools.builtins.ask_user import ask_user
 from chrys.service.tools.builtins.filesystem import FilesystemTools
 from chrys.service.tools.builtins.search import SearchTools
@@ -50,7 +51,7 @@ _WEB_CATEGORIES: frozenset[str] = frozenset({"web_search", "web_fetch"})
 BUILTIN_TOOL_CATEGORIES: frozenset[str] = (
     frozenset(_STATIC_CATEGORIES) | frozenset(_INSTANCE_CATEGORIES) | _WEB_CATEGORIES
 )
-"""Every category name a profile's ``tools.builtins`` can load."""
+"""Every category name :meth:`ToolRegistry.load_builtins` knows, the always-loaded ones included."""
 
 
 class ToolRegistry:
@@ -110,10 +111,11 @@ class ToolRegistry:
         *,
         session_wide_background: bool = False,
     ) -> list[Any]:
-        """Load built-in tool categories by name.
+        """Load built-in tool categories by name, then every ``ALWAYS_LOADED_TOOL_CATEGORIES`` one.
 
         Args:
-            categories: Category names like ["filesystem", "shell", "context", "search"]
+            categories: Category names like ["filesystem", "shell", "context", "search"]; a listed
+                always-loaded category changes nothing.
             runtime: SessionEnvironment for instance tools that need session-scoped state.
             settings: Settings for instance tools that need configuration (e.g. context tools).
             shell_filter_config: Optional shell command filter configuration from the profile.
@@ -134,7 +136,8 @@ class ToolRegistry:
         if unknown:
             logger.warning("Ignoring unknown built-in tool categories: %s", ", ".join(unknown))
         effective: list[str] = []
-        for category in categories:
+        requested = [category for category in categories if category not in ALWAYS_LOADED_TOOL_CATEGORIES]
+        for category in [*requested, *ALWAYS_LOADED_TOOL_CATEGORIES]:
             # A web tool's name must stay unique, so a repeated web category loads once.
             if category in BUILTIN_TOOL_CATEGORIES and not (category in _WEB_CATEGORIES and category in effective):
                 effective.append(category)

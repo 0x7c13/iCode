@@ -47,27 +47,21 @@ def test_layout_lists_each_key_once_and_tab_ids_are_unique() -> None:
     assert tab_by_id(NOTIFICATIONS_TAB_ID) is not None and tab_by_id(NOTIFICATIONS_TAB_ID).custom_pane is True
 
 
-def test_tool_group_display_preference_lives_in_tools_display_section() -> None:
+def test_the_chat_display_preferences_sit_together_right_after_the_appearance_rows() -> None:
     general = tab_by_id(GENERAL_TAB_ID)
     tools = tab_by_id("tools")
 
     assert general is not None and tools is not None
-    assert "ui.chat.tool_groups_expanded" not in {row.key for section in general.sections for row in section.rows}
-    display = next(section for section in tools.sections if section.title.fallback == "Display")
-    assert [row.key for row in display.rows] == ["ui.chat.tool_groups_expanded"]
-
-
-def test_the_thinking_display_preference_sits_with_the_appearance_rows() -> None:
-    general = tab_by_id(GENERAL_TAB_ID)
-
-    assert general is not None
-    appearance = next(section for section in general.sections if section.title.fallback == "Appearance")
-    assert [row.key for row in appearance.rows] == [
-        "ui.theme",
-        "ui.locale",
+    titles = [section.title.fallback for section in general.sections]
+    appearance = titles.index("Appearance")
+    assert titles[appearance + 1] == "Display preferences"
+    assert [row.key for row in general.sections[appearance].rows] == ["ui.theme", "ui.locale"]
+    assert [row.key for row in general.sections[appearance + 1].rows] == [
         "ui.chat.show_thinking",
+        "ui.chat.tool_groups_expanded",
         "ui.chat.fold_finished_turns",
     ]
+    assert "ui.chat.tool_groups_expanded" not in {row.key for section in tools.sections for row in section.rows}
 
 
 def test_tools_tab_lists_each_tool_category_as_its_own_section() -> None:
@@ -90,7 +84,6 @@ def test_tools_tab_lists_each_tool_category_as_its_own_section() -> None:
             ],
         ),
         ("Ask user", ["tools.ask_user.inline", "tools.ask_user.timeout_seconds"]),
-        ("Display", ["ui.chat.tool_groups_expanded"]),
         ("Workspace notice", ["workspace.change_notice.enabled"]),
     ]
 

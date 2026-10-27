@@ -76,8 +76,10 @@ class RegistryRuntimeInfoProvider:
     ) -> StatusTrail:
         """Build trail text for tool/skill/hook/file counts."""
         parts: list[StatusMessage] = []
-        if tool_names:
-            parts.append(_RUNTIME_TOOLS.bind(count=len(tool_names)))
+        # The Tools tab lists the context management tools too: the count takes them in.
+        tools = dict.fromkeys([*tool_names, *(runtime_details.context_tools if runtime_details else ())])
+        if tools:
+            parts.append(_RUNTIME_TOOLS.bind(count=len(tools)))
         if skill_names:
             parts.append(_RUNTIME_SKILLS.bind(count=len(skill_names)))
         hook_count = enabled_hook_count(runtime_details)

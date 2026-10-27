@@ -167,7 +167,7 @@ The following examples assume the current project is a to-do app and illustrate 
 Analyze the task list implementation and propose a plan for adding a "Clear completed tasks" feature. Explain which files need to change and the implementation steps.
 ```
 
-Q&A Agent may search for files, read their contents, or run read-only commands. Tool calls appear as cards. After completing its analysis, the agent presents an implementation plan.
+Q&A Agent may search for files, read their contents, or run read-only commands. Tool calls appear as cards, grouped under one header while the agent works through them. While they run, the header shows what the agent is doing; once they are done, it says what the calls did, by kind, for example `▸ Read 3 files · searched for 2 patterns · ran 1 command`, and ends with how many failed or were interrupted, if any, which stay in view when the window is too narrow for the whole line. While the agent waits with `sleep`, the header shows why and counts down the time left, for example `Sleeping: Waiting for CI · 29s left`; to stop waiting, open the cards and click **Skip**. Once done, it says how long the agent slept, for example `slept 23s`. Click the header to show or hide the cards. After completing its analysis, the agent presents an implementation plan.
 
 ### Use Code Agent
 
@@ -215,7 +215,7 @@ For example, `$x^{n+1}$` displays as xⁿ⁺¹ and `$90^\circ$` as 90°.
 
 Mermaid code blocks appear as diagrams; choose **Open full diagram** to view and scroll the full result. Some diagrams are simplified with a notice; unsupported diagrams stay as source.
 
-When the model service returns the model's thinking as readable text, it appears in grey under **Thinking** above the reply, as the model writes it. Once it is complete, click **Thinking** to fold or unfold it (`/fold` folds or unfolds all thinking and tool groups at once). Thinking has no **copy** button, and copying replies leaves it out. To stop showing it, turn off **Show model thinking** in the Settings dialog (**General** → **Appearance**).
+When the model service returns the model's thinking as readable text, it appears in grey on one line above the reply: **Thinking:** followed by the newest words as the model writes them, then **Thought:** followed by how the thinking begins once it is complete, cut off where the line ends. Click it at any time, even while the model is still writing, to unfold it and read it in full, or to fold it again (`/fold` folds or unfolds all complete thinking, tool groups and text between tool calls at once). Once the model moves on to a tool call or its reply, the thinking folds, as tool groups do; so does text the model writes before a tool call, to one line showing how it begins. Thinking has no **copy** button, and copying replies leaves it out. To see thinking unfolded while the model writes it, turn on **Expand thinking by default** in the Settings dialog (**General** → **Display preferences**).
 
 Mouse selection copies what is displayed, without adding newlines for screen wrapping. Use **copy** beside the message header to copy the original Markdown and LaTeX. Reopening an older conversation uses the current rendering.
 

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
@@ -19,6 +20,7 @@ from textual.widget import Widget
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.util.bottom_follow import BottomFollow
 from chrys.app.tui.util.removal import remove_shielded
+from chrys.app.tui.widgets.chat.fold_gap import show_fold_gaps
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     ErrorMessage,
@@ -37,6 +39,8 @@ from chrys.foundation.i18n import MessageRef
 from chrys.foundation.patches.textual_precompose import precompose_tree
 
 if TYPE_CHECKING:
+    from textual.layout import Layout
+
     from chrys.foundation.events.types import InvocationContentFinished
     from chrys.service.session.sub_agent_transcript import PersistedSubAgentTranscript
 
@@ -78,6 +82,9 @@ class TranscriptToolStartOp:
     provider_item_type: str = ""
     provider_status: str = ""
     provider_call_id: str = ""
+    started_at: float = field(default_factory=time.monotonic)
+    """When the call started, as ``time.monotonic()`` read as the start was recorded: a view built later counts a
+    running sleep's time left from it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +103,9 @@ class TranscriptToolStatusOp:
     status: str
     provider_status: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    stopped_at: float = field(default_factory=time.monotonic)
+    """When it was recorded, as ``time.monotonic()``: a status that ends a running call ends it then, and a view built
+    later counts how long the call ran up to it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +158,9 @@ class TranscriptInterruptedOp:
     """Close an invocation's transcript and settle its unfinished activity."""
 
     reason: MessageRef
+    stopped_at: float = field(default_factory=time.monotonic)
+    """When it stopped the calls still running, as ``time.monotonic()`` read as it was recorded: a view built later
+    counts how long they ran up to it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +168,9 @@ class TranscriptErrorOp:
     """Settle failed activity and show the shared chat error card."""
 
     reason: str | MessageRef
+    stopped_at: float = field(default_factory=time.monotonic)
+    """When it stopped the calls still running, as ``time.monotonic()`` read as it was recorded: a view built later
+    counts how long they ran up to it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +181,10 @@ class TranscriptPausedOp:
 @dataclass(frozen=True, slots=True)
 class TranscriptResumedOp:
     """Clear a failed attempt's status before accepting the next attempt."""
+
+    stopped_at: float = field(default_factory=time.monotonic)
+    """When it stopped the calls still running, as ``time.monotonic()`` read as it was recorded: a view built later
+    counts how long they ran up to it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -744,6 +764,7 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
                 provider_item_type=operation.provider_item_type,
                 provider_status=operation.provider_status,
                 provider_call_id=operation.provider_call_id,
+                started_at=operation.started_at,
                 # A running call's start can come again (ACP: when what it shows changes), after later output
                 # ended its group: it updates the card where it is and never opens another.
                 running_in_place=True,
@@ -756,6 +777,7 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
                 operation.status,
                 provider_status=operation.provider_status,
                 metadata=dict(operation.metadata),
+                stopped_at=operation.stopped_at,
             )
         elif isinstance(operation, TranscriptToolProgressOp):
             self._tools.update_tool_progress(
@@ -789,16 +811,23 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
                 failure_reason=operation.failure_reason,
             )
         elif isinstance(operation, TranscriptInterruptedOp):
-            await self._live.add_interrupted(self._render_message(operation.reason), source="system", show_action=False)
+            await self._live.add_interrupted(
+                self._render_message(operation.reason),
+                source="system",
+                show_action=False,
+                stopped_at=operation.stopped_at,
+            )
         elif isinstance(operation, TranscriptErrorOp):
-            await self._live.add_error(self._render_message(operation.reason), action_label=None)
+            await self._live.add_error(
+                self._render_message(operation.reason), action_label=None, stopped_at=operation.stopped_at
+            )
         elif isinstance(operation, TranscriptPausedOp):
             # As the main chat's error card does; Retry then removes the text, Abort keeps it.
             self._live.stop_answer()
         elif isinstance(operation, TranscriptResumedOp):
             # Released as intermediate text: the answer the resumed attempt asks for again is withdrawn next.
             self._live.settle_answer_before_tools()
-            await self._live.prepare_retry()
+            await self._live.prepare_retry(stopped_at=operation.stopped_at)
             await self.remove_trailing_status()
         elif isinstance(operation, TranscriptAnswerWithdrawnOp):
             await remove_withdrawn_answer(self, operation.segment_ids)
@@ -823,6 +852,7 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
         return message if isinstance(message, str) else render_str(widget_localizer(self), message)
 
     def _settle_answer_before_tools(self) -> None:
+        # Nested transcripts fold nothing as tools start.
         self._live.settle_answer_before_tools()
 
     async def mount_transcript_widget(self, widget: Widget) -> bool:
@@ -876,6 +906,9 @@ class AgentTranscriptSurface(VerticalScroll, can_focus=True):
 
     def after_replay_history_mounted(self) -> None:
         self.schedule_anchor_sync()
+
+    def pre_layout(self, layout: Layout) -> None:
+        show_fold_gaps(self.displayed_children)
 
     async def remove_trailing_status(self) -> None:
         status = self.failed_turn_status()

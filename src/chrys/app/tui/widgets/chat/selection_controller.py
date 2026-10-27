@@ -38,8 +38,8 @@ from textual.geometry import Offset, Region
 from textual.selection import SELECT_ALL, Selection
 from textual.widget import Widget
 
-from chrys.app.tui.widgets.chat.ports import ChatTranscriptPanelMarker
 from chrys.app.tui.widgets.chat.tool_call import is_tool_copy_excluded
+from chrys.app.tui.widgets.chat.transcript_panel import ChatTranscriptPanelMarker
 
 if TYPE_CHECKING:
     from textual.screen import Screen

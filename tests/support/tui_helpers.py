@@ -36,13 +36,16 @@ from chrys.app.tui.screens.main.suggestions import SuggestionCallbacks, Suggesti
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.support.gc_freeze import GcAbsorbRequested, GcReclaimRequested
 from chrys.app.tui.widgets.chat.agent_transcript_surface import AgentTranscriptSurface
+from chrys.app.tui.widgets.chat.chrome import ChatBottomGap
 from chrys.app.tui.widgets.chat.panel import ChatPanel, _ChatBottomSpacer, _ScrollToBottomButton
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolCardHeader, ToolGroup
+from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
 from chrys.app.tui.widgets.chrome.file_scanner import ProjectPathScanResult, ProjectPathSuggestion
 from chrys.app.tui.widgets.chrome.status_bar import StatusTrail, TrailCount
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
+from chrys.app.tui.widgets.loading import RunningTitle
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.i18n import MessageRef
@@ -583,6 +586,23 @@ def rich_plain(renderable: RenderableType, *, width: int = 200) -> str:
     )
 
 
+_RUNNING_DOTS = ("• ", "◦ ")
+"""The dot before a running title's text: a lit ``•`` and a dim ``◦`` take turns."""
+
+
+def title_text(title: Widget) -> str:
+    """The plain text *title* shows, without the running dot that blinks before it while its work runs."""
+    plain = title.render().plain  # type: ignore[union-attr]
+    return plain[2:] if plain[:2] in _RUNNING_DOTS else plain
+
+
+def title_runs(title: RunningTitle) -> bool:
+    """Whether *title* shows its work running: the dot before its text."""
+    shown = title.render().plain[:2] in _RUNNING_DOTS  # type: ignore[attr-defined]
+    assert shown is title._work_running
+    return shown
+
+
 # ---------------------------------------------------------------------------
 # Widget harnesses — minimal apps that mount one widget under test
 # ---------------------------------------------------------------------------
@@ -645,28 +665,31 @@ class ChatPanelApp(LocalizedApp):
         self,
         localization: TranscriptLocalizationPort | None = None,
         *,
-        show_thinking: Callable[[], bool] | None = None,
+        thinking_expanded: Callable[[], bool] | None = None,
         fold_finished_turns: Callable[[], bool] | None = None,
+        tool_groups_expanded: Callable[[], bool] | None = None,
     ) -> None:
         self._localization = localization
-        self._show_thinking = show_thinking
+        self._thinking_expanded = thinking_expanded
         self._fold_finished_turns = fold_finished_turns
+        self._tool_groups_expanded = tool_groups_expanded
         super().__init__()
 
     def compose(self) -> ComposeResult:
         yield ChatPanel(
             localization=self._localization,
-            show_thinking=self._show_thinking,
+            thinking_expanded=self._thinking_expanded,
             fold_finished_turns=self._fold_finished_turns,
+            tool_groups_expanded=self._tool_groups_expanded,
         )
 
 
 class GcMessageChatPanelApp(ChatPanelApp):
     """:class:`ChatPanelApp` that records the GC absorb/reclaim requests it receives."""
 
-    def __init__(self, *, show_thinking: Callable[[], bool] | None = None) -> None:
+    def __init__(self, *, thinking_expanded: Callable[[], bool] | None = None) -> None:
         self.gc_messages: list[GcAbsorbRequested | GcReclaimRequested] = []
-        super().__init__(show_thinking=show_thinking)
+        super().__init__(thinking_expanded=thinking_expanded)
 
     def on_gc_absorb_requested(self, message: GcAbsorbRequested) -> None:
         self.gc_messages.append(message)
@@ -677,7 +700,11 @@ class GcMessageChatPanelApp(ChatPanelApp):
 
 def chat_content_children(panel: ChatPanel) -> list[object]:
     """Return transcript children, excluding persistent chat-panel infrastructure."""
-    return [child for child in panel.children if not isinstance(child, (_ChatBottomSpacer, _ScrollToBottomButton))]
+    return [
+        child
+        for child in panel.children
+        if not isinstance(child, (WaitingRow, ChatBottomGap, _ChatBottomSpacer, _ScrollToBottomButton))
+    ]
 
 
 def inline_diff_mount_state(card: Widget) -> str:

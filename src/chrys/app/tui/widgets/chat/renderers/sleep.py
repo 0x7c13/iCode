@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Button, Static
@@ -145,6 +146,19 @@ class SleepToolCall(BaseToolCard):
         self._reason = str(self.args.get("reason") or "")
         self._spin_idx = 0
         self._timer: Timer | None = None
+
+    def restore_started_at(self, started_at: float) -> None:
+        """Count down from when the call started, as its group's title does, not from when the card was built.
+
+        Given before the card composes, its first frame counts from the start; given as its folded group opens, it
+        shows the time as it is now in that frame, since a hidden card does not count.
+        """
+        self._start_time = started_at
+        if self.status != "running":
+            return
+        with suppress(NoMatches):
+            self.query_one("#sleep-label", Static).update(self._running_label_text())
+            update_static_in_place(self.query_one("#sleep-countdown", Static), self._countdown_text())
 
     def _label_text(self, duration_ms: int = 0) -> Text:
         t = Text()

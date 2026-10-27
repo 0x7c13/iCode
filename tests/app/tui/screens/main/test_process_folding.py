@@ -15,7 +15,7 @@ from chrys.foundation.events.types import InvocationContentDelta, InvocationCont
 from chrys.foundation.models.invocations import InvocationOrigin
 from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
-from tests.support.tui_helpers import click_when_settled
+from tests.support.tui_helpers import click_when_settled, rich_plain
 from tests.support.waiting import wait_for
 
 if TYPE_CHECKING:
@@ -60,6 +60,7 @@ async def test_fifty_completed_turns_fold_without_global_restyle_or_recompose(tm
         blocks = list(panel.query(ProcessBlock))
         assert len(blocks) == 50
         assert all(block.collapsed for block in blocks)
+        assert {rich_plain(block.render()) for block in blocks} == {"▸ 1 tool call · 1 read"}
         assert all(block not in main.focus_chain for block in blocks)
         input_bar = main.query_one(InputBar)
         input_bar.focus_input()

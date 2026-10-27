@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""A main turn's thinking shows as it streams, by default, and the setting decides it for each new segment."""
+"""A main turn's thinking shows as it streams, folded by default; the setting decides it for each new segment."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _thinking(panel: ChatPanel) -> list[str]:
     return [message.text for message in panel.query(ThinkingMessage)]
 
 
-async def test_thinking_shows_above_the_answer_by_default_and_a_setting_change_applies_to_the_next_segment(
+async def test_thinking_streams_folded_above_the_answer_by_default_and_a_setting_change_applies_to_the_next_segment(
     tmp_path: Path,
 ) -> None:
     bus = EventBus()
@@ -52,33 +52,36 @@ async def test_thinking_shows_above_the_answer_by_default_and_a_setting_change_a
         panel = main.query_one(ChatPanel)
         main._set_agent_running(True)
 
+        for event in (_delta("r1", "Looking "), _delta("r1", "closer.")):
+            await bus.publish(event, raise_handler_errors=True)
+        await wait_for(lambda: _thinking(panel) == ["Looking closer."], pilot=pilot, description="thinking mounted")
+        (first,) = panel.query(ThinkingMessage)
+        assert first.collapsed is True
+
         for event in (
-            _delta("r1", "Looking "),
-            _delta("r1", "closer."),
             _finished("r1"),
             _delta("a1", "Answer.", channel="answer"),
             _finished("a1", channel="answer"),
         ):
             await bus.publish(event, raise_handler_errors=True)
-        await wait_for(
-            lambda: _thinking(panel) == ["Looking closer."] and len(panel.query(AgentMessage)) == 1,
-            pilot=pilot,
-            description="thinking and answer mounted",
-        )
-        (thinking,) = panel.query(ThinkingMessage)
+        await wait_for(lambda: len(panel.query(AgentMessage)) == 1, pilot=pilot, description="answer mounted")
         (answer,) = panel.query(AgentMessage)
-        assert panel.children.index(thinking) < panel.children.index(answer)
+        assert panel.children.index(first) < panel.children.index(answer)
 
-        main._apply_show_thinking(False)
-        assert app.settings_handle.settings.chat_show_thinking is False
-        for event in (_delta("r2", "Not shown."), _finished("r2")):
-            await bus.publish(event, raise_handler_errors=True)
+        main._apply_thinking_expanded(True)
+        assert app.settings_handle.settings.chat_thinking_expanded is True
+        await bus.publish(_delta("r2", "Shown open."), raise_handler_errors=True)
+        await wait_for(lambda: len(_thinking(panel)) == 2, pilot=pilot, description="second thinking mounted")
+        second = panel.query(ThinkingMessage).last()
+        assert (first.collapsed, second.collapsed) == (True, False)
+
+        await bus.publish(_finished("r2"), raise_handler_errors=True)
         await bus.publish(
             InvocationMessage(origin=_ORIGIN, session_id="s1", text="Answer.", is_final=True),
             raise_handler_errors=True,
         )
         await wait_for(lambda: not main.agent_running_state, pilot=pilot, description="turn completed")
-        assert _thinking(panel) == ["Looking closer."]
+        assert _thinking(panel) == ["Looking closer.", "Shown open."]
 
 
 async def test_a_retry_that_gives_up_thinking_while_the_prompt_mounts_removes_it_in_order(tmp_path: Path) -> None:

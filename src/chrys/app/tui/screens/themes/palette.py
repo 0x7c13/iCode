@@ -59,6 +59,8 @@ _ANSI_ONLY_EDITOR_VARIABLES = frozenset(
         "markdown-h5-color",
     )
 )
+# ANSI themes keep the terminal's background behind user messages (UserMessage:ansi).
+_RGB_ONLY_EDITOR_VARIABLES = frozenset(("user-message-background",))
 _VARIABLE_GROUPS = (
     ("button", BUTTON_COLOR_VARIABLES),
     ("border", ("border", "border-blurred", "border-color")),
@@ -87,7 +89,16 @@ _VARIABLE_GROUPS = (
             "markdown-block-background",
         ),
     ),
-    ("misc", ("text-disabled", "screen-selection-background", "tool-group-title-color", "hatch-color")),
+    (
+        "misc",
+        (
+            "text-disabled",
+            "screen-selection-background",
+            "tool-group-title-color",
+            "user-message-background",
+            "hatch-color",
+        ),
+    ),
     ("ansi", _ANSI_VARIABLE_NAMES),
 )
 _CANONICAL_VARIABLE_NAMES = tuple(name for _group, names in _VARIABLE_GROUPS for name in names)
@@ -117,8 +128,7 @@ _ANSI_COLOR_TOKENS = (
 def _group_variables(var_names: list[str], *, ansi: bool = False) -> list[tuple[str, list[str]]]:
     """Show supported colors in stable groups, omitting mode-inapplicable slots."""
     requested = set(var_names)
-    if not ansi:
-        requested -= _ANSI_ONLY_EDITOR_VARIABLES
+    requested -= _RGB_ONLY_EDITOR_VARIABLES if ansi else _ANSI_ONLY_EDITOR_VARIABLES
     return [
         (group, visible)
         for group, names in _VARIABLE_GROUPS

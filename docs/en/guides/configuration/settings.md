@@ -54,8 +54,14 @@ The "Takes effect" column in the following tables describes each setting's usual
 | --- | --- | --- |
 | Theme | Changes the TUI theme. To adjust colors or create a custom theme, see [Customize themes](themes.md). | Immediately |
 | UI Language | Changes only iCode interface text, not conversation content, the model's output language, or existing records. You can also switch the interface language with `/language`. | Immediately |
-| Show model thinking | Shows the model's thinking above its reply as it arrives, when the model service returns it as readable text. Thinking the service returns only in encrypted form is never shown. Thinking already in the conversation stays as it is when you change this. | New replies and sessions you open afterwards |
-| Automatically fold completed turns | Enabled by default (`ui.chat.fold_finished_turns`). After a successful reply, folds thinking, tool calls and intermediate replies under **Made N tool calls**, or **Activity** when there were no tools or the turn is in compressed history. User messages, including mid-turn additions, and the final reply remain visible. Click the header to toggle one section, or type `/fold` to collapse or expand activity sections, tool groups and thinking with the keyboard. Errors, interruptions and the last turn recovered after a crash stay visible; a turn without a visible final reply is not automatically folded. Existing folds keep your choice. | Future completed turns and sessions you open afterwards |
+
+#### Display preferences
+
+| Setting | Effect and notes | Takes effect |
+| --- | --- | --- |
+| Expand thinking by default | Disabled by default (`ui.chat.show_thinking`). When enabled, new thinking is expanded above the reply while the model writes it, when the model service returns it as readable text. When disabled, it stays on one line, which shows the newest words as they arrive. Either way, it folds to one line showing how the thinking begins once the model moves on to a tool call or its reply. You can click it at any time to read it in full. Thinking the service returns only in encrypted form is never shown. Thinking already in the conversation keeps its state when you change this. | Immediately |
+| Expand tool details by default | Disabled by default (`ui.chat.tool_groups_expanded`). When enabled, new tool groups are expanded by default. When disabled, they are collapsed and show only a summary and the current operation. You can click a tool group at any time to expand its details. | Immediately |
+| Automatically fold completed turns | Enabled by default (`ui.chat.fold_finished_turns`). After a successful reply, folds thinking, tool calls and intermediate replies under a header that counts the tool calls by kind, such as `12 tool calls · 8 reads · 4 commands`, or **Activity** when there were no tools or the turn is in compressed history. User messages, including mid-turn additions, and the final reply remain visible. Click the header to toggle one section, or type `/fold` to collapse or expand activity sections, tool groups, thinking and text between tool calls with the keyboard. Errors, interruptions and the last turn recovered after a crash stay visible; a turn without a visible final reply is not automatically folded. Existing folds keep your choice. | Future completed turns and sessions you open afterwards |
 
 #### Input
 
@@ -200,12 +206,6 @@ Values are checked with the same rules the web tools use before they are saved, 
 | --- | --- | --- |
 | Show questions in the chat | When enabled, the agent's questions appear directly in the conversation. When disabled, they appear in a popup. | On close |
 | Ask-user timeout (seconds) | Sets how long iCode waits for an answer. When left blank, it uses the default value shown in the TUI. If no answer arrives before the timeout, iCode returns a timeout result to the agent. Set to `0` to wait until an answer arrives or the task is interrupted. When using an ACP client such as an IDE plugin, `ask_user` has no server-side time limit by default; to set one, use `--ask-user-timeout` when starting the ACP server. | On close |
-
-#### Display
-
-| Setting | Effect and notes | Takes effect |
-| --- | --- | --- |
-| Expand tool details by default | When enabled, new tool groups are expanded by default. When disabled, they are collapsed and show only a summary and the current operation. You can click a tool group at any time to expand its details. | Immediately |
 
 #### Workspace notice
 

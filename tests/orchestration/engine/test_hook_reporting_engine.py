@@ -331,7 +331,8 @@ async def _build_compacting_child_engine(
             provider="mock",
             model_id="child",
             vision=False,
-            max_context_tokens=8000,
+            # Holds the child's tool schemas, its first request and its last-words call, not the file it reads.
+            max_context_tokens=9000,
             max_output_tokens=1000,
         )
     )

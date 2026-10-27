@@ -29,7 +29,6 @@ from chrys.app.tui.widgets.chat.tool_call import (
     ToolCardHeader,
     ToolGroup,
 )
-from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
 from chrys.foundation.platform.files import atomic_write_owner_only_text
 from chrys.foundation.tool_kinds import (
     KIND_FILESYSTEM_READ,
@@ -49,6 +48,8 @@ from tests.support.tui_helpers import (
     LocalizedApp,
     LocalizedWidgetApp,
     mount_sub_agent_detail,
+    title_runs,
+    title_text,
 )
 from tests.support.waiting import wait_for
 
@@ -80,7 +81,7 @@ async def test_sub_agent_final_result_is_detail_only_and_detail_stays_live() -> 
         )
 
         latest = card.query_one("#sa-activity-text", Static)
-        assert latest.render().plain == "Reading tests/test_app.py"
+        assert title_text(latest) == "Reading tests/test_app.py"
         assert not list(card.query(AgentMessage))
         assert not list(card.query(ToolGroup))
 
@@ -119,11 +120,11 @@ async def test_sub_agent_final_result_is_detail_only_and_detail_stays_live() -> 
             final_result,
         ]
         assert detail_group.collapsed is True
-        assert latest.render().plain == "Completed"
+        assert title_text(latest) == "Completed"
         header = card.query_one(ToolCardHeader)
         assert header.actions_visible is True
         assert header.copy_action_visible is True
-        assert card.query_one("#sa-activity-indicator", ChrysLoadingIndicator).display is False
+        assert title_runs(latest) is False
         assert persisted_loads == []
 
 
@@ -455,7 +456,7 @@ async def test_sub_agent_compact_activity_keeps_only_latest_assistant_or_tool() 
         latest = card.query_one("#sa-activity-text", Static)
 
         card.add_answer("first", "First plan\nwith details")
-        assert latest.render().plain == "First plan with details"
+        assert title_text(latest) == "First plan with details"
 
         await card.add_inner_tool_start(
             "inner-1",
@@ -463,13 +464,13 @@ async def test_sub_agent_compact_activity_keeps_only_latest_assistant_or_tool() 
             {"pattern": "needle"},
             tool_kind=KIND_SEARCH,
         )
-        assert latest.render().plain == "Searching for needle"
+        assert title_text(latest) == "Searching for needle"
 
         card.complete_inner_tool("inner-1", "ok", 10)
-        assert latest.render().plain == "Searching for needle"
+        assert title_text(latest) == "Searching for needle"
 
         card.add_answer("second", "Second plan")
-        assert latest.render().plain == "Second plan"
+        assert title_text(latest) == "Second plan"
         assert not list(card.query(AgentMessage))
         assert not list(card.query(ToolGroup))
 
@@ -509,8 +510,9 @@ async def test_sub_agent_parent_completion_settles_running_nested_detail() -> No
             pilot=pilot,
             description="parent completion settled nested tool card",
         )
-        assert card.query_one("#sa-activity-text", Static).render().plain == "Completed"
-        assert card.query_one("#sa-activity-indicator", ChrysLoadingIndicator).display is False
+        latest = card.query_one("#sa-activity-text", Static)
+        assert title_text(latest) == "Completed"
+        assert title_runs(latest) is False
 
 
 async def test_sub_agent_detail_replays_persisted_transcript_without_duplicate_final() -> None:
