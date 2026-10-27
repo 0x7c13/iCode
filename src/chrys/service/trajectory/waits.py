@@ -4,7 +4,9 @@
 
 Approvals, retries and hook runs are already wait nodes on the timeline and
 never get a ``wait.*`` twin. This module records user input, MCP connection
-setup, input-admission gates, and tool-admission lock acquisition. Categories
+setup, input-admission gates, tool-admission lock acquisition, and a hook's
+``ask`` waiting for the user (``hook_confirmation``, whose finish adds the
+``result`` and ``end_reason`` codes). Categories
 remain an open payload domain; declared categories need not have producers.
 """
 
@@ -125,8 +127,9 @@ class WaitTrace:
         except Exception:
             logger.debug("Trajectory wait.started emit failed", exc_info=True)
 
-    def _finished_draft(self, *, outcome: str) -> Any:
+    def _finished_draft(self, *, outcome: str, codes: Mapping[str, str]) -> Any:
         payload = self._payload()
+        payload.update(codes)
         payload["outcome"] = outcome
         payload["duration_ms"] = max(0, (time.monotonic_ns() - self._started_ns) // 1_000_000)
         return self._context.draft(
@@ -137,18 +140,19 @@ class WaitTrace:
             measurements={"/payload/duration_ms": measurement(MeasurementSource.MONOTONIC_CLOCK, method_version=1)},
         )
 
-    async def finished(self, *, outcome: str = WaitOutcome.COMPLETED) -> None:
+    async def finished(self, *, outcome: str = WaitOutcome.COMPLETED, **codes: str) -> None:
+        """Close the wait; *codes* are extra closed-code fields its category defines (never free text)."""
         if self._finished:
             return
         self._finished = True
         if not self._started:
             return
         try:
-            await self._context.sink.emit(self._finished_draft(outcome=outcome))
+            await self._context.sink.emit(self._finished_draft(outcome=outcome, codes=codes))
         except Exception:
             logger.debug("Trajectory wait.finished emit failed", exc_info=True)
 
-    def finished_soon(self, *, outcome: str) -> None:
+    def finished_soon(self, *, outcome: str, **codes: str) -> None:
         """Close without awaiting the ack (cancellation paths)."""
         if self._finished:
             return
@@ -156,6 +160,6 @@ class WaitTrace:
         if not self._started:
             return
         try:
-            self._context.sink.emit_soon(self._finished_draft(outcome=outcome))
+            self._context.sink.emit_soon(self._finished_draft(outcome=outcome, codes=codes))
         except Exception:
             logger.debug("Trajectory wait.finished emit failed", exc_info=True)

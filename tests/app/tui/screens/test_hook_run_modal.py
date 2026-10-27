@@ -8,6 +8,7 @@ import dataclasses
 import inspect
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -381,6 +382,18 @@ async def test_applied_names_what_was_taken_or_why_not(applied: HookRunApplied, 
     async with app.run_test(size=(140, 50)) as pilot:
         modal = await _open(pilot, app)
         assert expected in _pane_text(modal, "hook-run-output")
+
+
+async def test_a_change_that_got_the_call_rejected_says_so_after_the_change() -> None:
+    record = replace(_record(effect="modified_args"), call_rejected=True)
+    app = _ModalApp(
+        _detail(record, applied=HookRunApplied(args='{"path": "/x"}'), io=_io(result_file="ok", decision="{}"))
+    )
+    async with app.run_test(size=(140, 50)) as pilot:
+        modal = await _open(pilot, app)
+        text = _pane_text(modal, "hook-run-output")
+        assert '"path": "/x"' in text
+        assert "Hooks kept changing the arguments after the user continued, so the tool call was rejected." in text
 
 
 def _section_texts(modal: HookRunModal, pane: str, title: str) -> list[str]:

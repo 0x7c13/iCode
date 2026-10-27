@@ -90,6 +90,7 @@ from chrys.service.agent_middleware import (
     SubAgentEventMiddleware,
     SubAgentStatsMiddleware,
 )
+from chrys.service.agent_middleware.control.hook_commit import HookCommitMiddleware
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.approval.turn_context import TurnContextHolder
 from chrys.service.context.compaction.last_words_state import DropRoundBreakerState
@@ -1609,6 +1610,8 @@ class SubAgentTools:
                         self._bus, session_id=self._session_id, background_tasks=self._background_tasks
                     )
                     middleware.append(sleep_mw)
+                    # Innermost: runs the version the event middleware's hooks checked, or nothing.
+                    middleware.append(HookCommitMiddleware())
                 if sub_event_mw is None:
                     middleware.append(SubAgentStatsMiddleware(log_stats))
                 # Wire usage callback so token counts flow to TUI via

@@ -60,6 +60,7 @@ from chrys.orchestration.sub_agents.registration import (
     sub_agent_skip_reason,
 )
 from chrys.orchestration.sub_agents.tools import SubAgentTools
+from chrys.service.agent_middleware.control.hook_commit import HookCommitMiddleware
 from chrys.service.agent_middleware.control.sleep import SleepMiddleware
 from chrys.service.agent_middleware.events.sub_agent_events import SubAgentEventMiddleware
 from chrys.service.approval.policy import ApprovalPolicy
@@ -432,6 +433,8 @@ async def build_kernel_node(
     approval.bind_publisher(callbacks.emitter())
     middleware.append(approval)
     middleware.append(SleepMiddleware(res.bus, session_id=session_id, background_tasks=res.background_tasks))
+    # Innermost function middleware: runs the version the event middleware's hooks checked, or nothing.
+    middleware.append(HookCommitMiddleware())
     # Innermost last: validation judges each landed response; usage, under it, counts every one first.
     validation = create_validation(conversation)
     middleware.append(validation)

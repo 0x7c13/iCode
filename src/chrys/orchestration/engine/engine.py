@@ -82,6 +82,7 @@ from chrys.service.trajectory.state import TurnRecord, turn_records
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.models.execution import ExecutionSnapshot
+    from chrys.service.hooks.confirmation import HookConfirmationService
     from chrys.service.hooks.run_log import HookRunLog
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.profiles.models.registry import ModelProfileRegistry
@@ -164,6 +165,7 @@ class AgentEngine:
         trajectory_recorder: trajectory_recorder.TrajectoryRecorder,
         workflows: WorkflowCoordinator,
         hook_runs: HookRunLog | None = None,
+        hook_confirmations: HookConfirmationService | None = None,
     ) -> None:
         self._bus = bus
         self._session = session
@@ -183,6 +185,7 @@ class AgentEngine:
         self._trajectory_recorder = trajectory_recorder
         self._workflows = workflows
         self._hook_runs = hook_runs
+        self._hook_confirmations = hook_confirmations
         self._subscribed = False
         self._release_task: asyncio.Task[None] | None = None
 
@@ -537,12 +540,20 @@ class AgentEngine:
         await self._bus.subscribe(InvocationAborted, self._on_sub_agent_unpaused)
         await self._bus.subscribe(InvocationCascadeAborted, self._on_sub_agent_unpaused)
         await self._workflows.subscribe()
+        if self._hook_confirmations is not None:
+            await self._hook_confirmations.start()
 
     async def shutdown(self) -> None:
         # Closing is declared before the active workflow run is drained: a requester queued behind that
         # run is refused as shutting down instead of being admitted into a session that is going away.
         self._session.mark_closing()
-        await self._workflows.shutdown()
+        try:
+            await self._workflows.shutdown()
+        except BaseException:
+            # The release, which closes the hook confirmations, never started: they close all the same.
+            if self._release_task is None and self._hook_confirmations is not None:
+                await self._hook_confirmations.close()
+            raise
         await self._release()
 
     async def _release(self) -> None:
@@ -555,13 +566,21 @@ class AgentEngine:
         """
         task = self._release_task
         if task is None or task.done():
-            task = asyncio.create_task(self._lifecycle.shutdown(), name="chrys.engine.release")
+            task = asyncio.create_task(self._release_resources(), name="chrys.engine.release")
             self._release_task = task
         # Shutdown drains usage publications. An inline UsageUpdate handler must return before that
         # drain can finish; the release task retains ownership after the handler gives up its wait.
         if asyncio.current_task() in self._usage_publisher.tasks:
             return
         await asyncio.shield(task)
+
+    async def _release_resources(self) -> None:
+        try:
+            await self._lifecycle.shutdown()
+        finally:
+            if self._hook_confirmations is not None:
+                # After the release: what still waits on a question ends unavailable, and no answer is taken after.
+                await self._hook_confirmations.close()
 
     async def _session_operation(
         self, operation: str, run: Callable[[], Awaitable[None]], *, target_session_id: str | None = None

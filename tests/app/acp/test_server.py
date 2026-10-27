@@ -22,6 +22,8 @@ from chrys.foundation.events.types import (
     Error,
     Event,
     InvocationContentDelta,
+    InvocationContentFinished,
+    InvocationMessage,
     QuestionToUser,
     SessionTitleUpdated,
     TodoListUpdated,
@@ -31,7 +33,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserOption, AskUserQuestion
 from chrys.foundation.models.invocations import InvocationOrigin
 from chrys.foundation.models.todos import TodoItem
-from chrys.orchestration.session_host import Cancelled, EndTurn, Errored
+from chrys.orchestration.session_host import Cancelled, EndTurn, Errored, Refused
 from chrys.service.todos.tracker import TodoTracker
 from tests.app.acp._server_fakes import (
     _append_async,
@@ -228,6 +230,67 @@ async def test_prompt_errored_outcome_carries_usage_in_request_error_data() -> N
         "outputTokens": 5,
         "totalTokens": 35,
     }
+
+
+_REFUSED = Error(code="hook_blocked", message="hook 'gate' blocked: not this one", refused_input="prompt")
+
+
+@pytest.mark.anyio
+async def test_a_refused_prompt_answers_refusal_and_says_why_while_it_holds_the_session() -> None:
+    host = _FakeHost(event_bus=EventBus(), outcome=Refused(error=_REFUSED))
+    manager = _FakeManager(host)
+    held_while_sent: list[tuple[bool, bool]] = []
+
+    class _Client(_FakeClient):
+        async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+            session = manager._session
+            held_while_sent.append((session.prompt_lock.locked(), bool(session.turns_reserved)))
+            await super().session_update(session_id, update, **kwargs)
+
+    client = _Client()
+    server = ChrysAcpServer(manager, initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(client)
+    published: list[Event] = []
+
+    async def record(event: Event) -> None:
+        published.append(event)
+
+    for kind in (InvocationContentDelta, InvocationContentFinished, InvocationMessage):
+        await host.event_bus.subscribe(kind, record)
+
+    response = await server.prompt([text_block("the secret plan")], session_id="s1", message_id=_CLIENT_MESSAGE_ID)
+
+    # A normal end of the request, not a JSON-RPC error a client may treat as a broken agent.
+    assert response.stop_reason == "refusal"
+    assert response.user_message_id == _CLIENT_MESSAGE_ID
+    assert response.field_meta is not None
+    assert (response.field_meta["chrys"]["code"], response.field_meta["chrys"]["message"]) == (
+        "hook_blocked",
+        "hook 'gate' blocked: not this one",
+    )
+    notices = [u.update for u in client.updates if u.update.session_update == "agent_message_chunk"]
+    assert [n.content.text for n in notices] == ["Input rejected: hook 'gate' blocked: not this one"]
+    assert notices[0].field_meta == {"chrys": {"code": "hook_blocked", "refusedInput": "prompt"}}
+    # Still the session's request while it says why: no other prompt is admitted, nor can it run first.
+    assert held_while_sent[-1] == (True, True)
+    # The notice is the ACP frontend's own: nothing the session's history is built from carries it.
+    assert published == []
+
+
+@pytest.mark.anyio
+async def test_an_errored_prompt_sends_no_refusal_notice() -> None:
+    host = _FakeHost(event_bus=EventBus(), outcome=Errored(error=Error(code="model_failed", message="stopped")))
+    client = _FakeClient()
+    server = ChrysAcpServer(_FakeManager(host), initial_vision=False)  # type: ignore[arg-type]
+    server.on_connect(client)
+
+    with pytest.raises(RequestError):
+        await server.prompt([text_block("run")], session_id="s1")
+
+    assert not any(
+        u.update.session_update == "agent_message_chunk" and u.update.content.text.startswith("Input rejected")
+        for u in client.updates
+    )
 
 
 @pytest.mark.anyio

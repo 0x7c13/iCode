@@ -61,32 +61,7 @@ ApprovalDialog {
     padding: 0;
 }
 
-.approval-arg-box {
-    width: 100%;
-    height: auto;
-    border: round $tui-border-warning 50%;
-    border-title-align: left;
-    border-title-color: $warning;
-    color: $text;
-    padding: 0 1;
-    margin-bottom: 1;
-}
-
-/* A value too long to lay out at once scrolls inside its box, its scrollbar
-   against the right border. The stable gutter keeps the scrollbar from
-   changing the width its rows are cut to. */
-.approval-long-value {
-    max-height: 20;
-    padding: 0 0 0 1;
-    overflow-x: hidden;
-    overflow-y: auto;
-    scrollbar-gutter: stable;
-    scrollbar-size-vertical: 1;
-}
-
-.approval-long-value:focus {
-    border: round $tui-border-warning;
-}
+/* The argument boxes' own look is the value boxes' (widgets/value_box.py). */
 
 .approval-detail-box {
     margin: 1 1 0 1;

@@ -26,6 +26,7 @@ from chrys.foundation.models.hook_runs import (
 )
 
 if TYPE_CHECKING:
+    from chrys.foundation.models.hook_confirmations import HookConfirmationOutcome
     from chrys.service.hooks.schema import HookConfig
 
 HOOK_RUN_LOG_MAX_ENDED = 100
@@ -280,6 +281,7 @@ class HookRunLog:
             outcome=outcome,
             exit_code=exit_code,
             effect=effect,
+            confirmation="pending" if effect == "asked" else None,
         )
         io = entry.detail.io
         if io is not None:
@@ -312,6 +314,22 @@ class HookRunLog:
         self._ended.append(run_id)
         self._trim_ended()
         self._trim_details()
+        return True
+
+    def confirm(self, run_id: str, outcome: HookConfirmationOutcome) -> bool:
+        """Set what came of an ``asked`` run's question; False when the run is not kept or did not ask."""
+        entry = self._entries.get(run_id)
+        if entry is None or entry.record.confirmation != "pending":
+            return False
+        self._set_record(entry, replace(entry.record, confirmation=outcome))
+        return True
+
+    def reject_call(self, run_id: str) -> bool:
+        """Mark that the call was rejected for *run_id*'s argument change; False when the run is not kept or not ended."""
+        entry = self._entries.get(run_id)
+        if entry is None or entry.record.state != "ended" or entry.record.call_rejected:
+            return False
+        self._set_record(entry, replace(entry.record, call_rejected=True))
         return True
 
     def _set_record(self, entry: _Entry, record: HookRunRecord) -> None:

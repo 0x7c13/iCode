@@ -84,6 +84,22 @@ def canonicalize_effective_arguments(arguments: Any) -> str:
     )
 
 
+def encode_json_like(value: Any) -> str:
+    """*value* as JSON, keeping key order and Python's default escaping; typed keys as the canonical form writes them.
+
+    What a hook's payload file holds, so a hook reads the arguments the check
+    compares (``canonicalize_effective_arguments``): values go through the same
+    default (models, dataclasses, dates, …), and a mapping whose keys JSON
+    cannot write is normalized as that form does. Plain data takes the encoder
+    alone, which nests deeper than the normalizer recurses. Raises what
+    ``json.dumps`` raises for a value with no text form.
+    """
+    try:
+        return json.dumps(value, default=_json_default)
+    except TypeError:
+        return json.dumps(_normalize_json_containers(value), default=_json_default)
+
+
 def _normalize_json_containers(value: Any) -> Any:
     """Normalize typed container shapes before deterministic JSON encoding.
 

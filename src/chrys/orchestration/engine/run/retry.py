@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         CurrentRunReminderTarget,
         SystemReminderMiddleware,
     )
+    from chrys.service.hooks.operation import HookOperation
     from chrys.service.session.history import SessionHistoryManager
 
 
@@ -103,6 +104,8 @@ class _PreparedRetryNoteSideEffects:
 
     reminders: list[str]
     staged: StagedRuntimeSkillRefresh | None
+    operation: HookOperation | None = None
+    """The note's input operation, committed where the note's side effects are."""
 
 
 class RetryPassRunner(Protocol):
@@ -234,6 +237,8 @@ class RetryCoordinator:
         """Execute one retry admission under its pre-turn preparation scope."""
         admission: PromptAdmissionScope | None = None
         admission_released = False
+        # Read by the ``finally`` below on every exit, the earliest returns included.
+        operation: HookOperation | None = None
         while True:
             await self._wait_for_pre_admission_gate(self._permits.wait_for_agent_load_idle, preparation_tracker)
             preparation = preparation_tracker.preparation
@@ -336,14 +341,19 @@ class RetryCoordinator:
                 pending_retry_installed = transition is not None or self._fsm.state == EngineState.PENDING_RETRY
 
             if event.text:
+                operation = self._gate.new_operation(event.text)
+                # Tracked until the note is submitted (or the retry ends): the same lifetimes end it.
+                self._turn_state.input_operations.add(operation)
                 decision = await self._gate.evaluate(
-                    event.text,
+                    operation,
                     injected=True,
                     target_operation_id=preparation.committed_operation_id if preparation is not None else None,
                     trajectory_context=preparation.context if preparation is not None else None,
                 )
-                if not self._admission_owner_is_current(admission) or self._retry_note_owner_stale_after_hook(
-                    retry_note_owner, active_retry_target
+                if (
+                    decision.invalidated
+                    or (not self._admission_owner_is_current(admission))
+                    or self._retry_note_owner_stale_after_hook(retry_note_owner, active_retry_target)
                 ):
                     await self._finish_preparation(preparation, PreparationOutcome.OWNER_CHANGED)
                     self._clear_pending_retry_for_admission_or_unowned(admission)
@@ -351,7 +361,7 @@ class RetryCoordinator:
                 retry_note_session_id = retry_note_owner.session_id if retry_note_owner is not None else None
                 if await self._gate.handle_decision(
                     decision,
-                    injected=True,
+                    refused_input="retry_note",
                     session_id=retry_note_session_id,
                 ):
                     await self._finish_preparation(preparation, PreparationOutcome.REJECTED)
@@ -376,6 +386,7 @@ class RetryCoordinator:
                     retry_note_owner,
                     active_retry_target,
                     before_commit=_install_pending_retry_before_commit,
+                    operation=operation,
                 )
                 if not accepted:
                     await self._finish_preparation(preparation, PreparationOutcome.PREPARATION_FAILED)
@@ -428,6 +439,10 @@ class RetryCoordinator:
                 await self._finish_preparation(preparation, PreparationOutcome.CONFLICT)
                 return
             if self._current.loaded is None:
+                # No run scope takes the note's side effects here, so this start is its submit point.
+                if deferred_retry_note is not None and not _commit_note(deferred_retry_note):
+                    await self._finish_preparation(preparation, PreparationOutcome.CANCELLED)
+                    return
                 self._turn_state.lease.release_prompt_admission(admission)
                 admission_released = True
                 self._history.remove_trailing_markers()
@@ -477,6 +492,7 @@ class RetryCoordinator:
                     PreparationOutcome.OWNER_CHANGED if promotion.outcome == "stale" else PreparationOutcome.CONFLICT,
                 )
         finally:
+            self._turn_state.input_operations.discard(operation)
             if admission is not None and not admission_released:
                 self._turn_state.lease.release_prompt_admission(admission)
 
@@ -791,6 +807,7 @@ class RetryCoordinator:
         active_retry_target: ActiveInjectionTarget | None,
         *,
         before_commit: Callable[[], None] | None = None,
+        operation: HookOperation | None = None,
     ) -> tuple[bool, _PreparedRetryNoteSideEffects | None]:
         """Commit retry-note side effects, or defer them until retry promotion creates a scope."""
         if not text:
@@ -808,7 +825,7 @@ class RetryCoordinator:
         ):
             return False, None
 
-        side_effects = self._prepare_retry_note_side_effects(text, decision, staged)
+        side_effects = self._prepare_retry_note_side_effects(text, decision, staged, operation)
 
         target: _CurrentRunSideEffectTarget | None = None
         if active_retry_target is not None:
@@ -850,6 +867,7 @@ class RetryCoordinator:
         text: str,
         decision: HookDecision | None,
         staged: StagedRuntimeSkillRefresh | None,
+        operation: HookOperation | None,
     ) -> _PreparedRetryNoteSideEffects:
         """Build retry-note side effects after hooks and skill refresh have settled."""
         reminders = PromptSubmitGate.reminder_texts(decision)
@@ -859,7 +877,7 @@ class RetryCoordinator:
         )
         if skill_reference is not None:
             reminders.append(skill_reference)
-        return _PreparedRetryNoteSideEffects(reminders=reminders, staged=staged)
+        return _PreparedRetryNoteSideEffects(reminders=reminders, staged=staged, operation=operation)
 
     async def _commit_retry_note_side_effects_to_target(
         self,
@@ -872,6 +890,9 @@ class RetryCoordinator:
         if not self._retry_request_still_accepted() or not self._current_run_side_effect_target_is_current(target):
             return False
         if not target.reminder_middleware.is_current_run_target_valid(target.reminder_target):
+            return False
+        # The submit point, synchronous with what follows: the note its hooks checked, still wanted.
+        if not _commit_note(side_effects):
             return False
 
         staged = side_effects.staged
@@ -946,3 +967,9 @@ class RetryCoordinator:
         if reference is None:
             return None
         return format_skill_reference_reminder(reference)
+
+
+def _commit_note(side_effects: _PreparedRetryNoteSideEffects) -> bool:
+    """Take the right to submit the retry note; False when its input ended or changed since its hooks passed it."""
+    operation = side_effects.operation
+    return operation is None or operation.commit_input(operation.input_text) is None

@@ -254,7 +254,18 @@ class Errored:
     error: Error = field(default_factory=Error)
 
 
-TurnOutcome = EndTurn | Cancelled | Errored
+@dataclass(frozen=True)
+class Refused:
+    """A gate refused the user input that would have started or resumed the turn; nothing ran.
+
+    The input's own refusal, not an engine failure: the session goes on as before.
+    """
+
+    kind: Literal["refused"] = "refused"
+    error: Error = field(default_factory=Error)
+
+
+TurnOutcome = EndTurn | Cancelled | Errored | Refused
 
 
 class WorkflowRunRejectedError(RuntimeError):
@@ -553,7 +564,9 @@ class ChrysSessionHost:
             # events reads them from this iterator as they stream.
             if isinstance(event, InvocationMessage) and event.origin.kind == "turn" and event.is_final:
                 final = event
-            elif isinstance(event, Error):
+            elif isinstance(event, Error) and event.refused_input != "injection":
+                # A refused injection refuses only that message: the turn it was sent into goes on,
+                # and its own outcome (a real error included) stays what the turn makes it.
                 error = event
             elif isinstance(event, QuestionToUser):
                 question = event
@@ -1001,7 +1014,7 @@ class ChrysSessionHost:
         task.add_done_callback(cls._observe_task_exception)
 
     def _raise_for_run_outcome(self, outcome: TurnOutcome) -> None:
-        if isinstance(outcome, Errored):
+        if isinstance(outcome, Errored | Refused):
             raise HeadlessRunError(outcome.error)
         if isinstance(outcome, Cancelled):
             error_message = outcome.reason or "Agent run was cancelled."
@@ -1021,6 +1034,8 @@ class ChrysSessionHost:
             return Errored(error=self._question_to_error(question))
         if self._cancel_requested:
             return Cancelled(reason="Agent run was cancelled.")
+        if error is not None and error.refused_input in ("prompt", "retry_note"):
+            return Refused(error=error)
         if error is not None:
             return Errored(error=error)
         if final is not None:

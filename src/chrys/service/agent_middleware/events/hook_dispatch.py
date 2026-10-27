@@ -20,11 +20,15 @@ from chrys.service.agent_middleware._metadata_keys import (
     _APPROVAL_MODIFIED_ARGS_KEY,
     _APPROVAL_REJECTED_KEY,
     _CALL_ID_KEY,
+    _HOOK_CONFIRMATION_KEY,
+    _HOOK_OPERATION_KEY,
     _REJECTION_MESSAGE_KEY,
     _REJECTION_SOURCE_KEY,
     _TOOL_INVOCATION_ORDER_KEY,
 )
 from chrys.service.hooks.events import HookEvent
+from chrys.service.hooks.manager import check_operation
+from chrys.service.hooks.operation import HookOperation
 from chrys.service.hooks.schema import HookDecision
 
 logger = logging.getLogger(__name__)
@@ -54,44 +58,79 @@ async def apply_before_tool_hooks(
     target_operation_id: str | None = None,
     origin: InvocationOrigin | None = None,
 ) -> bool:
-    """Run ``before_tool_call`` hooks and apply their blocking/modification decision.
+    """Check the call's current arguments with ``before_tool_call`` hooks; True when it must not run.
 
-    Returns ``True`` when a hook blocked the tool.  The caller should still
-    publish the normal tool start/result events with the current arguments so
-    the UI and persisted history reflect the denied call. *origin* names the
-    sub-agent that calls the tool; None for the main agent.
+    The first check of a call makes its ``HookOperation`` (kept in its
+    metadata for the commit middleware); a later one (an approval edit)
+    makes a new version of the same operation and checks it from the first
+    hook. Every call is checked this way, hooks configured or not. On a pass
+    ``context.arguments`` becomes the version the hooks checked. When the
+    call must not run, ``context.result`` says why, and the caller should
+    still publish the normal tool start/result events with the current
+    arguments so the UI and persisted history reflect the denied call.
+    *origin* names the sub-agent that calls the tool; None for the main agent.
     """
-    if manager is None or not manager.has_hooks_for(HookEvent.BEFORE_TOOL_CALL):
-        return False
+    metadata = context.metadata if isinstance(context.metadata, dict) else None
+    existing = metadata.get(_HOOK_OPERATION_KEY) if metadata is not None else None
+    if isinstance(existing, HookOperation):
+        operation = existing
+        operation.replace_arguments(args)
+    else:
+        operation = HookOperation(
+            subject="tool",
+            session_id=session_id,
+            origin=origin,
+            caller_name=profile_name,
+            tool_name=tool_name,
+            tool_kind=kind,
+            arguments=args,
+        )
+        if metadata is not None:
+            metadata[_HOOK_OPERATION_KEY] = operation
 
-    decision = await manager.fire(
+    decision = await check_operation(
+        manager,
         HookEvent.BEFORE_TOOL_CALL,
-        _build_payload(
+        operation,
+        lambda: _build_payload(
             session_id=session_id,
             profile_name=profile_name,
             tool_name=tool_name,
             kind=kind,
             call_id=call_id,
-            args=args,
+            args=operation.arguments(),
             workspace_cwd=workspace_cwd,
         ),
         target_operation_id=target_operation_id,
         origin=origin,
     )
-    if decision.blocked:
-        message = decision.block_reason or "Tool execution was blocked by hook."
-        if isinstance(context.metadata, dict):
-            context.metadata[_APPROVAL_REJECTED_KEY] = True
-            context.metadata[_REJECTION_SOURCE_KEY] = "hook"
-            context.metadata[_REJECTION_MESSAGE_KEY] = message
-        context.result = f"Error: {message}"
+    if decision.blocked or decision.invalidated:
+        if decision.blocked:
+            message = decision.block_reason or "Tool execution was blocked by hook."
+        else:
+            message = f"Tool call was dropped before it ran ({operation.end_reason or 'invalidated'})."
+        reject_tool_call(context, message, confirmation=decision.confirmation or "")
         return True
 
-    if decision.args_override is not None and is_mutable_tool_args(context.arguments):
-        updated_args = {**context.arguments, **decision.args_override}
+    # Only a version the hooks changed is handed back: the call's own arguments, when they are
+    # the checked version, keep their objects (a copy of an object without a stable text form
+    # would no longer match).
+    if is_mutable_tool_args(context.arguments) and not operation.matches(context.arguments):
+        checked = operation.arguments()
         context.arguments.clear()
-        context.arguments.update(updated_args)
+        context.arguments.update(checked)
     return False
+
+
+def reject_tool_call(context: FunctionInvocationContext, message: str, *, confirmation: str = "") -> None:
+    """Stop a call on the hooks' behalf: the model reads ``Error: <message>``, after-tool hooks see a hook denial."""
+    if isinstance(context.metadata, dict):
+        context.metadata[_APPROVAL_REJECTED_KEY] = True
+        context.metadata[_REJECTION_SOURCE_KEY] = "hook"
+        context.metadata[_REJECTION_MESSAGE_KEY] = message
+        if confirmation:
+            context.metadata[_HOOK_CONFIRMATION_KEY] = confirmation
+    context.result = f"Error: {message}"
 
 
 async def fire_after_tool_hooks(
@@ -110,6 +149,7 @@ async def fire_after_tool_hooks(
     approval_rejected: bool,
     rejection_source: str,
     workspace_cwd: str,
+    hook_confirmation: str = "",
     target_operation_id: str | None = None,
     origin: InvocationOrigin | None = None,
 ) -> HookDecision:
@@ -129,6 +169,9 @@ async def fire_after_tool_hooks(
     if rejection_source:
         result["rejection_source"] = rejection_source
         result["hook_denied"] = rejection_source == "hook"
+        if hook_confirmation:
+            # Denied through an ``ask`` that did not end in the user continuing, not an ``action: block``.
+            result["hook_confirmation"] = hook_confirmation
     payload = _build_payload(
         session_id=session_id,
         profile_name=profile_name,

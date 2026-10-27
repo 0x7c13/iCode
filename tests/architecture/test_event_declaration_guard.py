@@ -28,6 +28,8 @@ _INVOCATION_COMMAND_FIELDS = {
 }
 _NON_INVOCATION_CORRELATION_FIELDS = {
     "ApprovalRequest": {"call_id", "tool_name"},
+    # A hook's question names the tool it asks about, as an approval does.
+    "HookConfirmationRequest": {"tool_name"},
     "QuestionToUser": {"call_id"},
     "SleepSkip": {"call_id"},
     # A workflow activation binds its agent invocation ahead of the Invocation*
@@ -682,6 +684,7 @@ _CORRELATION_GUARD_SOURCE = """
 class ApprovalRequest(Event):
     call_id: str = ""
     tool_name: str = ""
+class HookConfirmationRequest(Event): tool_name: str = ""
 class QuestionToUser(Event): call_id: str = ""
 class SleepSkip(Event): call_id: str = ""
 class InvocationRetryRequested(Event): invocation_id: str = ""
@@ -727,6 +730,7 @@ def test_event_correlation_guard_pins_exact_allowlist() -> None:
     )
     assert {
         "ApprovalRequest": {"call_id", "tool_name"},
+        "HookConfirmationRequest": {"tool_name"},
         "QuestionToUser": {"call_id"},
         "SleepSkip": {"call_id"},
         "WorkflowNodeStateChanged": {"invocation_id"},

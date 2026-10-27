@@ -31,6 +31,7 @@ from chrys.orchestration.session_hooks import SessionHookFactory
 from chrys.orchestration.workflows.coordinator import WorkflowCoordinator
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.approval.turn_context import TurnContextHolder
+from chrys.service.hooks.confirmation import HookConfirmationService
 from chrys.service.hooks.run_log import HookRunLog
 from chrys.service.mcp.cache import MCPConnectionCache
 from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
@@ -120,6 +121,13 @@ def assemble_agent_engine(
 
     mcp_cache = MCPConnectionCache()
     hook_runs = HookRunLog() if record_hook_runs else None
+    # The engine's one place where a hook's ``ask`` waits for the user, for every entry and every
+    # manager the engine builds; a headless engine has one too, which answers every ask unavailable.
+    hook_confirmations = HookConfirmationService(
+        bus=bus,
+        enabled=allow_user_interaction,
+        timeout_seconds=settings_handle.settings.approval_timeout_seconds,
+    )
     loader = AgentLoader(
         bus=bus,
         persistence=persistence,
@@ -144,6 +152,7 @@ def assemble_agent_engine(
         build_agent_fn=build_agent,
         register_current_engine=register_current_engine,
         hook_runs=hook_runs,
+        hook_confirmations=hook_confirmations,
     )
 
     lifecycle = SessionLifecycle(
@@ -207,7 +216,7 @@ def assemble_agent_engine(
         model_registry=model_registry,
         allow_user_interaction=allow_user_interaction,
         persistence=persistence,
-        build_hooks=SessionHookFactory(bus),
+        build_hooks=SessionHookFactory(bus, confirmations=hook_confirmations),
     )
     controls = RuntimeControls(
         session=session,
@@ -239,5 +248,6 @@ def assemble_agent_engine(
         trajectory_recorder=recorder,
         workflows=workflows,
         hook_runs=hook_runs,
+        hook_confirmations=hook_confirmations,
     )
     return engine

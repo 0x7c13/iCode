@@ -86,8 +86,9 @@ class LifecyclePermits:
         return self._rebuild_gate_lock
 
     def advance_session_generation(self) -> None:
-        """Advance the session owner clock."""
+        """Advance the session owner clock; an input still being checked belongs to the old session."""
         self._session_generation += 1
+        self._turn_state.input_operations.invalidate_all("session_switched")
 
     def prompt_admission_owner_for_current_task(self) -> str | None:
         """Return the transition owner held by this task, if any."""
@@ -107,8 +108,9 @@ class LifecyclePermits:
         self._agent_load_idle.set()
 
     def advance_build_generation(self) -> None:
-        """Record one successful replacement of build-scoped collaborators."""
+        """Record one successful replacement of build-scoped collaborators; inputs being checked are stale."""
         self._build_generation += 1
+        self._turn_state.input_operations.invalidate_all("rebuilt")
 
     def invalidate_for_session_transition_pre_shutdown(self) -> None:
         """Compatibility seam for state-only tests that exercise pre-shutdown invalidation.

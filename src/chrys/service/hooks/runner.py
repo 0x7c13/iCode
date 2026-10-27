@@ -58,6 +58,7 @@ from chrys.foundation.platform.runtime_paths import (
     strip_python_runtime_overrides,
 )
 from chrys.foundation.platform.script_commands import build_script_command
+from chrys.foundation.tool_execution_stamp import encode_json_like
 
 if TYPE_CHECKING:
     from chrys.service.hooks.outbox import OutboxJob
@@ -297,7 +298,7 @@ class HookRunner:
             with os.fdopen(payload_fd, "w", encoding="utf-8") as f:
                 payload_fd = -1
                 if payload_text is None:
-                    json.dump(payload, f, default=str)
+                    f.write(encode_json_like(payload))
                 else:
                     f.write(payload_text)
             env["CHRYS_HOOK_PAYLOAD_FILE"] = payload_path

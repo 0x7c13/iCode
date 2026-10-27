@@ -118,6 +118,44 @@ The script returns `action: block` and the rejection reason through the result f
 
 After switching sessions or restarting iCode, create a dedicated test file, `hook-demo/.env`, with known content such as `HOOK_TEST=unchanged`. Ask the agent to attempt one modification using only `write_file` or `edit_file`, then stop after rejection without using the shell or another method. Check that the tool call is rejected before execution and displays the reason provided by the script. Then confirm that the file content is unchanged. You can delete `hook-demo/.env` after verification.
 
+## Example: ask before an operation
+
+Instead of rejecting an operation itself, a hook can leave the decision to you. This example asks before any shell command that mentions `prod`.
+
+Add this entry to the `hooks` list in `.chrys/hooks/hooks.yaml`:
+
+```yaml
+  - id: confirm-prod
+    event: before_tool_call
+    match:
+      tool_kind: shell
+      args:
+        command:
+          contains: prod
+    run:
+      type: script
+      path: scripts/confirm_prod.py
+    execution:
+      mode: blocking
+      timeout_seconds: 5
+```
+
+Then create `.chrys/hooks/scripts/confirm_prod.py`:
+
+```python
+import json
+import os
+
+with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file:
+    json.dump(
+        {"action": "ask", "reason": "This command mentions prod. Run it?"},
+        result_file,
+        ensure_ascii=False,
+    )
+```
+
+When the agent runs a matching command, iCode asks you with the hook's reason and the command. **Continue** lets it run; **Cancel** rejects it. The time you take doesn't count toward `timeout_seconds`. For the full rules, see [Asking you to confirm](../../reference/hooks.md#asking-you-to-confirm).
+
 ## Example: add a system reminder for the model
 
 A `user_prompt_submit` hook can add instructions or hints for the model when a user submits a message. This example applies only to the Code agent and reminds it to run project tests after modifying Python files.
@@ -173,7 +211,7 @@ An asynchronous hook (`async`) does not delay the event that triggered it or the
 
 In a chat, the bottom-right corner shows the hook iCode is waiting for. Select it to open the **Hooks** tab of the sidebar (**Ctrl+G** shows or hides the sidebar) and, when a hook is shown there, that hook's details over it; the list scrolls to that hook's row and marks it.
 
-The **Hooks** tab lists the hooks that ran since iCode started, in every chat session (hooks that workflows run aren't listed), numbered in the order they started, the newest at the bottom: those still running or waiting for their turn, and the 100 that ended last. Each row shows its number, the hook, the tool or event that triggered it (and the sub-agent, when one did), its result, such as `exit 1`, `timed out`, `blocked`, `modified args` or `added context`, and at the right end how long it ran. A hook that is still running shows its time counting up, highlighted. A hook that failed is marked `✗`. **Clear ended** removes the runs that ended from the list; running ones stay. Cleared runs can't be shown again, and new runs keep counting from the last number. Once more than 100 runs have ended, the top of the list says that only the latest 100 are kept.
+The **Hooks** tab lists the hooks that ran since iCode started, in every chat session (hooks that workflows run aren't listed), numbered in the order they started, the newest at the bottom: those still running or waiting for their turn, and the 100 that ended last. Each row shows its number, an icon for how it went (for example `✗` for a hook that failed, `⊘` for one that stopped the operation, `?` for one waiting for your answer), the hook's name, and at the right end how long it ran. Its details say what triggered it and what came of it. **Clear ended** removes the runs that ended from the list; running ones stay. Cleared runs can't be shown again, and new runs keep counting from the last number. Once more than 100 runs have ended, the top of the list says that only the latest 100 are kept.
 
 Click a run to see its details. **Input** shows the payload iCode gave the hook and how it was run; **Output** shows its result file, what iCode took from it (or why it took nothing), and what it printed to stdout and stderr. Click a box to copy its text, or press **c** to copy the whole tab; very long text shows only in part, but a copy still takes all of it. The list starts empty each time iCode starts; to see the hooks iCode loaded, enter `/runtime` and open the **Hooks** tab.
 

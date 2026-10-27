@@ -17,7 +17,6 @@ from textual.message import Message
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_str
-from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen, set_widget_visibility_without_layout
 from chrys.app.tui.widgets.chat.tool_call import fmt_duration
 from chrys.app.tui.widgets.selection import NonSelectableStatic
@@ -57,6 +56,33 @@ _TIMED_OUT = msg("tui.sidebar.hooks.outcome.timed_out", fallback="timed out")
 _COULDNT_START = msg("tui.sidebar.hooks.outcome.couldnt_start", fallback="couldn't start")
 _CANCELLED = msg("tui.sidebar.hooks.outcome.cancelled", fallback="cancelled")
 _DETACHED = msg("tui.sidebar.hooks.outcome.detached", fallback="detached")
+_CALL_REJECTED = msg("tui.sidebar.hooks.outcome.call_rejected", fallback="call rejected")
+_ASKED_PENDING = msg("tui.sidebar.hooks.outcome.asked.pending", fallback="waiting for user")
+_ASKED_APPROVED = msg("tui.sidebar.hooks.outcome.asked.approved", fallback="user continued")
+_ASKED_DECLINED = msg("tui.sidebar.hooks.outcome.asked.declined", fallback="user cancelled")
+_ASKED_TIMED_OUT = msg("tui.sidebar.hooks.outcome.asked.timed_out", fallback="no answer in time")
+_ASKED_UNAVAILABLE = msg("tui.sidebar.hooks.outcome.asked.unavailable", fallback="couldn't ask user")
+_ASKED_INVALIDATED = msg("tui.sidebar.hooks.outcome.asked.invalidated", fallback="dropped")
+_ASKED_INTERRUPTED = msg("tui.sidebar.hooks.outcome.asked.interrupted", fallback="interrupted")
+_ASKED = {
+    "pending": _ASKED_PENDING,
+    "approved": _ASKED_APPROVED,
+    "declined": _ASKED_DECLINED,
+    "timed_out": _ASKED_TIMED_OUT,
+    "unavailable": _ASKED_UNAVAILABLE,
+    "invalidated": _ASKED_INVALIDATED,
+    "interrupted": _ASKED_INTERRUPTED,
+}
+# What an asked run's state is, by what came of its question.
+_ASKED_STATES = {
+    "pending": "asking",
+    "approved": "success",
+    "declined": "blocked",
+    "timed_out": "blocked",
+    "unavailable": "blocked",
+    "invalidated": "cancelled",
+    "interrupted": "cancelled",
+}
 
 _EFFECTS = {
     "blocked": _BLOCKED,
@@ -65,10 +91,11 @@ _EFFECTS = {
     "added_context": _ADDED_CONTEXT,
 }
 
-# The spinner's full dot grid: a running row's glyph when animations are off.
-REST_GLYPH = "⠿"
 _ICONS = {
+    # As a running background task: a still dot in the running color.
+    "running": "●",
     "queued": "◌",
+    "asking": "?",
     "success": "✓",
     "blocked": "⊘",
     "failure": "✗",
@@ -77,6 +104,7 @@ _ICONS = {
 }
 _ICON_STYLES = {
     "queued": "dim",
+    "asking": "yellow",
     "success": "green",
     "blocked": "yellow",
     "failure": "red",
@@ -86,7 +114,11 @@ _ICON_STYLES = {
 
 
 def run_state(record: HookRunRecord) -> str:
-    """One of "running", "queued", "success", "blocked", "failure", "cancelled" or "detached" (handed to its own process)."""
+    """One of "running", "queued", "asking", "success", "blocked", "failure", "cancelled" or "detached".
+
+    "asking": it asked the user, who has not answered yet; an asked run then takes the state of the
+    answer. "detached": handed to its own process.
+    """
     if record.state != "ended":
         return record.state
     outcome = record.outcome
@@ -95,16 +127,16 @@ def run_state(record: HookRunRecord) -> str:
     if outcome == "detached":
         return "detached"
     if outcome == "success":
-        return "blocked" if record.effect == "blocked" else "success"
+        if record.effect == "asked":
+            return _ASKED_STATES[record.confirmation or "pending"]
+        return "blocked" if record.effect == "blocked" or record.call_rejected else "success"
     return "failure"
 
 
-def run_icon(record: HookRunRecord, *, running_style: Style, glyph: str = REST_GLYPH) -> Text:
-    """The state glyph of *record*, colored; a running run shows *glyph* (a spinner frame)."""
+def run_icon(record: HookRunRecord, *, running_style: Style) -> Text:
+    """The state glyph of *record*, colored; a running run's in *running_style*."""
     state = run_state(record)
-    if state == "running":
-        return Text(glyph, style=running_style)
-    return Text(_ICONS[state], style=_ICON_STYLES[state])
+    return Text(_ICONS[state], style=running_style if state == "running" else _ICON_STYLES[state])
 
 
 def run_outcome(record: HookRunRecord) -> tuple[MessageRef, ...]:
@@ -118,6 +150,12 @@ def run_outcome(record: HookRunRecord) -> tuple[MessageRef, ...]:
         return (_QUEUED.bind(),)
     outcome = record.outcome
     if outcome == "success":
+        if record.effect == "asked":
+            return (_ASKED[record.confirmation or "pending"].bind(),)
+        if record.call_rejected:
+            # Its change came after the user continued once too often: what matters is that the
+            # call was rejected; the change itself is in the run's details.
+            return (_CALL_REJECTED.bind(),)
         effect = _EFFECTS.get(record.effect or "")
         return (effect.bind(),) if effect is not None else ()
     if outcome == "cancelled":
@@ -145,11 +183,12 @@ def run_duration(record: HookRunRecord, now: float) -> str:
 
 
 def run_label(record: HookRunRecord) -> str:
-    """``{hook_id} · {tool or event}``, and the sub-agent that fired it; safe to show."""
-    parts = [record.hook_id, record.tool_name or record.hook_event]
-    if record.sub_agent:
-        parts.append(record.sub_agent)
-    return sanitize_legacy_scalar(" · ".join(" ".join(part.split()) for part in parts))
+    """The hook's id, safe to show.
+
+    Only the id: a hook is configured for one event, so its event says nothing new in
+    a narrow row, and the tool and agent that fired it are in the run's details.
+    """
+    return sanitize_legacy_scalar(" ".join(record.hook_id.split()))
 
 
 class HookRunList(Vertical, can_focus=False):
@@ -157,9 +196,8 @@ class HookRunList(Vertical, can_focus=False):
 
     The runs are read from the engine's run log through *reader* only while
     the list is shown: a change while it is hidden only marks it stale. Durations
-    and the spinner tick once a second, only while a run is in flight and the
-    list is composited. Same-sized repaints skip layout; a row added or removed
-    costs one.
+    tick once a second, only while a run is in flight and the list is composited.
+    Same-sized repaints skip layout; a row added or removed costs one.
     """
 
     class Opened(Message):
@@ -246,7 +284,6 @@ class HookRunList(Vertical, can_focus=False):
         self._read_pending = False
         self._composited = False
         self._timer: Timer | None = None
-        self._frame = 0
         self._painted_rows = -1
         self._hovered: int | None = None
         """The row under the mouse."""
@@ -307,9 +344,8 @@ class HookRunList(Vertical, can_focus=False):
         self._sync_timer()
 
     def on_resize(self) -> None:
-        self._hovered = None
-        # The result column's cap follows the width.
-        self.query_one("#hook-runs-rows", Static).update(self._rows(self._records), layout=False)
+        # The rows moved under the mouse: its next move finds the row there.
+        self._hover(None)
 
     def bind_source(
         self,
@@ -385,7 +421,6 @@ class HookRunList(Vertical, can_focus=False):
             if self._timer is not None:
                 self._timer.pause()
             return
-        self._frame += 1
         self._paint()
 
     def _sync_timer(self) -> None:
@@ -477,31 +512,20 @@ class HookRunList(Vertical, can_focus=False):
     def _rows(self, records: tuple[HookRunRecord, ...]) -> Table:
         self._row_styles = running_style, hover, selected = self._resolve_row_styles()
         now = time.monotonic()
-        still = self.app.animation_level == "none"
         grid = Table.grid(padding=(0, 1), expand=True)
         # Numbered as the Messages tab numbers turns: the run's place since iCode started.
         grid.add_column(justify="right", no_wrap=True, style="dim")
         grid.add_column(width=1, no_wrap=True)
+        # No result column: the icon says how it went, and the run's details say the rest.
         grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
-        # The name matters more: a long result gives way to it past a third of the row.
-        width = self.content_size.width
-        grid.add_column(
-            justify="right", no_wrap=True, overflow="ellipsis", max_width=max(8, width // 3) if width else None
-        )
-        # Last, so every row's time ends at the right edge, whatever results the rows show.
         grid.add_column(justify="right", no_wrap=True)
         for row, record in enumerate(records):
-            glyph = REST_GLYPH if still else SPINNER_FRAMES[self._frame % len(SPINNER_FRAMES)]
-            icon = run_icon(record, running_style=running_style, glyph=glyph)
-            running = record.state == "running"
-            detail = running_style if running else "dim"
-            # Its time, ticking in the running color, already says it runs.
-            outcome = "" if running else " · ".join(self._text(part) for part in run_outcome(record))
+            icon = run_icon(record, running_style=running_style)
+            detail = running_style if record.state == "running" else "dim"
             grid.add_row(
                 str(record.number),
                 icon,
                 Text(run_label(record), no_wrap=True, overflow="ellipsis"),
-                Text(outcome, style=detail, no_wrap=True, overflow="ellipsis"),
                 Text(run_duration(record, now), style=detail),
                 style=hover if row == self._hovered else selected if record.run_id == self._selected else None,
             )

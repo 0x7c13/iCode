@@ -74,6 +74,7 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.state.active_session import ActiveSession
     from chrys.orchestration.engine.state.current_agent import CurrentAgent
     from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
+    from chrys.service.hooks.operation import HookOperation
 
 
 _IMAGE_COMPRESSION_TIMEOUT_SECONDS = 30.0
@@ -369,6 +370,7 @@ class TurnCoordinator:
         """Admit one message and report whether its preparation changed owners."""
         admission: PromptAdmissionScope | None = None
         admission_released = False
+        operation: HookOperation | None = None
         while True:
             await self._wait_for_pre_admission_gate(self._permits.wait_for_agent_load_idle, preparation_tracker)
             preparation = preparation_tracker.preparation
@@ -475,17 +477,24 @@ class TurnCoordinator:
                     await preparation.finished(outcome=PreparationOutcome.CANCELLED)
                 return False
             admission_session_id = self._session.session_id
+            operation = self._gate.new_operation(event.text)
+            self._turn_state.input_operations.add(operation, injection_id=event.injection_id)
             decision = await self._evaluate_user_prompt_submit(
-                event.text,
+                operation,
                 injected=False,
                 target_operation_id=preparation.committed_operation_id if preparation is not None else None,
                 trajectory_context=preparation.context if preparation is not None else None,
             )
+            if decision.invalidated:
+                # Withdrawn, or its session or build replaced, while its hooks checked it.
+                if preparation is not None:
+                    await preparation.finished(outcome=PreparationOutcome.CANCELLED)
+                return False
             if not self._admission_owner_is_current(admission):
                 if preparation is not None:
                     await preparation.finished(outcome=PreparationOutcome.OWNER_CHANGED)
                 return False
-            if await self._handle_user_prompt_submit_decision(decision, injected=False):
+            if await self._gate.handle_decision(decision, refused_input="prompt"):
                 if preparation is not None:
                     await preparation.finished(outcome=PreparationOutcome.REJECTED)
                 return False
@@ -532,6 +541,12 @@ class TurnCoordinator:
                 await self._publish_prompt_admission_conflict()
                 if preparation is not None:
                     await preparation.finished(outcome=PreparationOutcome.CONFLICT)
+                return False
+            # The submit point: nothing below awaits before the run task exists, so the input
+            # the hooks checked is the one this turn takes.
+            if operation.commit_input(event.text) is not None:
+                if preparation is not None:
+                    await preparation.finished(outcome=PreparationOutcome.CANCELLED)
                 return False
             _expire_current_run_scope(self._turn_state, self._current, self._turn_state.lease.current_run_scope)
 
@@ -607,6 +622,7 @@ class TurnCoordinator:
             event.started_turn = True
             return True
         finally:
+            self._turn_state.input_operations.discard(operation)
             if admission is not None and not admission_released:
                 self._turn_state.lease.release_prompt_admission(admission)
 
@@ -621,7 +637,11 @@ class TurnCoordinator:
         task. It then either binds cancellation to the exact pre-executor
         run task or interrupts the active executor; ``run_and_save``
         detects ``was_interrupted`` and rolls back history.
+
+        An input still being checked has no run task yet: the interrupt ends
+        it, and any confirmation its hooks wait on, before anything else.
         """
+        self._turn_state.input_operations.invalidate_all("interrupted")
         if self._permits.agent_loading:
             await self._bus.publish(
                 Warning(
@@ -842,15 +862,15 @@ class TurnCoordinator:
 
     async def _evaluate_user_prompt_submit(
         self,
-        text: str,
+        operation: HookOperation,
         *,
         injected: bool | None,
         target_operation_id: str | None = None,
         trajectory_context: TrajectoryContext | None = None,
-    ) -> HookDecision | None:
-        """Run ``user_prompt_submit`` hooks without applying reminder side effects."""
+    ) -> HookDecision:
+        """Run ``user_prompt_submit`` hooks on *operation*'s input without applying reminder side effects."""
         return await self._gate.evaluate(
-            text,
+            operation,
             injected=injected,
             target_operation_id=target_operation_id,
             trajectory_context=trajectory_context,
@@ -891,20 +911,6 @@ class TurnCoordinator:
             return
         self._turn_state.lease.deregister_pre_admission_preparation(entry)
         await self._start_pre_admission_preparation(tracker)
-
-    async def _handle_user_prompt_submit_decision(
-        self,
-        decision: HookDecision | None,
-        *,
-        injected: bool | None,
-        session_id: str | None = None,
-    ) -> bool:
-        """Return True after publishing when a prompt-submit hook blocked."""
-        return await self._gate.handle_decision(
-            decision,
-            injected=injected,
-            session_id=session_id,
-        )
 
     def _queue_prompt_hook_reminders(
         self,

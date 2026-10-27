@@ -118,6 +118,44 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file
 
 切换会话或重启 iCode 后，先创建一个专门用于验证的 `hook-demo/.env`，写入已知内容，例如 `HOOK_TEST=unchanged`。然后要求智能体仅使用 `write_file` 或 `edit_file` 尝试修改一次，被拒绝后停止，不使用 Shell 或其他方式。检查该工具调用是否在执行前被拒绝，并显示脚本提供的原因；再确认文件内容保持不变。验证后可以删除 `hook-demo/.env`。
 
+## 示例：操作前请你确认
+
+钩子也可以不自己拒绝操作，而是把决定交给你。下面的示例在任何提到 `prod` 的 Shell 命令运行前询问你。
+
+把以下条目加入 `.chrys/hooks/hooks.yaml` 的 `hooks` 列表：
+
+```yaml
+  - id: confirm-prod
+    event: before_tool_call
+    match:
+      tool_kind: shell
+      args:
+        command:
+          contains: prod
+    run:
+      type: script
+      path: scripts/confirm_prod.py
+    execution:
+      mode: blocking
+      timeout_seconds: 5
+```
+
+然后创建 `.chrys/hooks/scripts/confirm_prod.py`：
+
+```python
+import json
+import os
+
+with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file:
+    json.dump(
+        {"action": "ask", "reason": "此命令提到了 prod，是否运行？"},
+        result_file,
+        ensure_ascii=False,
+    )
+```
+
+智能体运行匹配的命令时，iCode 会显示钩子给出的原因和命令并询问你。**继续**则命令照常运行，**取消**则拒绝它。你考虑的时间不计入 `timeout_seconds`。完整规则见[请你确认](../../reference/hooks.md#请你确认)。
+
 ## 示例：为模型添加系统提醒
 
 `user_prompt_submit` 钩子可以在用户提交消息时，为模型补充要求或提示。下面的示例只对 Code 智能体生效，并提醒它在修改 Python 文件后运行项目测试。
@@ -173,7 +211,7 @@ with open(os.environ["CHRYS_HOOK_RESULT"], "w", encoding="utf-8") as result_file
 
 在对话中，右下角会显示 iCode 正在等待的钩子。点击它会打开侧栏的“钩子”标签页（按 **Ctrl+G** 显示或隐藏侧栏）；右下角显示着某个钩子时，还会在上面打开这个钩子的详情，并且列表会滚动到这一行并标出它。
 
-“钩子”标签页列出 iCode 启动以来所有对话会话中运行过的钩子（工作流运行的钩子不在其中），按开始顺序编号，最新的在最下面：包括正在运行和排队等待的，以及最近结束的 100 次。每行显示编号、钩子、触发它的工具或事件（由子智能体触发时还显示子智能体）和结果，例如“退出码 1”、“已超时”、“已阻止”、“修改了参数”或“追加了上下文”，最右侧是运行时长。仍在运行的钩子，其时长会高亮显示并不断增加。运行失败的钩子标为 `✗`。点击“清除已结束”可从列表中移除已结束的运行，正在运行的会保留。清除后的运行无法再显示，新的运行接着原来的编号往下数。结束的运行超过 100 次后，列表顶部会提示只保留最近 100 次。
+“钩子”标签页列出 iCode 启动以来所有对话会话中运行过的钩子（工作流运行的钩子不在其中），按开始顺序编号，最新的在最下面：包括正在运行和排队等待的，以及最近结束的 100 次。每行显示编号、表示运行情况的图标（例如 `✗` 表示运行失败，`⊘` 表示阻止了操作，`?` 表示正在等你回答）、钩子名称，最右侧是运行时长。运行详情中会说明它由什么触发、结果如何。点击“清除已结束”可从列表中移除已结束的运行，正在运行的会保留。清除后的运行无法再显示，新的运行接着原来的编号往下数。结束的运行超过 100 次后，列表顶部会提示只保留最近 100 次。
 
 点击一行可查看详情。“输入”显示 iCode 交给钩子的 payload 以及钩子的运行方式；“输出”显示结果文件、iCode 采纳了哪些内容（或为什么没有采纳），以及钩子输出到 stdout 和 stderr 的内容。点击某个方框即可复制其中的内容，按 **c** 复制整个标签页；很长的内容只显示一部分，但复制时仍会复制全部内容。每次启动 iCode 时列表为空；要查看 iCode 加载了哪些钩子，输入 `/runtime` 并打开“钩子”标签页。
 

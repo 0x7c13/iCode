@@ -66,6 +66,7 @@ from chrys.foundation.events.types import (
     AgentRuntimeDetails,
     ApprovalRequest,
     ApprovalReviewed,
+    HookConfirmationRequest,
     QuestionToUser,
 )
 from chrys.foundation.i18n.formatting import format_message
@@ -1275,6 +1276,22 @@ class MainScreenViewAdapter:
 
         if isinstance(dialog, ApprovalDialog):
             dialog.dismiss_due_to_cancellation()
+
+    def show_hook_confirmation(
+        self, event: HookConfirmationRequest, on_result: Callable[[bool | None], None]
+    ) -> object:
+        from chrys.app.tui.screens.main.hook_confirmation_dialog import hook_confirmation_dialog
+
+        dialog = hook_confirmation_dialog(event, locale_controller=self._locale_controller)
+        self._screen.app.push_screen(dialog, on_result)
+        return dialog
+
+    def dismiss_hook_confirmation(self, dialog: object) -> None:
+        """Close a withdrawn confirmation without an answer; a covered one closes once uncovered."""
+        from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
+
+        if isinstance(dialog, ConfirmDialog):
+            dialog.dismiss_when_topmost(None)
 
     def approval_dialog_tool_name(self, dialog: ApprovalDialogHandle) -> str:
         from chrys.app.tui.screens.dialogs.approval import ApprovalDialog
