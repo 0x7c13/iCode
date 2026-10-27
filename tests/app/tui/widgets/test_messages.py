@@ -92,6 +92,15 @@ async def test_user_message_renders_markdown_below_its_header() -> None:
         assert "```" not in body
 
 
+async def test_user_message_shows_backslashes_in_a_path_as_typed() -> None:
+    text = "open D:\\project\\.code and C:\\Users\\me\\_cache"
+
+    async with WidgetApp(lambda: UserMessage(text)).run_test(size=(80, 20)) as pilot:
+        msg = pilot.app.query_one(UserMessage)
+
+        assert await _rendered_body(pilot, msg) == text
+
+
 async def test_user_message_body_shows_control_characters_as_text() -> None:
     text = "red \x1b[31malert\x1b[0m\r\nnext"
 

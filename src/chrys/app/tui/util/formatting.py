@@ -4,7 +4,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from rich.cells import cell_len
+
+if TYPE_CHECKING:
+    from rich.text import Text
 
 
 def format_token_count(n: int) -> str:
@@ -16,6 +21,44 @@ def format_token_count(n: int) -> str:
     if n >= 1_000:
         return f"{n / 1_000:.1f}k"
     return str(n)
+
+
+def format_typed_count(n: int) -> str:
+    """Shorten a count a person typed, so they can check its digits at a glance.
+
+    As is below 1000, else K/M/B with up to two decimals and trailing zeros
+    dropped (``128_000`` → ``128K``, ``1_280_000`` → ``1.28M``). A value the two
+    decimals do not hold exactly is marked ``~`` (``3_500_008`` → ``~3.5M``).
+    Rounding is half-up on integers, and a value that rounds to 1000 of a unit
+    moves to the next one (``999_995`` → ``~1M``, never ``~1000K``).
+    """
+    if n < 1_000:
+        return str(n)
+    scale, unit = 1_000, "K"
+    for next_scale, next_unit in ((1_000_000, "M"), (1_000_000_000, "B")):
+        if (n * 100 + scale // 2) // scale < 100_000:
+            break
+        scale, unit = next_scale, next_unit
+    whole, hundredths = divmod((n * 100 + scale // 2) // scale, 100)
+    fraction = f"{hundredths:02d}".rstrip("0")
+    approximate = "~" if n * 100 % scale else ""
+    return f"{approximate}{whole}.{fraction}{unit}" if fraction else f"{approximate}{whole}{unit}"
+
+
+def with_count_hint(label: Text, raw: str) -> Text:
+    """Return *label* followed by a dim ``· 128K`` hint when *raw* is an integer ≥ 1000.
+
+    The hint is ``format_typed_count``'s form, so a rounded value shows as ``· ~3.5M``.
+    """
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return label
+    if value < 1_000:
+        return label
+    hinted = label.copy()
+    hinted.append(f" · {format_typed_count(value)}", style="dim")
+    return hinted
 
 
 def format_byte_size(size_bytes: int) -> str:
