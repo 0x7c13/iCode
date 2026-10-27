@@ -380,6 +380,9 @@ def make_backend_handler(
             handle_ask_user_response=lambda request_id, answers: _call_screen_hook(
                 screen, "_handle_ask_user_response", request_id, answers
             ),
+            publish_hook_confirmation_answer=lambda session_id, request_id, answer: _call_screen_hook(
+                screen, "_publish_hook_confirmation_answer", session_id, request_id, answer
+            ),
             question_inline_preferred=lambda: False,
             approval_defer_while_judging=approval_defer_while_judging,
             approval_timeout_seconds=lambda: 0,

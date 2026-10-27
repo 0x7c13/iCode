@@ -11,7 +11,11 @@ from chrys.foundation.tool_result_metadata import (
     TOOL_ERROR_MESSAGE_METADATA_KEY,
     TOOL_FAILED_METADATA_KEY,
 )
-from chrys.service.agent_middleware._metadata_keys import _REJECTION_MESSAGE_KEY, _REJECTION_SOURCE_KEY
+from chrys.service.agent_middleware._metadata_keys import (
+    _HOOK_CONFIRMATION_KEY,
+    _REJECTION_MESSAGE_KEY,
+    _REJECTION_SOURCE_KEY,
+)
 from chrys.service.agent_middleware.events.result_persistence import RESULT_APPROVAL_METADATA_KEY
 
 
@@ -37,6 +41,15 @@ def rejection_source(metadata: Any) -> str:
         return ""
     source = metadata.get(_REJECTION_SOURCE_KEY)
     return source if source in {"user", "hook"} else ""
+
+
+def hook_confirmation(metadata: Any) -> str:
+    """How the hook's ``ask`` that stopped the call ended (``declined``, ``timed_out`` or
+    ``unavailable``); empty when no ``ask`` stopped it."""
+    if not isinstance(metadata, dict):
+        return ""
+    outcome = metadata.get(_HOOK_CONFIRMATION_KEY)
+    return outcome if isinstance(outcome, str) else ""
 
 
 def rejection_message(metadata: Any, source: str) -> str:

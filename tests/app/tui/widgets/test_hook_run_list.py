@@ -16,14 +16,13 @@ from textual.geometry import Region
 from textual.widgets import Static
 
 from chrys.app.tui.widgets.sidebar import hooks as hooks_module
-from chrys.app.tui.widgets.sidebar.hooks import HookRunList, run_duration, run_label
+from chrys.app.tui.widgets.sidebar.hooks import HookRunList, run_duration, run_label, run_outcome
+from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.hook_runs import HookRunRecord
 from chrys.service.hooks.run_log import HOOK_RUN_LOG_MAX_ENDED
 from chrys.service.trajectory.hooks import HookOutcome
 from tests.support.tui_helpers import click_when_settled, resize_when_settled
 from tests.support.waiting import wait_for, wait_until
-
-_SPINNER = range(0x2800, 0x2900)
 
 
 def _record(
@@ -43,6 +42,8 @@ def _record(
     ran_for: float | None = 0.0405,
     ended_ago: float = 1.0,
     number: int = 1,
+    call_rejected: bool = False,
+    confirmation: str | None = None,
 ) -> HookRunRecord:
     now = time.monotonic()
     if state == "queued":
@@ -75,6 +76,8 @@ def _record(
         exit_code=exit_code,
         effect=effect,  # type: ignore[arg-type]
         number=number,
+        call_rejected=call_rejected,
+        confirmation=confirmation,  # type: ignore[arg-type]
     )
 
 
@@ -138,7 +141,7 @@ async def _shown(pilot, count: int) -> list[str]:
     return _rows(pilot.app)
 
 
-# --- Each row: icon, label, outcome, duration -----------------------------------
+# --- Each row: icon, label, duration; the outcome is in the run's details ------
 
 
 @pytest.mark.parametrize(
@@ -148,6 +151,13 @@ async def _shown(pilot, count: int) -> list[str]:
         ({}, "✓", ""),
         ({"effect": "blocked"}, "⊘", "blocked"),
         ({"effect": "modified_args"}, "✓", "modified args"),
+        ({"effect": "modified_args", "call_rejected": True}, "⊘", "call rejected"),
+        ({"effect": "asked", "confirmation": "pending"}, "?", "waiting for user"),
+        ({"effect": "asked", "confirmation": "approved"}, "✓", "user continued"),
+        ({"effect": "asked", "confirmation": "declined"}, "⊘", "user cancelled"),
+        ({"effect": "asked", "confirmation": "timed_out"}, "⊘", "no answer in time"),
+        ({"effect": "asked", "confirmation": "unavailable"}, "⊘", "couldn't ask user"),
+        ({"effect": "asked", "confirmation": "interrupted"}, "■", "interrupted"),
         ({"effect": "added_reminder"}, "✓", "added reminder"),
         ({"effect": "added_context"}, "✓", "added context"),
         ({"outcome": HookOutcome.FAILED, "exit_code": 1}, "✗", "exit 1"),
@@ -168,6 +178,13 @@ async def _shown(pilot, count: int) -> list[str]:
         "success",
         "blocked",
         "modified",
+        "modified-call-rejected",
+        "asked-pending",
+        "asked-continued",
+        "asked-cancelled",
+        "asked-timed-out",
+        "asked-unavailable",
+        "asked-interrupted",
         "reminder",
         "context",
         "exit",
@@ -180,31 +197,28 @@ async def _shown(pilot, count: int) -> list[str]:
         "spawn-failed",
     ],
 )
-async def test_a_rows_icon_and_outcome_follow_how_it_ended_and_what_was_applied(
+async def test_a_rows_icon_follows_how_it_ended_and_its_outcome_is_left_to_the_details(
     fields: dict[str, object], icon: str, outcome: str
 ) -> None:
-    app = _ListApp(_Source(_record("r1", hook_id="check", **fields)))  # type: ignore[arg-type]
+    record = _record("r1", hook_id="check", **fields)  # type: ignore[arg-type]
+    # What the run's details say of it.
+    assert " · ".join(format_message(part) for part in run_outcome(record)) == outcome
+    app = _ListApp(_Source(record))
     async with app.run_test(size=(60, 20)) as pilot:
         (row,) = await _shown(pilot, 1)
-        assert row.startswith(f"{icon} check · zsh"), row
-        if not outcome:
-            # Nothing applied: only the duration follows the label.
-            assert row.split("zsh", 1)[1].split() == ["40ms"], row
-        elif fields.get("ran_for", 0.0) is None:
-            # Handed off, it has no duration of its own: the outcome ends the row.
-            assert row.endswith(outcome), row
-        else:
-            # The outcome, then the duration, which ends the row.
-            assert re.search(rf"{re.escape(outcome)} +\d+m?s$", row), row
+        # Only its duration follows the hook's name; handed off, it has none.
+        expected = [] if fields.get("ran_for", 0.0) is None else [run_duration(record, time.monotonic())]
+        assert row.split() == [icon, "check", *expected], row
 
 
-async def test_a_running_row_shows_a_spinner_and_its_duration_alone() -> None:
+async def test_a_running_row_shows_a_still_dot_and_its_duration_alone() -> None:
     app = _ListApp(_Source(_record("r1", hook_id="slow", state="running", ran_for=6.0)))
     async with app.run_test(size=(60, 20)) as pilot:
         (row,) = await _shown(pilot, 1)
-        assert ord(row[0]) in _SPINNER, row
+        # As a running background task.
+        assert row.startswith("● slow "), row
         # Its duration ticks in the running color, which says it runs.
-        assert re.fullmatch(r"\d+s", row.split("slow · zsh", 1)[1].strip()), row
+        assert re.fullmatch(r"\d+s", row.split("slow", 1)[1].strip()), row
 
 
 async def test_every_rows_duration_ends_at_the_right_edge_whatever_the_others_show() -> None:
@@ -220,7 +234,8 @@ async def test_every_rows_duration_ends_at_the_right_edge_whatever_the_others_sh
         width = rows.size.width
         lines = [strip.text for strip in rows.render_lines(Region(0, 0, width, 3))]
         assert [len(line.rstrip()) for line in lines] == [width] * 3, lines
-        assert lines[0].endswith(" 40ms") and lines[1].endswith("exit 1 · blocked 40ms"), lines
+        assert re.search(r"quick +40ms$", lines[0]), lines
+        assert re.search(r"gate +40ms$", lines[1]), lines
         assert re.search(r" \d+s$", lines[2]), lines
 
 
@@ -239,21 +254,19 @@ async def test_the_scrollbar_sits_on_the_panels_edge_and_the_rows_end_with_the_t
         assert clear.right == rows.right, "the title's link ends where the rows do"
 
 
-def test_the_label_names_the_tool_or_the_event_and_the_sub_agent() -> None:
-    assert run_label(_record("a", hook_id="guard", tool_name="write_file")) == "guard · write_file"
-    assert run_label(_record("b", hook_id="lint", tool_name="", event="after_turn")) == "lint · after_turn"
-    assert run_label(_record("c", hook_id="protect", tool_name="edit_file", sub_agent="Explore")) == (
-        "protect · edit_file · Explore"
-    )
+def test_the_label_is_the_hook_alone_whatever_fired_it() -> None:
+    # The event, tool and sub-agent are in the run's details.
+    assert run_label(_record("a", hook_id="guard", tool_name="write_file")) == "guard"
+    assert run_label(_record("b", hook_id="lint", tool_name="", event="after_turn")) == "lint"
+    assert run_label(_record("c", hook_id="protect", tool_name="edit_file", sub_agent="Explore")) == "protect"
 
 
 async def test_external_text_is_shown_literally_and_sanitized() -> None:
-    record = _record("r1", hook_id="[bold]gate[/]\x1b[31m", tool_name="tool[/x]", sub_agent="Ex\x07plore")
+    record = _record("r1", hook_id="[bold]gate[/]\x1b[31m\x07")
     app = _ListApp(_Source(record))
     async with app.run_test(size=(80, 20)) as pilot:
         (row,) = await _shown(pilot, 1)
         assert "[bold]gate[/]" in row
-        assert "tool[/x]" in row
         assert "\x1b" not in row and "\x07" not in row
 
 
@@ -300,7 +313,7 @@ async def test_rows_keep_the_order_active_first_then_ended_and_mix_sessions() ->
     app = _ListApp(_Source(*records))
     async with app.run_test(size=(70, 20)) as pilot:
         rows = await _shown(pilot, 4)
-        assert [row.split(" · ")[0][2:] for row in rows] == ["queued-check", "slow-shell", "ruff", "protect"]
+        assert [row.split()[1] for row in rows] == ["queued-check", "slow-shell", "ruff", "protect"]
         assert "s1" not in " ".join(rows) and "s2" not in " ".join(rows), "rows do not name the session"
 
 
@@ -318,22 +331,21 @@ async def test_each_row_starts_with_its_run_number_aligned_as_the_messages_tab_n
         assert first.index("slow") == second.index("lint")
 
 
-async def test_a_long_result_gives_way_to_the_name_past_a_third_of_the_row() -> None:
+async def test_a_long_name_takes_the_row_and_gives_way_only_to_the_duration() -> None:
     record = _record(
         "e", hook_id="all-modify-timeout-and-more", outcome=HookOutcome.TIMED_OUT, exit_code=None, effect="blocked"
     )
     app = _ListApp(_Source(record))
-    async with app.run_test(size=(42, 10)) as pilot:
+    async with app.run_test(size=(30, 10)) as pilot:
         (row,) = await _shown(pilot, 1)
-        width = pilot.app.query_one("#hook-runs-rows", Static).size.width
-        outcome = row[row.index("timed out") : row.index("40ms")].strip()
-        assert outcome.endswith("…") and len(outcome) <= width // 3, row
-        name = row[2 : row.index("timed out")].strip()
-        assert len(name) > len(outcome), row
-        # Wider, the whole result shows: the cap follows the width.
+        assert row.startswith("✗ all-modify") and "…" in row, row
+        assert re.search(r"… +40ms$", row), row
+        # Wider, the whole name shows.
         await resize_when_settled(pilot, 90, 10)
         await wait_for(
-            lambda: _rows(pilot.app)[0].endswith("timed out · blocked 40ms"), pilot=pilot, description="whole result"
+            lambda: re.fullmatch(r"✗ all-modify-timeout-and-more +40ms", _rows(pilot.app)[0]) is not None,
+            pilot=pilot,
+            description="whole name",
         )
 
 

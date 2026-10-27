@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.state.current_agent import CurrentAgent
     from chrys.orchestration.engine.state.lifecycle_permits import LifecyclePermits
     from chrys.orchestration.engine.state.machine import EngineStateMachine
+    from chrys.service.hooks.operation import HookOperation
     from chrys.service.hooks.schema import HookDecision
 
 
@@ -134,8 +135,37 @@ class ActiveTurnInjector:
                 await preparation.finished(outcome=PreparationOutcome.ABANDONED_NO_TARGET)
             return False
 
+        operation = self._gate.new_operation(text)
+        self._turn_state.input_operations.add(operation, injection_id=injection_id)
+
+        def _target_ended(_task: asyncio.Task[None]) -> None:
+            operation.invalidate("turn_ended")
+
+        # The message joins the run it targets or none: once that run ends, its check (and any
+        # question to the user) is over too.
+        target.run_task.add_done_callback(_target_ended)
+        try:
+            return await self._admit_checked(
+                target, operation, text, created_at=created_at, injection_id=injection_id, ownership=ownership
+            )
+        finally:
+            target.run_task.remove_done_callback(_target_ended)
+            self._turn_state.input_operations.discard(operation)
+
+    async def _admit_checked(
+        self,
+        target: ActiveInjectionTarget,
+        operation: HookOperation,
+        text: str,
+        *,
+        created_at: datetime | str | None,
+        injection_id: str | None,
+        ownership: _PreparationOwnership,
+    ) -> bool:
+        """Check *operation*'s text with the prompt hooks and inject it into *target* if it may still go."""
+        preparation = ownership.trace
         decision = await self._gate.evaluate(
-            text,
+            operation,
             injected=True,
             target_operation_id=preparation.committed_operation_id if preparation is not None else None,
             trajectory_context=preparation.context if preparation is not None else None,
@@ -149,9 +179,16 @@ class ActiveTurnInjector:
             if preparation is not None:
                 await preparation.finished(outcome=PreparationOutcome.TARGET_STALE)
             return False
+        if decision.invalidated:
+            # Ended while its hooks checked it for a reason the checks above did not see
+            # (the hook manager closed): it goes back like any message that missed its run.
+            await self.publish_abandoned(target, text, created_at, injection_id=injection_id)
+            if preparation is not None:
+                await preparation.finished(outcome=PreparationOutcome.TARGET_STALE)
+            return False
         if await self._gate.handle_decision(
             decision,
-            injected=True,
+            refused_input="injection",
             session_id=target.session_id,
         ):
             if preparation is not None:
@@ -165,6 +202,7 @@ class ActiveTurnInjector:
             target,
             text,
             decision,
+            operation=operation,
             created_at=created_at,
             publish_abandoned=True,
             injection_id=injection_id,
@@ -307,6 +345,7 @@ class ActiveTurnInjector:
         text: str,
         decision: HookDecision | None,
         *,
+        operation: HookOperation,
         created_at: datetime | str | None,
         publish_abandoned: bool,
         injection_id: str | None = None,
@@ -335,6 +374,10 @@ class ActiveTurnInjector:
         # everything is synchronous, so a cancel cannot interleave past this
         # point before the text is queued.
         if not self.target_is_current(target) or self._is_cancelled(injection_id):
+            return await _abandon()
+        # The submit point, in the same synchronous stretch as the inject: the text the
+        # hooks checked, still wanted, is the one queued.
+        if operation.commit_input(text) is not None:
             return await _abandon()
         if not self._turn_state.lease.begin_active_injection_commit(target):
             return await _abandon()

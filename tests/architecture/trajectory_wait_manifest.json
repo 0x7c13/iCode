@@ -692,6 +692,10 @@
       "AgentEngine._release": [
         ["shield", "await asyncio.shield(task)", "unresolved"]
       ],
+      "AgentEngine._release_resources": [
+        ["awaitable", "await self._lifecycle.shutdown()", "unresolved"],
+        ["awaitable", "await self._hook_confirmations.close()", "unresolved"]
+      ],
       "AgentEngine._session_operation": [
         ["awaitable", "await self._bus.publish(Error(code='workflow_active', message=f'Cannot {operation} while a workflow run is active. Cancel the workflow run first.', session_id=target_session_id or self._session.session_id))", "unresolved"],
         ["awaitable", "await run()", "unresolved"]
@@ -720,7 +724,8 @@
         ["awaitable", "await self._bus.subscribe(InvocationResumed, self._on_sub_agent_unpaused)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(InvocationAborted, self._on_sub_agent_unpaused)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(InvocationCascadeAborted, self._on_sub_agent_unpaused)", "unresolved"],
-        ["awaitable", "await self._workflows.subscribe()", "unresolved"]
+        ["awaitable", "await self._workflows.subscribe()", "unresolved"],
+        ["awaitable", "await self._hook_confirmations.start()", "unresolved"]
       ],
       "AgentEngine.begin_rollback_projection": [
         ["awaitable", "await self._rollback.begin_rollback_projection(session_id=session_id, session_generation=session_generation)", "unresolved"]
@@ -739,6 +744,7 @@
       ],
       "AgentEngine.shutdown": [
         ["awaitable", "await self._workflows.shutdown()", "unresolved"],
+        ["awaitable", "await self._hook_confirmations.close()", "unresolved"],
         ["wrapper", "await self._release()", "unresolved", "chrys.orchestration.engine.engine.AgentEngine._release"]
       ],
       "AgentEngine.start": [
@@ -789,7 +795,7 @@
         ["wrapper", "await construction.build_agent(self._profile_with_mcp_overlay(profile), staged=staged, preserved_history=preserved_history, build_agent_fn=self._build_agent_fn, session=self._session, settings_handle=self._settings_handle, persistence=self._persistence, bus=self._bus, agent_registry=self._agent_registry, model_registry=self._model_registry, workspace_change_tracker=self._workspace_change_tracker, turn_state=self._turn_state, turn_context=self._turn_context, mcp_cache=self._mcp_cache, allow_user_interaction=self._allow_user_interaction, checkpoints=self._checkpoints, usage_publisher=self._usage_publisher, fire_pre_compact=self._hooks.fire_pre_compact, publish_load_progress=self.publish_load_progress, hold_injection_notification=self.hold_injection_notification)", "unresolved", "chrys.orchestration.engine.build.construction.build_agent"]
       ],
       "AgentLoader.build_hook_manager": [
-        ["awaitable", "await SessionHookFactory(self._bus)(project_root=project_root, project_hooks_enabled=project_hooks_enabled, session_id=resolved_session_id)", "unresolved"]
+        ["awaitable", "await SessionHookFactory(self._bus, confirmations=self._hook_confirmations)(project_root=project_root, project_hooks_enabled=project_hooks_enabled, session_id=resolved_session_id)", "unresolved"]
       ],
       "AgentLoader.cancel_outbox_recovery": [
         ["future", "await task", "unresolved"]
@@ -914,9 +920,26 @@
       ]
     },
     "chrys.orchestration.engine.run.active_injection": {
+      "ActiveTurnInjector._admit_checked": [
+        ["awaitable", "await self._gate.evaluate(operation, injected=True, target_operation_id=preparation.committed_operation_id if preparation is not None else None, trajectory_context=preparation.context if preparation is not None else None)", "unresolved"],
+        ["wrapper", "await self.publish_abandoned(target, text, created_at, injection_id=injection_id)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector.publish_abandoned"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CANCELLED)", "unresolved"],
+        ["wrapper", "await self.abandon_if_target_stale(target, text, created_at, injection_id=injection_id)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector.abandon_if_target_stale"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.TARGET_STALE)", "unresolved"],
+        ["wrapper", "await self.publish_abandoned(target, text, created_at, injection_id=injection_id)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector.publish_abandoned"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.TARGET_STALE)", "unresolved"],
+        ["awaitable", "await self._gate.handle_decision(decision, refused_input='injection', session_id=target.session_id)", "unresolved"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.REJECTED)", "unresolved"],
+        ["wrapper", "await self._reject_injected_images(text, session_id=target.session_id)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._reject_injected_images"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.IMAGE_REJECTED)", "unresolved"],
+        ["wrapper", "await self._commit_side_effects(target, text, decision, operation=operation, created_at=created_at, publish_abandoned=True, injection_id=injection_id, ownership=ownership)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._commit_side_effects"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CANCELLED)", "unresolved"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.TARGET_STALE)", "unresolved"]
+      ],
       "ActiveTurnInjector._commit_side_effects": [
         ["awaitable", "await _abandon()", "unresolved"],
         ["wrapper", "await self._stage_runtime_skills()", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._stage_runtime_skills"],
+        ["awaitable", "await _abandon()", "unresolved"],
         ["awaitable", "await _abandon()", "unresolved"],
         ["awaitable", "await _abandon()", "unresolved"],
         ["awaitable", "await _abandon()", "unresolved"],
@@ -931,18 +954,7 @@
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.IMAGE_REJECTED)", "unresolved"],
         ["wrapper", "await self.publish_abandoned(target, text, created_at, injection_id=injection_id)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector.publish_abandoned"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.ABANDONED_NO_TARGET)", "unresolved"],
-        ["awaitable", "await self._gate.evaluate(text, injected=True, target_operation_id=preparation.committed_operation_id if preparation is not None else None, trajectory_context=preparation.context if preparation is not None else None)", "unresolved"],
-        ["wrapper", "await self.publish_abandoned(target, text, created_at, injection_id=injection_id)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector.publish_abandoned"],
-        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CANCELLED)", "unresolved"],
-        ["wrapper", "await self.abandon_if_target_stale(target, text, created_at, injection_id=injection_id)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector.abandon_if_target_stale"],
-        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.TARGET_STALE)", "unresolved"],
-        ["awaitable", "await self._gate.handle_decision(decision, injected=True, session_id=target.session_id)", "unresolved"],
-        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.REJECTED)", "unresolved"],
-        ["wrapper", "await self._reject_injected_images(text, session_id=target.session_id)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._reject_injected_images"],
-        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.IMAGE_REJECTED)", "unresolved"],
-        ["wrapper", "await self._commit_side_effects(target, text, decision, created_at=created_at, publish_abandoned=True, injection_id=injection_id, ownership=ownership)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._commit_side_effects"],
-        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CANCELLED)", "unresolved"],
-        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.TARGET_STALE)", "unresolved"]
+        ["wrapper", "await self._admit_checked(target, operation, text, created_at=created_at, injection_id=injection_id, ownership=ownership)", "unresolved", "chrys.orchestration.engine.run.active_injection.ActiveTurnInjector._admit_checked"]
       ],
       "ActiveTurnInjector._publish_staged_runtime_skill_refresh": [
         ["awaitable", "await self._skills.publish_committed_refresh(committed, session_id=session_id)", "unresolved"]
@@ -1050,9 +1062,10 @@
         ["wrapper", "await self._wait_for_pre_admission_gate(self._turn_state.lease.wait_for_prompt_admission_open, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
         ["wrapper", "await self._abandon_cancelled_injection_submit(event)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._abandon_cancelled_injection_submit"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CANCELLED)", "unresolved"],
-        ["wrapper", "await self._evaluate_user_prompt_submit(event.text, injected=False, target_operation_id=preparation.committed_operation_id if preparation is not None else None, trajectory_context=preparation.context if preparation is not None else None)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._evaluate_user_prompt_submit"],
+        ["wrapper", "await self._evaluate_user_prompt_submit(operation, injected=False, target_operation_id=preparation.committed_operation_id if preparation is not None else None, trajectory_context=preparation.context if preparation is not None else None)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._evaluate_user_prompt_submit"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CANCELLED)", "unresolved"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.OWNER_CHANGED)", "unresolved"],
-        ["wrapper", "await self._handle_user_prompt_submit_decision(decision, injected=False)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._handle_user_prompt_submit_decision"],
+        ["awaitable", "await self._gate.handle_decision(decision, refused_input='prompt')", "unresolved"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.REJECTED)", "unresolved"],
         ["wrapper", "await self.reject_text_only_prepared_contents(event.text, contents, admission=admission, event_session_id=admission_session_id)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.reject_text_only_prepared_contents"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.IMAGE_REJECTED)", "unresolved"],
@@ -1065,14 +1078,12 @@
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CONFLICT)", "unresolved"],
         ["wrapper", "await self._publish_prompt_admission_conflict()", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._publish_prompt_admission_conflict"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CONFLICT)", "unresolved"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CANCELLED)", "unresolved"],
         ["wrapper", "await self._publish_prompt_admission_conflict()", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._publish_prompt_admission_conflict"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CONFLICT if promotion.conflict else PreparationOutcome.OWNER_CHANGED)", "unresolved"]
       ],
       "TurnCoordinator._evaluate_user_prompt_submit": [
-        ["awaitable", "await self._gate.evaluate(text, injected=injected, target_operation_id=target_operation_id, trajectory_context=trajectory_context)", "unresolved"]
-      ],
-      "TurnCoordinator._handle_user_prompt_submit_decision": [
-        ["awaitable", "await self._gate.handle_decision(decision, injected=injected, session_id=session_id)", "unresolved"]
+        ["awaitable", "await self._gate.evaluate(operation, injected=injected, target_operation_id=target_operation_id, trajectory_context=trajectory_context)", "unresolved"]
       ],
       "TurnCoordinator._publish_prompt_admission_conflict": [
         ["awaitable", "await self._bus.publish(Error(code='prompt_admission_conflict', message='Prompt could not be admitted because another turn started.', display_message=_COORDINATOR_PROMPT_ADMISSION_CONFLICT.bind(), session_id=self._session.session_id))", "unresolved"]
@@ -1256,16 +1267,16 @@
         ["wrapper", "await self._wait_for_pre_admission_gate(self._turn_state.lease.wait_for_prompt_admission_open, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._wait_for_pre_admission_gate"],
         ["awaitable", "await self._bus.publish(Warning(code='sub_agent_paused', message='Resolve paused sub-agent(s) first (Retry/Abort on the card) before retrying the main run.', display_message=_RETRY_SUB_AGENT_PAUSED.bind(), session_id=self._session.session_id))", "unresolved"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.CONFLICT)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
-        ["awaitable", "await self._gate.evaluate(event.text, injected=True, target_operation_id=preparation.committed_operation_id if preparation is not None else None, trajectory_context=preparation.context if preparation is not None else None)", "unresolved"],
+        ["awaitable", "await self._gate.evaluate(operation, injected=True, target_operation_id=preparation.committed_operation_id if preparation is not None else None, trajectory_context=preparation.context if preparation is not None else None)", "unresolved"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.OWNER_CHANGED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
-        ["awaitable", "await self._gate.handle_decision(decision, injected=True, session_id=retry_note_session_id)", "unresolved"],
+        ["awaitable", "await self._gate.handle_decision(decision, refused_input='retry_note', session_id=retry_note_session_id)", "unresolved"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.REJECTED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._reject_retry_images(event.text, session_id=retry_note_session_id)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._reject_retry_images"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.IMAGE_REJECTED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.OWNER_CHANGED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._reject_text_only_active_history()", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._reject_text_only_active_history"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.IMAGE_REJECTED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
-        ["wrapper", "await self._commit_retry_note_side_effects(event.text, decision, retry_note_owner, active_retry_target, before_commit=_install_pending_retry_before_commit)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._commit_retry_note_side_effects"],
+        ["wrapper", "await self._commit_retry_note_side_effects(event.text, decision, retry_note_owner, active_retry_target, before_commit=_install_pending_retry_before_commit, operation=operation)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._commit_retry_note_side_effects"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.PREPARATION_FAILED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.CONFLICT)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._finish_preparation(preparation, outcome)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
@@ -1275,6 +1286,7 @@
         ["wrapper", "await refuse_while_working_dir_missing(self._bus, self._session)", "unresolved", "chrys.orchestration.engine.run.working_dir.refuse_while_working_dir_missing"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.REJECTED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.CONFLICT)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
+        ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.CANCELLED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.OWNER_CHANGED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
         ["wrapper", "await self._commit_deferred_retry_note_side_effects(deferred_retry_note, scope)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._commit_deferred_retry_note_side_effects"],
         ["wrapper", "await self._finish_preparation(preparation, PreparationOutcome.PREPARATION_FAILED)", "unresolved", "chrys.orchestration.engine.run.retry.RetryCoordinator._finish_preparation"],
@@ -1392,14 +1404,10 @@
     },
     "chrys.orchestration.engine.run.turn_hooks": {
       "PromptSubmitGate.evaluate": [
-        ["awaitable", "await self._session.hook_manager.fire(HookEvent.USER_PROMPT_SUBMIT, {'session_id': self._session.session_id, 'profile': profile_name, 'cwd': _workspace_cwd(self._session), 'text': text, 'injected': is_injected}, target_operation_id=target_operation_id, trajectory_context=trajectory_context)", "unresolved"]
-      ],
-      "PromptSubmitGate.fire": [
-        ["wrapper", "await self.evaluate(text, injected=injected)", "unresolved", "chrys.orchestration.engine.run.turn_hooks.PromptSubmitGate.evaluate"],
-        ["wrapper", "await self.handle_decision(decision, injected=injected)", "unresolved", "chrys.orchestration.engine.run.turn_hooks.PromptSubmitGate.handle_decision"]
+        ["wrapper", "await check_operation(self._session.hook_manager, HookEvent.USER_PROMPT_SUBMIT, operation, lambda: {'session_id': self._session.session_id, 'profile': profile_name, 'cwd': _workspace_cwd(self._session), 'text': operation.input_text, 'injected': is_injected}, target_operation_id=target_operation_id, trajectory_context=trajectory_context)", "unresolved", "chrys.service.hooks.manager.check_operation"]
       ],
       "PromptSubmitGate.handle_decision": [
-        ["awaitable", "await self._bus.publish(Error(code='hook_blocked', message=decision.block_reason or 'Prompt blocked by hook.', display_message=None if decision.block_reason else _TURN_HOOKS_PROMPT_BLOCKED.bind(), session_id=self._session.session_id if session_id is None else session_id))", "unresolved"]
+        ["awaitable", "await self._bus.publish(Error(code='hook_blocked', message=decision.block_reason or 'Prompt blocked by hook.', display_message=None if decision.block_reason else _TURN_HOOKS_PROMPT_BLOCKED.bind(), session_id=self._session.session_id if session_id is None else session_id, refused_input=refused_input))", "unresolved"]
       ],
       "TurnHookDispatcher.fire_after_turn": [
         ["awaitable", "await self._session.hook_manager.fire(HookEvent.AFTER_TURN, {'session_id': self._session.session_id, 'profile': profile_name, 'cwd': _workspace_cwd(self._session), 'turn': self._session.turn_number, 'status': status, 'failed': failed})", "unresolved"]
@@ -3468,6 +3476,11 @@
         ["wrapper", "await self._withdraw(request_id)", "unresolved", "chrys.service.agent_middleware.control.ask_user.AskUserMiddleware._withdraw"]
       ]
     },
+    "chrys.service.agent_middleware.control.hook_commit": {
+      "HookCommitMiddleware.process": [
+        ["awaitable", "await call_next()", "unresolved"]
+      ]
+    },
     "chrys.service.agent_middleware.control.interrupt": {
       "InterruptMiddleware.process": [
         ["awaitable", "await call_next()", "unresolved"]
@@ -3497,7 +3510,7 @@
     },
     "chrys.service.agent_middleware.events.hook_dispatch": {
       "apply_before_tool_hooks": [
-        ["awaitable", "await manager.fire(HookEvent.BEFORE_TOOL_CALL, _build_payload(session_id=session_id, profile_name=profile_name, tool_name=tool_name, kind=kind, call_id=call_id, args=args, workspace_cwd=workspace_cwd), target_operation_id=target_operation_id, origin=origin)", "unresolved"]
+        ["wrapper", "await check_operation(manager, HookEvent.BEFORE_TOOL_CALL, operation, lambda: _build_payload(session_id=session_id, profile_name=profile_name, tool_name=tool_name, kind=kind, call_id=call_id, args=operation.arguments(), workspace_cwd=workspace_cwd), target_operation_id=target_operation_id, origin=origin)", "unresolved", "chrys.service.hooks.manager.check_operation"]
       ],
       "fire_after_tool_hooks": [
         ["awaitable", "await manager.fire(HookEvent.AFTER_TOOL_CALL, payload, target_operation_id=target_operation_id, origin=origin)", "unresolved"],
@@ -3598,7 +3611,7 @@
         ["awaitable", "await trajectory.started(tool_name=tool_name, tool_kind=tool_kind, batch_index=None, invocation_order=get_tool_invocation_order(context), arguments=args, invocation_metadata=_meta, tool_context=resolve_tool_call_context(context.function, args) or None, preamble_operation_id=preamble.operation_id if preamble is not None and preamble.start_committed else None)", "unresolved"],
         ["awaitable", "await call_next()", "unresolved"],
         ["wrapper", "await finalize_mutation_tracking(self._mutation_tracker, mut_ctx, call_id, coordinator=self._mutation_coordinator, tool_errored=tool_failed)", "unresolved", "chrys.service.mutations.pipeline.finalize_mutation_tracking"],
-        ["wrapper", "await fire_after_tool_hooks(manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=args, result_text=result_text, duration_ms=duration_ms, errored=errored, failed=structured_failed, approval_rejected=rejected, rejection_source=source, workspace_cwd=self._workspace_cwd, target_operation_id=trajectory.operation_id if trajectory is not None else None, origin=origin)", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.fire_after_tool_hooks"],
+        ["wrapper", "await fire_after_tool_hooks(manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=args, result_text=result_text, duration_ms=duration_ms, errored=errored, failed=structured_failed, approval_rejected=rejected, rejection_source=source, hook_confirmation=hook_confirmation(_meta), workspace_cwd=self._workspace_cwd, target_operation_id=trajectory.operation_id if trajectory is not None else None, origin=origin)", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.fire_after_tool_hooks"],
         ["awaitable", "await self._bus.publish(InvocationToolCallResult(origin=origin, agent_name=self._agent_name, tool_name=tool_name, call_id=call_id, result=result_text, image_contents=result_images, duration_ms=duration_ms, metadata=metadata, session_id=self._session_id))", "unresolved"],
         ["awaitable", "await trajectory.payload_observed(result_text=preview_result_ceiling(result_text, self._tool_result_ceiling_tokens, observation=payload_observation), image_count=len(result_images), observation=payload_observation)", "unresolved"],
         ["awaitable", "await trajectory.finished(outcome=tool_outcome(cancelled=False, rejected=rejected, errored=errored, result_metadata=metadata), duration_ms=elapsed_ms, result_metadata=metadata, error_kind=raised_error_kind)", "unresolved"],
@@ -3659,7 +3672,7 @@
         ["awaitable", "await call_next()", "unresolved"],
         ["awaitable", "await self._bus.unsubscribe(ShellToBackground, move_to_background)", "unresolved"],
         ["wrapper", "await finalize_mutation_tracking(self._mutation_tracker, mut_ctx, call_id, coordinator=self._mutation_coordinator, tool_errored=tool_failed)", "unresolved", "chrys.service.mutations.pipeline.finalize_mutation_tracking"],
-        ["wrapper", "await fire_after_tool_hooks(manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=args, result_text=result_text, duration_ms=duration_ms, errored=errored, failed=structured_failed, approval_rejected=rejected, rejection_source=source, workspace_cwd=self._workspace_cwd, target_operation_id=trajectory.operation_id if trajectory is not None else None)", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.fire_after_tool_hooks"],
+        ["wrapper", "await fire_after_tool_hooks(manager=self._hook_manager, session_id=self._session_id, profile_name=self._profile_name, tool_name=tool_name, kind=tool_kind, call_id=call_id, args=args, result_text=result_text, duration_ms=duration_ms, errored=errored, failed=structured_failed, approval_rejected=rejected, rejection_source=source, hook_confirmation=hook_confirmation(_meta), workspace_cwd=self._workspace_cwd, target_operation_id=trajectory.operation_id if trajectory is not None else None)", "unresolved", "chrys.service.agent_middleware.events.hook_dispatch.fire_after_tool_hooks"],
         ["awaitable", "await self._bus.publish(InvocationToolCallResult(origin=origin, tool_name=tool_name, call_id=call_id, result=result_text, image_contents=result_images, duration_ms=duration_ms, session_id=self._session_id, metadata=metadata))", "unresolved"],
         ["awaitable", "await trajectory.payload_observed(result_text=preview_result_ceiling(result_text, self._tool_result_ceiling_tokens, observation=payload_observation), image_count=len(result_images), observation=payload_observation)", "unresolved"],
         ["awaitable", "await trajectory.finished(outcome=tool_outcome(cancelled=False, rejected=rejected, errored=errored, result_metadata=metadata), duration_ms=elapsed_ms, result_metadata=metadata, error_kind=raised_error_kind)", "unresolved"]
@@ -3969,6 +3982,35 @@
         ["awaitable", "await super().before_run(agent=agent, session=session, context=context, state=state)", "unresolved"]
       ]
     },
+    "chrys.service.hooks.confirmation": {
+      "HookConfirmationService._close": [
+        ["gather", "await asyncio.gather(*self._lifecycles, return_exceptions=True)", "unresolved"],
+        ["awaitable", "await self._bus.unsubscribe(HookConfirmationResponse, self._on_response)", "unresolved"]
+      ],
+      "HookConfirmationService._lifecycle": [
+        ["multi_wait", "await asyncio.wait(watched, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)", "unresolved"],
+        ["awaitable", "await present", "unresolved"],
+        ["wrapper", "await self._wind_down(pending, pending.answer.result(), started)", "unresolved", "chrys.service.hooks.confirmation.HookConfirmationService._wind_down"]
+      ],
+      "HookConfirmationService._present": [
+        ["awaitable", "await pending.wait.started()", "unresolved"],
+        ["awaitable", "await self._bus.publish(pending.request)", "unresolved"]
+      ],
+      "HookConfirmationService._wind_down": [
+        ["awaitable", "await self._bus.publish(withdrawn)", "unresolved"],
+        ["awaitable", "await pending.wait.finished(outcome=_WAIT_OUTCOMES[result.outcome], result=result.outcome, end_reason=result.end_reason)", "unresolved"]
+      ],
+      "HookConfirmationService.ask": [
+        ["shield", "await asyncio.shield(lifecycle)", "unresolved"],
+        ["wrapper", "await finish_close(lifecycle)", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
+      "HookConfirmationService.close": [
+        ["awaitable", "await self._close_once()", "unresolved"]
+      ],
+      "HookConfirmationService.start": [
+        ["awaitable", "await self._bus.subscribe(HookConfirmationResponse, self._on_response)", "unresolved"]
+      ]
+    },
     "chrys.service.hooks.detached_worker": {
       "_main": [
         ["wrapper", "await _run_child(cmd, cwd=cwd, env=env)", "unresolved", "chrys.service.hooks.detached_worker._run_child"]
@@ -3979,6 +4021,15 @@
       ]
     },
     "chrys.service.hooks.manager": {
+      "HookManager._confirm": [
+        ["awaitable", "await confirmations.ask(operation, run_id=step.run_id, hook_id=hook.id, hook_source=self._hook_sources.get(id(hook), ''), reason=step.ask or '', trajectory_context=dispatch.trajectory_context, trajectory_provider=self.trajectory_context_provider)", "unresolved"],
+        ["wrapper", "await self._report(self._record_confirmation(step.run_id, 'interrupted'))", "unresolved", "chrys.service.hooks.manager.HookManager._report"],
+        ["wrapper", "await self._report(self._record_confirmation(step.run_id, result.outcome))", "unresolved", "chrys.service.hooks.manager.HookManager._report"]
+      ],
+      "HookManager._dispatch": [
+        ["wrapper", "await self._run_blocking_passes(blocking, envelope, dispatch)", "unresolved", "chrys.service.hooks.manager.HookManager._run_blocking_passes"],
+        ["wrapper", "await self._spawn_nonblocking(hook, envelope, scope=dispatch.scope, session_drain_generation=session_drain_generation, target_operation_id=dispatch.target_operation_id, origin=dispatch.origin, operation=operation)", "unresolved", "chrys.service.hooks.manager.HookManager._spawn_nonblocking"]
+      ],
       "HookManager._drain": [
         ["gather", "await asyncio.gather(*tasks, return_exceptions=True)", "unresolved"],
         ["timeout", "await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)", "unresolved"],
@@ -4013,6 +4064,19 @@
         ["wrapper", "await self._report(self._take_slot(run))", "unresolved", "chrys.service.hooks.manager.HookManager._report"],
         ["awaitable", "await self._runner.run_and_wait(hook, payload, payload_text=run.payload_text, result=run.output)", "unresolved"]
       ],
+      "HookManager._run_blocking_passes": [
+        ["wrapper", "await self._run_one_blocking(hook, envelope, decision, dispatch)", "unresolved", "chrys.service.hooks.manager.HookManager._run_one_blocking"],
+        ["wrapper", "await self._confirm(hook, step, decision, dispatch)", "unresolved", "chrys.service.hooks.manager.HookManager._confirm"],
+        ["wrapper", "await self._report(_Changed(runs=self._run_log.reject_call(changed_by)))", "unresolved", "chrys.service.hooks.manager.HookManager._report"]
+      ],
+      "HookManager._run_one_blocking": [
+        ["awaitable", "await trace.started(hook_id=hook.id, hook_event=str(dispatch.event), execution_mode=hook.execution.mode, detach=hook.execution.detach, delivery=hook.execution.delivery, scope=dispatch.scope, drain_scope=dispatch.scope)", "unresolved"],
+        ["wrapper", "await self._run_blocking(hook, envelope, waited_at='none' if dispatch.scope == 'detached' else 'call', run=run, operation=dispatch.operation)", "unresolved", "chrys.service.hooks.manager.HookManager._run_blocking"],
+        ["wrapper", "await self._report(self._finish_run(run, outcome=HookOutcome.CANCELLED))", "unresolved", "chrys.service.hooks.manager.HookManager._report"],
+        ["wrapper", "await self._report(self._finish_run(run, outcome=HookOutcome.CANCELLED))", "unresolved", "chrys.service.hooks.manager.HookManager._report"],
+        ["wrapper", "await self._report_end(self._finish_run(run, outcome=outcome, result=result), trace, outcome=outcome, exit_code=result.exit_code, timed_out=result.timed_out)", "unresolved", "chrys.service.hooks.manager.HookManager._report_end"],
+        ["wrapper", "await self._report_end(self._finish_run(run, outcome=_hook_outcome(result, blocked=False), result=result, effect=effect, applied=applied), trace, outcome=_hook_outcome(result, blocked=blocked, asked=ask is not None), arguments_modified=arguments_modified, exit_code=result.exit_code, timed_out=result.timed_out)", "unresolved", "chrys.service.hooks.manager.HookManager._report_end"]
+      ],
       "HookManager._spawn_nonblocking": [
         ["awaitable", "await trace.started(hook_id=hook.id, hook_event=str(hook.event), execution_mode=hook.execution.mode, detach=hook.execution.detach, delivery=hook.execution.delivery, scope=scope, drain_scope=drain_scope)", "unresolved"],
         ["wrapper", "await self._notify_change()", "unresolved", "chrys.service.hooks.manager.HookManager._notify_change"],
@@ -4030,15 +4094,18 @@
         ["wrapper", "await self._drain(scopes={'turn'}, timeout=None)", "unresolved", "chrys.service.hooks.manager.HookManager._drain"]
       ],
       "HookManager.fire": [
-        ["awaitable", "await trace.started(hook_id=hook.id, hook_event=str(event), execution_mode=hook.execution.mode, detach=hook.execution.detach, delivery=hook.execution.delivery, scope=scope, drain_scope=scope)", "unresolved"],
-        ["wrapper", "await self._run_blocking(hook, envelope, waited_at='none' if scope == 'detached' else 'call', run=run)", "unresolved", "chrys.service.hooks.manager.HookManager._run_blocking"],
-        ["wrapper", "await self._report(self._finish_run(run, outcome=HookOutcome.CANCELLED))", "unresolved", "chrys.service.hooks.manager.HookManager._report"],
-        ["wrapper", "await self._report_end(self._finish_run(run, outcome=outcome, result=result), trace, outcome=outcome, exit_code=result.exit_code, timed_out=result.timed_out)", "unresolved", "chrys.service.hooks.manager.HookManager._report_end"],
-        ["wrapper", "await self._report_end(self._finish_run(run, outcome=_hook_outcome(result, blocked=False), result=result, effect=effect, applied=applied), trace, outcome=_hook_outcome(result, blocked=blocked), arguments_modified=arguments_modified, exit_code=result.exit_code, timed_out=result.timed_out)", "unresolved", "chrys.service.hooks.manager.HookManager._report_end"],
-        ["wrapper", "await self._spawn_nonblocking(hook, envelope, scope=scope, session_drain_generation=session_drain_generation, target_operation_id=target_operation_id, origin=origin)", "unresolved", "chrys.service.hooks.manager.HookManager._spawn_nonblocking"]
+        ["wrapper", "await self._dispatch(blocking, nonblocking, envelope, dispatch)", "unresolved", "chrys.service.hooks.manager.HookManager._dispatch"]
       ],
       "HookManager.recover_outbox": [
         ["wrapper", "await self._spawn_nonblocking(hook, job.payload, scope='session', session_drain_generation=self._session_drain_generation, existing_job=job)", "unresolved", "chrys.service.hooks.manager.HookManager._spawn_nonblocking"]
+      ],
+      "check_operation": [
+        ["awaitable", "await manager.fire(event, payload(), target_operation_id=target_operation_id, trajectory_context=trajectory_context, origin=origin, operation=operation)", "unresolved"]
+      ]
+    },
+    "chrys.service.hooks.operation": {
+      "HookOperation.wait_invalidated": [
+        ["sync_primitive", "await self._ended.wait()", "unresolved"]
       ]
     },
     "chrys.service.hooks.runner": {
@@ -5177,7 +5244,7 @@
     },
     "chrys.service.trajectory.waits": {
       "WaitTrace.finished": [
-        ["awaitable", "await self._context.sink.emit(self._finished_draft(outcome=outcome))", "unresolved"]
+        ["awaitable", "await self._context.sink.emit(self._finished_draft(outcome=outcome, codes=codes))", "unresolved"]
       ],
       "WaitTrace.started": [
         ["awaitable", "await self._context.sink.emit(self._context.draft(EventType.WAIT_STARTED, operation_id=self._operation_id, parent_operation_id=self._parent(), payload=payload), payload_factory=_commit)", "unresolved"]

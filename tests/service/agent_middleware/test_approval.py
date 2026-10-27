@@ -45,6 +45,7 @@ from chrys.service.agent_middleware.events.hook_dispatch import set_call_id, set
 from chrys.service.approval.judge import JudgeVerdict
 from chrys.service.approval.policy import ApprovalMode, ApprovalPolicy
 from chrys.service.hooks.events import HookEvent
+from chrys.service.hooks.operation import HookOperation
 from chrys.service.hooks.schema import HookDecision
 from chrys.service.profiles.agents.schema import ApprovalConfig
 from chrys.service.trajectory.approvals import ApprovalDecider, ApprovalDecision
@@ -488,7 +489,9 @@ async def test_re_dispatched_hooks_target_the_tool_operation_they_can_still_bloc
             _payload: dict[str, Any],
             *,
             target_operation_id: str | None = None,
+            trajectory_context: object | None = None,
             origin: InvocationOrigin | None = None,
+            operation: HookOperation | None = None,
         ) -> HookDecision:
             self.targets.append(target_operation_id)
             return HookDecision()

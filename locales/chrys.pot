@@ -6288,6 +6288,90 @@ msgstr ""
 msgid "tui.guides.title"
 msgstr ""
 
+#. English: (none)
+#. chrys-meta={"fingerprint":"4d78877441b22277abed2738d3fc73346d1ea68c4222f97c88114191429fd144","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.absent"
+msgstr ""
+
+#. English: Asked again: the arguments changed after you continued.
+#. chrys-meta={"fingerprint":"d7a0bdd9e063f6d4e85ab0c6a8b1211bb36ff303470f5af75f7bcb324f656738","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.asked_again"
+msgstr ""
+
+#. English: Hook {hook} asks you to confirm:
+#. chrys-meta={"fingerprint":"6ed27a4d82c3dc7aabbb174f9e84953bc332803e0599375617fc2f69745b5b7e","multiline":false,"placeholders":["hook"]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.asks"
+msgstr ""
+
+#. English: Hook {hook} ({source}) asks you to confirm:
+#. chrys-meta={"fingerprint":"e0fc97e02fb21b817a53eb7bf903802439eb7ba11db0c80e2e3db8b44bafa442","multiline":false,"placeholders":["hook","source"]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.asks_from"
+msgstr ""
+
+#. English: Cancel
+#. chrys-meta={"fingerprint":"ee3eb6e02cd8772be8786b7d714f54bf90abe5d0f0523aebf9c292a1e48c7d3d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.cancel"
+msgstr ""
+
+#. English: Changed:
+#. chrys-meta={"fingerprint":"d034956c5c90484519e90a20e00d7911a97ccc6792754cf50398d3c745e320ad","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.changed"
+msgstr ""
+
+#. English: Continue
+#. chrys-meta={"fingerprint":"167e575361c5e16ba03f613cc29c5da6ba716b02f2d070a5e8a84325e46e1e26","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.continue"
+msgstr ""
+
+#. English: Your message
+#. chrys-meta={"fingerprint":"b4848f14626e6e42d474d79b691c2bba83c17e90a63115cfa188951e6b9400a4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.message"
+msgstr ""
+
+#. English: (no reason given)
+#. chrys-meta={"fingerprint":"d7f10f87d9f54eb1b341ef9da6b86698d5a49f6093c1f6064e4c36ec325731b3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.no_reason"
+msgstr ""
+
+#. English: global
+#. chrys-meta={"fingerprint":"c477ba92dd6e4e1569eaaad77b0cb8810d43d0a5f8114a41ac6b41779c6b5ec5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.source.global"
+msgstr ""
+
+#. English: project
+#. chrys-meta={"fingerprint":"bd23bc14344c23c37663fa3d2cbed77723dbdeb192c21123926d683137832e39","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.source.project"
+msgstr ""
+
+#. English: Tool: {tool} (sub-agent {agent})
+#. chrys-meta={"fingerprint":"86948b92913fdfa4875b45da70be1d1ee03c7d8c838a1e47fc8eaee14019ec2f","multiline":false,"placeholders":["agent","tool"]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.sub_agent_tool"
+msgstr ""
+
+#. English: Hook confirmation
+#. chrys-meta={"fingerprint":"d7355a4c7cdd79ed097af0a1c804abf8164c25653605ac61fe65126da44de285","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.title"
+msgstr ""
+
+#. English: Tool: {tool}
+#. chrys-meta={"fingerprint":"996df4f9033ea89e9b4017867411970afe577c459941c6392cdc4acde90ebec1","multiline":false,"placeholders":["tool"]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.tool"
+msgstr ""
+
 #. English: Hooks
 #. chrys-meta={"fingerprint":"bc590033958e925397df73037927d0966b3d6b872ec389277b25224deed0ebd3","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/hook_activity.py
@@ -6300,10 +6384,59 @@ msgstr ""
 msgid "tui.hook_run.applied.args"
 msgstr ""
 
+#. English: Asked the user to confirm; the user continued.
+#. chrys-meta={"fingerprint":"2a23d0d1e1eb7652a885b0f63e333b2e1098aff6f42c1bbd72c7afdf52031852","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.approved"
+msgstr ""
+
+#. English: Asked the user to confirm; the user cancelled.
+#. chrys-meta={"fingerprint":"8993e5ee8ece1424fac9dd5bf75c70cb1203a7a9340a240337c48ebdde05b0ca","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.declined"
+msgstr ""
+
+#. English: Asked the user to confirm; the run was interrupted first.
+#. chrys-meta={"fingerprint":"6da1c645d2c15c06120f120aa4a74cdb5f17a1a5fdafe20a0cbe8ca5f8936f14","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.interrupted"
+msgstr ""
+
+#. English: Asked the user to confirm; the action was dropped first.
+#. chrys-meta={"fingerprint":"4a77ff4c1c911a707e2d919cc6c53f302db9a74d073ed7cad9783fad63fc05f2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.invalidated"
+msgstr ""
+
+#. English: Asked the user to confirm; waiting for an answer.
+#. chrys-meta={"fingerprint":"245dc9ef872c982ab36ec5a8574eaa4500b098c7b004883d0d2263d68cff4fcb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.pending"
+msgstr ""
+
+#. English: Asked the user to confirm; no answer came in time.
+#. chrys-meta={"fingerprint":"020d8ff223dfa7f22e078066ef518a274d32901bee3dbcb4faf2d674f6d81572","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.timed_out"
+msgstr ""
+
+#. English: Asked the user to confirm, but the question could not be shown.
+#. chrys-meta={"fingerprint":"e88feada1e7949c238db4ccbce36f540ec0ed76ccb9d72cd051bc71731c19fc9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.unavailable"
+msgstr ""
+
 #. English: Blocked the action:
 #. chrys-meta={"fingerprint":"2cf87c65acf4bb5aef37e1913778060a63348c11288763c253eda0a13875ff92","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/hook_run.py
 msgid "tui.hook_run.applied.blocked"
+msgstr ""
+
+#. English: Hooks kept changing the arguments after the user continued, so the
+#. tool call was rejected.
+#. chrys-meta={"fingerprint":"4005ab2c29782db6b6a3f31e57a7478f3c5dc1669c58291d321d6d4eaadee1f5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.call_rejected"
 msgstr ""
 
 #. English: Added to the tool result:
@@ -11001,10 +11134,58 @@ msgstr ""
 msgid "tui.sidebar.hooks.outcome.added_reminder"
 msgstr ""
 
+#. English: user continued
+#. chrys-meta={"fingerprint":"b5b6d90141af8dc0cf4e99b7ae039d38a71e046690755c18e7b1eadac337c803","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.approved"
+msgstr ""
+
+#. English: user cancelled
+#. chrys-meta={"fingerprint":"0e0cbcc1a95c7e695c508479def643d351dc6beb2845ae1226307c4a4c3fd50c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.declined"
+msgstr ""
+
+#. English: interrupted
+#. chrys-meta={"fingerprint":"9566bb81390b49dbd8aa355c817de177cf28c1c9bedd62a5ca1799d53b602ab7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.interrupted"
+msgstr ""
+
+#. English: dropped
+#. chrys-meta={"fingerprint":"f3d00baab239847b990697b70304460a63fbdc29239bbfe10bbc6a3e8b0c686c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.invalidated"
+msgstr ""
+
+#. English: waiting for user
+#. chrys-meta={"fingerprint":"6848e1c4501cb90cc5f238957f4a7eccdf888898005eed82e617ac08a098cf7e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.pending"
+msgstr ""
+
+#. English: no answer in time
+#. chrys-meta={"fingerprint":"695c75fda6732f4cac4e8ff6ded7792c9a386c44cd274e09de6e34447c536faf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.timed_out"
+msgstr ""
+
+#. English: couldn't ask user
+#. chrys-meta={"fingerprint":"2a5e08eac22f83eb4402982c2191176ea0faf02864a850096acd2f0c28b9aa93","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.unavailable"
+msgstr ""
+
 #. English: blocked
 #. chrys-meta={"fingerprint":"23bcab7ae9ef97e9666043447f5b6968da692cbfffdf79d3a1fb059da04e7d7e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/hooks.py
 msgid "tui.sidebar.hooks.outcome.blocked"
+msgstr ""
+
+#. English: call rejected
+#. chrys-meta={"fingerprint":"768f046ff9cde1855cc6a3f0c3b08f25b14ad494024fe9d457efbf2b0986a91a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.call_rejected"
 msgstr ""
 
 #. English: cancelled

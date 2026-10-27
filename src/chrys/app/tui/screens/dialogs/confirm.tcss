@@ -32,6 +32,11 @@ ConfirmDialog #confirm-message, ConfirmDialog #confirm-impact {
     padding: 0 2;
 }
 
+ConfirmDialog.-left-message #confirm-message {
+    content-align: left middle;
+    text-align: left;
+}
+
 ConfirmDialog .confirm-scroll {
     height: auto;
     scrollbar-size-vertical: 1;

@@ -72,7 +72,11 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     PresentationSinkOperation,
     next_hosted_run_generation,
 )
-from chrys.service.agent_middleware.events.rejection_metadata import rejection_result_metadata, rejection_source
+from chrys.service.agent_middleware.events.rejection_metadata import (
+    hook_confirmation,
+    rejection_result_metadata,
+    rejection_source,
+)
 from chrys.service.agent_middleware.events.result_persistence import (
     RESULT_SLEEP_INTERRUPTED_METADATA_KEY,
     RESULT_SLEEP_SKIPPED_METADATA_KEY,
@@ -797,6 +801,7 @@ class SubAgentEventMiddleware(FunctionMiddleware):
                         failed=structured_failed,
                         approval_rejected=rejected,
                         rejection_source=source,
+                        hook_confirmation=hook_confirmation(_meta),
                         workspace_cwd=self._workspace_cwd,
                         target_operation_id=trajectory.operation_id if trajectory is not None else None,
                         origin=origin,

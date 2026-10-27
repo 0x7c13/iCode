@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from chrys.foundation.models.hook_confirmations import HookConfirmationOutcome
 from chrys.service.hooks.events import HookEvent
 
 # ---------------------------------------------------------------------------
@@ -337,6 +338,15 @@ class HookDecision:
     surface to the user.  Kept distinct from :attr:`system_reminders`
     because the consumers are different.
     """
+
+    confirmation: HookConfirmationOutcome | None = None
+    """Set when the block came from an ``ask``, not an ``action: block``: how
+    that ask ended (``declined``, ``timed_out`` or ``unavailable``)."""
+
+    invalidated: bool = False
+    """The operation the hooks checked ended before they finished (its owner
+    invalidated it, or the manager closed): drop it the way its owner drops a
+    stale operation. Never set together with :attr:`blocked`."""
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Pinned message ids for the sidebar's Hooks tab and the hook run details dialog."""
+"""Pinned message ids for the sidebar's Hooks tab, the hook run details dialog and the hook confirmation dialog."""
 
 from __future__ import annotations
 
@@ -71,6 +71,36 @@ HOOK_PANEL_MESSAGE_IDS: frozenset[str | tuple[str, str]] = frozenset(
         "tui.sidebar.hooks.outcome.timed_out",
         "tui.sidebar.hooks.title",
         "tui.sidebar.tab.hooks",
+        "tui.hook_confirmation.asks",
+        "tui.hook_confirmation.asks_from",
+        "tui.hook_confirmation.cancel",
+        "tui.hook_confirmation.continue",
+        "tui.hook_confirmation.message",
+        "tui.hook_confirmation.no_reason",
+        "tui.hook_confirmation.source.global",
+        "tui.hook_confirmation.source.project",
+        "tui.hook_confirmation.sub_agent_tool",
+        "tui.hook_confirmation.title",
+        "tui.hook_confirmation.tool",
+        "tui.hook_confirmation.asked_again",
+        "tui.hook_confirmation.changed",
+        "tui.hook_confirmation.absent",
+        "tui.hook_run.applied.call_rejected",
+        "tui.sidebar.hooks.outcome.call_rejected",
+        "tui.hook_run.applied.asked.approved",
+        "tui.hook_run.applied.asked.declined",
+        "tui.hook_run.applied.asked.interrupted",
+        "tui.hook_run.applied.asked.invalidated",
+        "tui.hook_run.applied.asked.pending",
+        "tui.hook_run.applied.asked.timed_out",
+        "tui.hook_run.applied.asked.unavailable",
+        "tui.sidebar.hooks.outcome.asked.approved",
+        "tui.sidebar.hooks.outcome.asked.declined",
+        "tui.sidebar.hooks.outcome.asked.interrupted",
+        "tui.sidebar.hooks.outcome.asked.invalidated",
+        "tui.sidebar.hooks.outcome.asked.pending",
+        "tui.sidebar.hooks.outcome.asked.timed_out",
+        "tui.sidebar.hooks.outcome.asked.unavailable",
         ("tui.sidebar.hooks.title_active", "tui.sidebar.hooks.title_active#plural"),
     }
 )

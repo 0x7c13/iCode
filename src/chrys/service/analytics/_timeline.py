@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from threading import Event
 
 from chrys.foundation.trajectory.envelope import LinkRelation
+from chrys.foundation.trajectory.event_types import WaitCategory
 from chrys.foundation.trajectory.sequences import SequenceRange
 from chrys.service.analytics._facts import (
     WORKFLOW_NODE_FAMILY,
@@ -415,6 +416,14 @@ def _known_noncontained_shape(node: _ResolvedNode, parent: _ResolvedNode) -> boo
     if node.start.side_call or node.family in {"turn.suspension", "continuation.poll"}:
         return True
     if node.family == "approval" and parent.family == "model.exchange":
+        return True
+    if (
+        node.family == "wait"
+        and parent.family == "hook.operation"
+        and _payload_str(node.start.payload, "category") == WaitCategory.HOOK_CONFIRMATION
+        and parent.finish.monotonic_ns <= node.start.monotonic_ns
+    ):
+        # A hook's ``ask`` waits for the user once the hook's own run has ended: under its run, after it.
         return True
     if node.family == "hook.operation":
         hook_event = _payload_str(node.start.payload, "hook_event")

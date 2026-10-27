@@ -844,6 +844,29 @@ def test_containment_diagnostics_retain_family_and_operation_callsite(tmp_path) 
     assert diagnostic.parent_operation_id == "a" * 32
 
 
+@pytest.mark.parametrize(("category", "violations"), [("hook_confirmation", 0), ("user_input", 1)])
+def test_a_hook_s_question_waits_under_its_ended_run_without_a_containment_violation(
+    tmp_path, category: str, violations: int
+) -> None:
+    log = EventLog()
+    log.coverage()
+    log.add("turn.started", 0, payload={"turn_number": 1})
+    log.span(
+        "hook.operation",
+        "a" * 32,
+        NS,
+        2 * NS,
+        start_payload={"hook_event": "user_prompt_submit", "execution_mode": "blocking"},
+    )
+    # The question is asked once the hook's process has exited, and waits for the user after it.
+    log.span("wait", "b" * 32, 2 * NS, 9 * NS, parent_operation_id="a" * 32, start_payload={"category": category})
+    log.add("turn.finished", 10 * NS, payload={"end_reason": "cancelled", "duration_ms": 0})
+    path = tmp_path / "hook-confirmation.jsonl"
+    log.write(path)
+
+    assert analyze_trajectory(path).diagnostics.containment_violation_count == violations
+
+
 def test_turn_flow_types_parent_and_causal_edges_against_operations(tmp_path) -> None:
     """Flow edges are index pairs into operations, split by displacing-vs-pointer proof."""
     path = tmp_path / "events.jsonl"

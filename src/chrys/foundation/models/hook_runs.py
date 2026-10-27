@@ -7,15 +7,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from chrys.foundation.models.hook_confirmations import HookConfirmationOutcome
+
 HookRunState = Literal["queued", "running", "ended"]
 
-HookRunEffect = Literal["blocked", "modified_args", "added_reminder", "added_context"]
-"""What iCode took from a run; a run has at most one (the event groups that take each are disjoint)."""
+HookRunEffect = Literal["blocked", "modified_args", "added_reminder", "added_context", "asked"]
+"""What iCode took from a run; a run has at most one (the event groups that take each are disjoint).
+``asked``: the run asked the user to confirm; what the user chose is the run's ``confirmation``."""
 
 HookNotApplied = Literal["nonblocking", "unsupported", "failed", "failed_blocked"]
 """Why a run's decision was not taken: an ``async``/``fire_and_forget`` run's never is, the event
 does not take that action, or the run failed (its result file ignored; with ``on_error: block`` on a
 gated event the action was blocked instead)."""
+
+HookRunConfirmation = HookConfirmationOutcome | Literal["pending"]
+"""What the user chose about an ``asked`` run: ``pending`` while the question is open."""
 
 HookResultFileStatus = Literal["ok", "missing", "invalid"]
 """``missing`` covers an absent or empty result file; ``invalid`` one too large, not JSON or not an object."""
@@ -56,6 +62,10 @@ class HookRunRecord:
     effect: HookRunEffect | None
     number: int = 0
     """The run's place among every run since the process started, from 1; kept as older runs are dropped."""
+    confirmation: HookRunConfirmation | None = None
+    """For a run whose effect is ``asked``: what came of the question; None for any other run."""
+    call_rejected: bool = False
+    """The run's argument change was one too many after the user continued: iCode rejected the tool call."""
 
 
 @dataclass(frozen=True, slots=True)

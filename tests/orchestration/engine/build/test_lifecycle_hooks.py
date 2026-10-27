@@ -110,6 +110,7 @@ class _HookLoader:
         self._bus = bus
         self._session = session
         self._hook_runs = None
+        self._hook_confirmations = None
 
 
 class _Engine:

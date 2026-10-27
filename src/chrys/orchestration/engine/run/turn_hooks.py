@@ -10,8 +10,11 @@ from typing import TYPE_CHECKING
 
 from chrys.foundation.events.types import Error
 from chrys.foundation.i18n import msg
+from chrys.foundation.models.hook_confirmations import RefusedInput
 from chrys.foundation.platform import safe_getcwd
 from chrys.service.hooks.events import HookEvent
+from chrys.service.hooks.manager import check_operation
+from chrys.service.hooks.operation import HookOperation
 from chrys.service.hooks.schema import HookDecision
 
 if TYPE_CHECKING:
@@ -159,7 +162,14 @@ class TurnHookDispatcher:
 
 
 class PromptSubmitGate:
-    """Evaluate ``user_prompt_submit`` hooks and apply accepted reminders."""
+    """Check user input with ``user_prompt_submit`` hooks and apply accepted reminders.
+
+    Every input entry (a new turn's message, an injected message, a retry
+    note) checks its input the same way: it makes the input's operation
+    (:meth:`new_operation`), tracks it while checking (``TurnRuntimeState.
+    input_operations``), checks it here, and commits it at the point it
+    submits the input.
+    """
 
     def __init__(
         self,
@@ -174,36 +184,30 @@ class PromptSubmitGate:
         self._bus = bus
         self._fsm = fsm
 
-    async def fire(self, text: str, *, injected: bool | None = None) -> bool:
-        """Return True when a blocking hook denied the prompt."""
-        decision = await self.evaluate(text, injected=injected)
-        if await self.handle_decision(decision, injected=injected):
-            return True
-        self.queue_reminders(decision, injected=injected)
-        return False
+    def new_operation(self, text: str) -> HookOperation:
+        """The operation of submitting *text* in the current session."""
+        return HookOperation(subject="input", session_id=self._session.session_id, input_text=text)
 
     async def evaluate(
         self,
-        text: str,
+        operation: HookOperation,
         *,
         injected: bool | None,
         target_operation_id: str | None = None,
         trajectory_context: TrajectoryContext | None = None,
-    ) -> HookDecision | None:
-        """Run ``user_prompt_submit`` hooks without applying reminder side effects."""
-        if self._session.hook_manager is None or not self._session.hook_manager.has_hooks_for(
-            HookEvent.USER_PROMPT_SUBMIT
-        ):
-            return None
+    ) -> HookDecision:
+        """Run ``user_prompt_submit`` hooks on *operation*'s input without applying reminder side effects."""
         profile_name = self._session.agent_profile.name if self._session.agent_profile is not None else ""
         is_injected = self._fsm.is_running() if injected is None else injected
-        return await self._session.hook_manager.fire(
+        return await check_operation(
+            self._session.hook_manager,
             HookEvent.USER_PROMPT_SUBMIT,
-            {
+            operation,
+            lambda: {
                 "session_id": self._session.session_id,
                 "profile": profile_name,
                 "cwd": _workspace_cwd(self._session),
-                "text": text,
+                "text": operation.input_text,
                 "injected": is_injected,
             },
             target_operation_id=target_operation_id,
@@ -214,11 +218,14 @@ class PromptSubmitGate:
         self,
         decision: HookDecision | None,
         *,
-        injected: bool | None,
+        refused_input: RefusedInput,
         session_id: str | None = None,
     ) -> bool:
-        """Return True after publishing when a prompt-submit hook blocked."""
-        _ = injected
+        """Return True after publishing when a prompt-submit hook blocked.
+
+        *refused_input* names the input the hooks checked, so the published error says
+        whether it ends the request that brought it or only refuses itself.
+        """
         if decision is None:
             return False
         if not decision.blocked:
@@ -229,6 +236,7 @@ class PromptSubmitGate:
                 message=decision.block_reason or "Prompt blocked by hook.",
                 display_message=None if decision.block_reason else _TURN_HOOKS_PROMPT_BLOCKED.bind(),
                 session_id=self._session.session_id if session_id is None else session_id,
+                refused_input=refused_input,
             )
         )
         return True

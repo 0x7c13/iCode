@@ -127,6 +127,7 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import DisplaySequence, Localizer, MessageRef, msg
 from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
+from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
 from chrys.foundation.platform import get_platform, safe_getcwd
 from chrys.service.approval.policy import ApprovalMode
 from chrys.service.profiles.models.schema import UNCONFIGURED_MODEL_ID, is_model_profile_selectable
@@ -430,6 +431,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 ),
                 handle_approval_response=self._handle_approval_response,
                 handle_ask_user_response=self._handle_ask_user_response,
+                publish_hook_confirmation_answer=self._publish_hook_confirmation_answer,
                 question_inline_preferred=self._question_inline_preferred,
                 approval_defer_while_judging=self._approval_defer_while_judging,
                 approval_timeout_seconds=self._approval_timeout_seconds,
@@ -2278,6 +2280,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         remember_choice: ReuseChoice = "",
     ) -> None:
         await self._tool_actions.publish_approval_response(request_id, approved, reason, modified_args, remember_choice)
+
+    @work(thread=False)
+    async def _publish_hook_confirmation_answer(
+        self, session_id: str | None, request_id: str, answer: HookConfirmationAnswer
+    ) -> None:
+        await self._tool_actions.publish_hook_confirmation_answer(session_id, request_id, answer)
 
     @work(thread=False)
     async def _handle_ask_user_response(self, request_id: str, answers: tuple[AskUserAnswer, ...]) -> None:

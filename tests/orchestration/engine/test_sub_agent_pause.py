@@ -264,6 +264,8 @@ async def test_user_retry_refused_while_awaiting_sub_agents(*, engine_services) 
     # nothing changed on the FSM or paused set.
     assert engine.state is EngineState.AWAITING_SUB_AGENTS
     assert engine.turns.turn_state.paused_sub_agents == {"inv-1"}
+    # The refused retry gave its admission back: the next input is not held behind it.
+    assert engine.turns.turn_state.lease.active_admission_count() == 0
     # Allow the bus to dispatch the Warning.
     import asyncio as _asyncio
 

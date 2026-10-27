@@ -573,7 +573,9 @@ class _Command:
         """Return once the command printed nothing and its processes used next to no CPU for IDLE_SECONDS.
 
         A process that started meanwhile is no quiet either: a build running one
-        short compiler after another may never be seen using CPU.
+        short compiler after another may never be seen using CPU. Nor is a
+        command with no process left: it is ending, its exit maybe not reaped
+        yet nor the rest of its output read (a while, on a loaded machine).
         """
         since, before = time.monotonic(), {}
         while True:
@@ -581,7 +583,7 @@ class _Command:
             live = await self._sample()
             now = time.monotonic()
             used = sum(cpu - before[pid] for pid, cpu in live.items() if pid in before)
-            if self._last_output > since or live.keys() - before.keys() or used >= _IDLE_CPU_SECONDS:
+            if not live or self._last_output > since or live.keys() - before.keys() or used >= _IDLE_CPU_SECONDS:
                 since, before = now, live
             elif now - since >= IDLE_SECONDS:
                 return

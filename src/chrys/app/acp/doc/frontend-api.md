@@ -363,6 +363,76 @@ permission forwarded from an ACP sub-agent names no local tool call and carries
 an id of its own. The client answers by the request's JSON-RPC `id`;
 `toolCallId` is not an approval handle.
 
+A hook's `action: ask` (a blocking `before_tool_call` or `user_prompt_submit`
+hook leaving the decision to the user) is also a standard
+`session/request_permission`, with its own `toolCallId`
+(`hook-confirm-<request id>`), never a tool card's, and the options
+`allow_once` / `reject_once`. `kind` is the tool's presentation kind for a tool
+call and `other` for the user's input. Clients differ in which part they show
+(PyCharm shows only the content for `edit`, only the title for `other`), so the
+title and the content each name the hook, its reason and the subject (the tool
+and its arguments, or the message). The title is one line, its subject cut to
+120 characters; in the content every argument shows by name with its value cut
+to 200 characters (past 10 arguments the rest are counted) and a
+message shows its first 10 lines, up to 500 characters; a shortened tool call
+says that its whole arguments are in `rawInput`. A tool call asked about again, after its arguments changed
+following an `allow_once` (by a hook or the user's own edit), starts its title with `Asked again:` and names the
+changed arguments and the first one's new value, and its content with `Asked again: …` and one
+`name: old → new` line per changed argument; a long value shows only the part
+that changed, with a little text around it. The request is sent out of band: it can
+arrive while a `session/prompt` is still being admitted (the input's own
+check), and the session's other updates keep streaming while it is open.
+Choosing `allow_once` lets the operation go on (a tool call may still need its
+own permission request); `reject_once` or a cancelled request refuses it. The
+answer counts as soon as the client returns it; after that the server settles
+the question's `toolCallId` with a `tool_call_update` (`completed` after
+`allow_once`, `failed` otherwise), and a slow update never makes an answer
+given in time late. When
+the backend stops waiting first (the operation ended, or the session's
+approval timeout passed), the server sends a `tool_call_update` with status
+`failed` for that `toolCallId`, so the client can close the dialog; a reply
+that arrives after that is ignored. If the request fails, the operation is
+refused as "no one could be asked", never as the user's refusal. Each card gets
+one terminal update, sent with a 5-second bound: closing a session waits for
+those still being sent, up to that bound, and a client that is gone may never
+receive them.
+
+Carrying these questions on `session/request_permission` is a deliberate
+compatibility choice: clients show it without supporting an extension. Its cost
+is that the client draws a tool card no tool call ever announced, which the
+terminal `tool_call_update` above exists to end (PyCharm accepts it; other
+clients are untested), and `failed` there means only "not allowed", not that a
+tool failed. Revisit it if another client shows these cards wrongly or users
+read `failed` as a tool failure: only the input questions' transport would
+change, to an extension request like `chrys/request_input`, keeping the id,
+`kind: other`, title and content as they are.
+
+Questions are routed by session: a session's questions reach the client only
+for that ACP session. ACP exposes no workflow runs, so the questions a workflow
+node asks (under the workflow's own session) are shown only by the TUI.
+
+When a `user_prompt_submit` hook refuses the input a request brings (it blocks
+it, the user rejects its question, the question times out, or no one can be
+asked), the request ends normally, not with a JSON-RPC error: `session/prompt`
+answers `stopReason: "refusal"` with its `userMessageId`, and `session/retry`
+with a `text` note answers `{"stopReason": "refusal", …}` with no
+`userMessageId`. Both put `code` (`hook_blocked`) and `message` (the reason) in
+`_meta.chrys` next to the usual turn metadata; a refused prompt opened no turn,
+so it carries no `turnId`. Before the response, the server sends one
+`agent_message_chunk` of its own, `Input rejected: <reason>`, with a fresh
+`messageId` and `_meta.chrys` `{code, refusedInput}` (`prompt` or
+`retry_note`), so a client that shows only standard updates still says why. It
+is the server's notice, not model output: the session's history never holds
+it, so `session/load` and `session/history` never return it, and no
+`chrys/messages_retracted` withdraws it; a client may keep it in its own
+transcript. The same refusal is also reported as `chrys/error` (`code:
+hook_blocked`), so a client that shows both sees one refusal twice. The
+session goes on: the next `session/prompt` runs as usual. A message sent into a
+running turn (`session/inject`) that its hooks refuse is refused alone: the
+turn it was sent into ends as it would have, and the request that started that
+turn answers with that turn's own outcome. Any other failed turn is still a
+JSON-RPC error.
+
 Standard `session/request_permission` callbacks use `approval.timeout_seconds`
 (`CHRYS_APPROVAL_TIMEOUT_SECONDS`), shared with TUI human approvals. The default
 `0` means no timeout; positive values set a deadline in seconds, after which the

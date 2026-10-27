@@ -7,6 +7,7 @@ or leaves processes running after its shell exited; it ends with the last of its
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -32,7 +33,8 @@ from chrys.service.tools.builtins.shell import ShellTools, shell_result_metadata
 from chrys.service.tools.builtins.shell_filter import ShellCommandFilter
 from chrys.service.tools.result_metadata import tool_result_metadata
 from tests.support.background_tasks import HeldProcess
-from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
+from tests.support.processes import finished_reader
+from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for, wait_until
 
 _WAIT_FOR_RELEASE = """\
 import pathlib, sys, time
@@ -488,6 +490,44 @@ async def test_a_command_busy_without_output_is_not_quiet(
 
     assert _lines(result) == ["done", "[exit_code: 0]"]
     assert tasks.running == []
+
+
+class _UnreapedShell:
+    """A shell that printed and exited, no process of it left, whose exit is not reaped until ``reap`` is set."""
+
+    pid = 0
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.output = finished_reader(b"done\n")
+        self.reap = asyncio.Event()
+
+    async def wait(self) -> int:
+        await self.reap.wait()
+        self.returncode = 0
+        return 0
+
+
+async def test_a_command_with_no_process_left_is_ending_not_quiet(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A loaded machine reaps a command's exit, and reads the rest of its output, a while after its last
+    # process is gone: a command with no process left using no CPU is ending, not quiet.
+    monkeypatch.setattr(shell_mod, "IDLE_SECONDS", 0.05)
+    monkeypatch.setattr(shell_mod, "_SLOW_POLL", 0.01)
+    shell = _UnreapedShell()
+    command = shell_mod._Command(
+        shell, (shell.output,), contextlib.AsyncExitStack(), live=dict, stop=lambda _force: None
+    )
+    try:
+        following = asyncio.create_task(command.follow(None, idle=True))
+        # Twenty quiet windows: a quiet verdict would have come long before.
+        assert not await wait_until(following.done, timeout=1)
+        shell.reap.set()
+        await wait_for(following.done, description="the command ended")
+
+        assert following.result() == "ended"
+        assert command.captured()[0].head == b"done\n"
+    finally:
+        await command.close()
 
 
 async def test_a_background_command_whose_shell_exits_first_ends_with_its_last_process(

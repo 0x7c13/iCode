@@ -100,7 +100,7 @@ def _make_executor(
 
 
 def test_chain_order_is_pinned() -> None:
-    """[tool_events, ask_user, approval, *extras, sleep, interrupt] — identity."""
+    """[tool_events, ask_user, approval, *extras, sleep, interrupt, hook_commit] — identity."""
     extra_a, extra_b = _PassThrough(), _PassThrough()
     executor, ask_user, approval = _make_executor(extras=(extra_a, extra_b))
 
@@ -114,6 +114,7 @@ def test_chain_order_is_pinned() -> None:
         extra_b,
         executor._sleep,
         executor._interrupt,
+        executor._hook_commit,
     ]
 
 
@@ -128,6 +129,7 @@ def test_chain_without_extras_keeps_base_order() -> None:
         approval,
         executor._sleep,
         executor._interrupt,
+        executor._hook_commit,
     ]
 
 

@@ -19,6 +19,7 @@ from typing import Any, TypeGuard, TypeVar, cast
 
 from acp import schema as acp_schema
 
+from chrys.app.acp.hook_confirmations import AcpSessionHookConfirmations
 from chrys.app.acp.json_values import JsonValue, to_json_object
 from chrys.app.features.session_title.updater import SessionTitleUpdater
 from chrys.foundation.branding import APP_DISPLAY_NAME
@@ -127,6 +128,9 @@ class ManagedSession:
     # Per-session auto-title generator; the bridge forwards its
     # ``SessionTitleUpdated`` events as ACP ``session_info_update``.
     title_updater: SessionTitleUpdater | None = None
+    # Shows the session's hook confirmations to the client; set by the server as the session is set up,
+    # closed with the session whatever else its shutdown runs into.
+    hook_confirmations: AcpSessionHookConfirmations | None = None
     # Serializes runtime-control mutations (model/workspace/profile/settings) so
     # two concurrent requests on one session can't each resolve from the other's
     # completion event — ``_await_runtime_mutation`` correlates only by session id
@@ -175,18 +179,24 @@ class ManagedSession:
         self._turns_reserved = max(0, self._turns_reserved - 1)
 
     async def shutdown(self) -> None:
-        """Shut down the host, then drain the title updater.
+        """Shut down the host, then drain the title updater, then close the hook confirmations.
 
         Order matters: the engine's shutdown drains a still-finalizing run
         whose success callback can schedule one last title task; the updater
         must be torn down after so that task is cancelled and awaited —
-        even when the host shutdown itself fails.
+        even when the host shutdown itself fails. The engine's shutdown also
+        ends the questions still waiting; the confirmations close after it,
+        draining their cards, and close even when either step before fails.
         """
         try:
             await self.host.shutdown()
         finally:
-            if self.title_updater is not None:
-                await self.title_updater.shutdown()
+            try:
+                if self.title_updater is not None:
+                    await self.title_updater.shutdown()
+            finally:
+                if self.hook_confirmations is not None:
+                    await self.hook_confirmations.close()
 
 
 @dataclass

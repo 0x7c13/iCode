@@ -21,7 +21,6 @@ import asyncio
 import contextlib
 import copy
 import itertools
-import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -32,10 +31,13 @@ from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.models.hook_executions import HookExecutionView, HookWaitPoint
 from chrys.foundation.models.hook_runs import HookRunApplied, HookRunEffect
+from chrys.foundation.tool_execution_stamp import encode_json_like
 from chrys.foundation.trajectory.context import TrajectoryContext
 from chrys.foundation.trajectory.ids import new_analytics_id
+from chrys.service.hooks.confirmation import HookConfirmationResult
 from chrys.service.hooks.events import GATED_EVENTS, HookEvent
 from chrys.service.hooks.matcher import matches
+from chrys.service.hooks.operation import args_key
 from chrys.service.hooks.outbox import Outbox, OutboxJob
 from chrys.service.hooks.run_log import indented_json
 from chrys.service.hooks.runner import HookResult, HookRunner
@@ -43,13 +45,20 @@ from chrys.service.hooks.schema import HookConfig, HookDecision, HooksFile, Merg
 from chrys.service.trajectory.hooks import HookOperationTrace, HookOutcome, TrajectoryContextProvider
 
 if TYPE_CHECKING:
+    from chrys.foundation.models.hook_confirmations import HookConfirmationOutcome
     from chrys.foundation.models.invocations import InvocationOrigin
+    from chrys.service.hooks.confirmation import HookConfirmationService
+    from chrys.service.hooks.operation import HookOperation
     from chrys.service.hooks.run_log import HookRunLog
 
 logger = logging.getLogger(__name__)
 _ARGS_OVERRIDE_EVENTS = frozenset({HookEvent.BEFORE_TOOL_CALL})
 _SYSTEM_REMINDER_EVENTS = frozenset({HookEvent.USER_PROMPT_SUBMIT})
 _EXTRA_CONTEXT_EVENTS = frozenset({HookEvent.AFTER_TOOL_CALL, HookEvent.TOOL_ERROR})
+MAX_CONFIRMED_RECHECKS = 3
+"""Passes after the first that one dispatch runs because an argument changed after the user approved an ask."""
+ASK_REASON_MAX_CHARS = 1000
+"""The longest ``reason`` an ``ask`` shows the user and the model; longer ones are cut."""
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +159,28 @@ class _Changed:
         return _Changed(executions=self.executions or other.executions, runs=self.runs or other.runs)
 
 
+@dataclass(frozen=True, slots=True)
+class _Dispatch:
+    """What every blocking run of one ``fire`` shares."""
+
+    event: HookEvent
+    scope: str
+    target_operation_id: str | None
+    trajectory_context: TrajectoryContext | None
+    origin: InvocationOrigin | None
+    operation: HookOperation | None
+    session_drain_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class _BlockingStep:
+    """What one blocking run asked for beyond its decision: an ``ask`` (its reason) and whether it changed the arguments."""
+
+    run_id: str
+    ask: str | None = None
+    args_changed: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------
@@ -215,6 +246,12 @@ class HookManager:
         self._run_log: HookRunLog | None = None
         self._run_log_session_id = ""
         self._on_runs_change: Callable[[], Awaitable[None]] | None = None
+        # Where an ``ask`` waits for the user: the engine's service, attached by
+        # the factory that builds its managers. None: nobody can be asked.
+        self.confirmations: HookConfirmationService | None = None
+        # The operations whose blocking hooks run (or whose ask waits) now: a session
+        # drain or close ends them, since the hooks that would vouch for them stop.
+        self._checking: set[HookOperation] = set()
 
     @property
     def hooks_dir(self) -> Path:
@@ -270,6 +307,7 @@ class HookManager:
         target_operation_id: str | None = None,
         trajectory_context: TrajectoryContext | None = None,
         origin: InvocationOrigin | None = None,
+        operation: HookOperation | None = None,
     ) -> HookDecision:
         """Fire every matching hook for *event*.
 
@@ -289,19 +327,31 @@ class HookManager:
                 provider context so response-fence membership remains resolvable.
             origin: The invocation that fired the event, when a sub-agent
                 did; the run log names that sub-agent. None is the main agent.
+            operation: For a gating event, the operation the hooks check
+                (use :func:`check_operation`): an ``ask`` asks about it, an
+                argument change makes its new version, and a check through to
+                the end marks its version checked. Without one, an ``ask`` is
+                refused as if nobody could be asked. An ``ask`` waits on
+                :attr:`confirmations`.
 
         Returns:
             Aggregated :class:`HookDecision`.  For events with no
             matching hooks, an empty (allow / no-op) decision.
         """
         session_drain_generation = self._session_drain_generation
-        if self._closed:
-            return HookDecision()
         candidates = [h for h in self._file.hooks if h.event == event and h.enabled]
         if not candidates:
             return HookDecision()
+        if self._closed:
+            # Hooks are configured for this event, and none can run: nothing vouches for the operation.
+            if operation is not None and operation.invalidate("hooks_closed", closing_hooks=True):
+                return HookDecision(invalidated=True)
+            return HookDecision()
         envelope = _build_envelope(event, payload)
-        decision = HookDecision()
+        if event in GATED_EVENTS:
+            envelope["confirmation_available"] = (
+                operation is not None and self.confirmations is not None and self.confirmations.available()
+            )
 
         # Two passes: blocking hooks run sequentially so the first
         # ``block`` short-circuits; non-blocking hooks then spawn in
@@ -310,131 +360,283 @@ class HookManager:
         # which fires first.  Blocking ``modify`` decisions update the
         # envelope immediately so later blocking hooks can validate the
         # rewritten arguments.
-        blocking: list[HookConfig] = []
-        nonblocking: list[HookConfig] = []
-        for hook in candidates:
-            if hook.execution.mode == "blocking":
-                blocking.append(hook)
-            else:
-                nonblocking.append(hook)
+        blocking = [hook for hook in candidates if hook.execution.mode == "blocking"]
+        nonblocking = [hook for hook in candidates if hook.execution.mode != "blocking"]
+        dispatch = _Dispatch(
+            event=event,
+            scope=scope,
+            target_operation_id=target_operation_id,
+            trajectory_context=trajectory_context,
+            origin=origin,
+            operation=operation,
+            session_drain_generation=session_drain_generation,
+        )
+        if operation is not None:
+            self._checking.add(operation)
+        try:
+            return await self._dispatch(blocking, nonblocking, envelope, dispatch)
+        finally:
+            if operation is not None:
+                self._checking.discard(operation)
 
-        for hook in blocking:
-            if self._closed or self._session_drain_generation != session_drain_generation:
-                return decision
-            if not matches(hook, envelope):
-                continue
-            run = self._new_run(envelope, origin=origin)
-            trace = self._open_trace(target_operation_id, context=trajectory_context, operation_id=run.run_id)
-            try:
-                # Inside the block that closes the span: the start marker
-                # awaits its write ack, and an interrupt landing there would
-                # otherwise leave the hook operation open forever.
-                if trace is not None:
-                    await trace.started(
-                        hook_id=hook.id,
-                        hook_event=str(event),
-                        execution_mode=hook.execution.mode,
-                        detach=hook.execution.detach,
-                        delivery=hook.execution.delivery,
-                        scope=scope,
-                        drain_scope=scope,
-                    )
-                if self._closed or self._session_drain_generation != session_drain_generation:
-                    if trace is not None:
-                        trace.finished_soon(outcome=HookOutcome.ABANDONED)
-                    return decision
-                result = await self._run_blocking(
-                    hook,
-                    envelope,
-                    # Interrupt observers run on a task nobody waits on.
-                    waited_at="none" if scope == "detached" else "call",
-                    run=run,
-                )
-            except asyncio.CancelledError:
-                if trace is not None:
-                    trace.finished_soon(outcome=HookOutcome.CANCELLED)
-                await self._report(self._finish_run(run, outcome=HookOutcome.CANCELLED))
-                raise
-            except Exception as exc:
-                logger.exception("Blocking hook %r failed before producing a result", hook.id)
-                result = HookResult(hook_id=hook.id, exit_code=None, stderr=str(exc))
-            blocked_before = decision.blocked
-            override_before = decision.args_override
-            reminders_before = len(decision.system_reminders)
-            contexts_before = len(decision.extra_context)
-            try:
-                _merge_blocking_result(decision, hook, result, event=event)
-                # Compared as JSON, what the tool gets: a hook returning the arguments as they were
-                # changed nothing, while 1 turned to true did, though Python finds them equal.
-                args_changed = False
-                if not decision.blocked and decision.args_override is not None:
-                    returned = self._run_log is not None and decision.args_override is not override_before
-                    args_before = _args_key(_tool_args(envelope)) if returned else None
-                    _apply_args_override_to_envelope(envelope, decision.args_override)
-                    # Either side too deep to write as JSON: counted as changed, since the hook
-                    # returned an override.
-                    args_changed = returned and (args_before is None or args_before != _args_key(_tool_args(envelope)))
-                blocked = decision.blocked and not blocked_before
-                try:
-                    arguments_modified = decision.args_override != override_before
-                except RecursionError:
-                    # Too deep to compare: the hook returned an override, all that can be told.
-                    arguments_modified = decision.args_override is not override_before
-                effect, applied = _blocking_effect(
-                    event,
-                    result,
-                    decision,
-                    blocked=blocked,
-                    args_changed=args_changed,
-                    args_after=_tool_args(envelope),
-                    reminders_before=reminders_before,
-                    contexts_before=contexts_before,
-                )
-            except Exception:
-                # The hook's result, written by the hook, could not be taken: its run ended all
-                # the same, and is ended and reported before the error goes on to the caller.
-                outcome = _hook_outcome(result, blocked=False)
-                await self._report_end(
-                    self._finish_run(run, outcome=outcome, result=result),
-                    trace,
-                    outcome=outcome,
-                    exit_code=result.exit_code,
-                    timed_out=result.timed_out,
-                )
-                raise
-            await self._report_end(
-                self._finish_run(
-                    run, outcome=_hook_outcome(result, blocked=False), result=result, effect=effect, applied=applied
-                ),
-                trace,
-                outcome=_hook_outcome(result, blocked=blocked),
-                arguments_modified=arguments_modified,
-                exit_code=result.exit_code,
-                timed_out=result.timed_out,
-            )
-            if decision.blocked:
-                # Cancel any planned non-blocking hooks for this event —
-                # nothing else will execute on this dispatch.
-                return decision
-
-        if self._closed or self._session_drain_generation != session_drain_generation:
+    async def _dispatch(
+        self,
+        blocking: list[HookConfig],
+        nonblocking: list[HookConfig],
+        envelope: dict[str, Any],
+        dispatch: _Dispatch,
+    ) -> HookDecision:
+        """The blocking passes, then the non-blocking starts; the operation, if any, tracked throughout."""
+        operation, event = dispatch.operation, dispatch.event
+        session_drain_generation = dispatch.session_drain_generation
+        decision = await self._run_blocking_passes(blocking, envelope, dispatch)
+        if decision.blocked or decision.invalidated:
+            # Nothing else executes on this dispatch: no non-blocking hook starts.
             return decision
+        if self._closed or self._session_drain_generation != session_drain_generation:
+            if operation is not None and operation.invalidate("hooks_closed", closing_hooks=True):
+                decision.invalidated = True
+            return decision
+
+        if event in GATED_EVENTS:
+            # An ``async`` or ``fire_and_forget`` run returns after the operation went on: it cannot ask.
+            envelope["confirmation_available"] = False
         for hook in nonblocking:
+            if operation is not None and not operation.pending:
+                # Withdrawn meanwhile (while an earlier one started, say): no later one starts.
+                break
             if not matches(hook, envelope):
                 continue
             try:
                 await self._spawn_nonblocking(
                     hook,
                     envelope,
-                    scope=scope,
+                    scope=dispatch.scope,
                     session_drain_generation=session_drain_generation,
-                    target_operation_id=target_operation_id,
-                    origin=origin,
+                    target_operation_id=dispatch.target_operation_id,
+                    origin=dispatch.origin,
+                    operation=operation,
                 )
             except Exception as exc:
                 _log_nonblocking_spawn_failure(hook, exc)
-
+        # Checked again once every start was awaited: a drain meanwhile ends the operation too.
+        drained = self._closed or self._session_drain_generation != session_drain_generation
+        if drained and operation is not None and operation.invalidate("hooks_closed", closing_hooks=True):
+            decision.invalidated = True
+        if operation is not None and not operation.pending:
+            decision.invalidated = True
         return decision
+
+    async def _run_blocking_passes(
+        self, blocking: list[HookConfig], envelope: dict[str, Any], dispatch: _Dispatch
+    ) -> HookDecision:
+        """Run the blocking hooks in order, as many passes as the operation's changes need; the last pass's decision.
+
+        One pass runs every matching hook once. Once the user approved an ask
+        in this dispatch, an argument change ends the pass: what was approved
+        is no longer what would run, so the next pass checks the new version
+        from the first hook, asking again where a hook asks. A pass starts
+        from an empty decision on the envelope as the last one left it.
+        Before any approval, a change only goes on to the later hooks, as an
+        override always did.
+        """
+        operation = dispatch.operation
+        approved = False
+        rechecks = 0
+        changed_by = ""
+        seen = {args_key(_tool_args(envelope))}
+        while True:
+            decision = HookDecision()
+            recheck = False
+            for hook in blocking:
+                if self._closed or self._session_drain_generation != dispatch.session_drain_generation:
+                    if operation is not None and operation.invalidate("hooks_closed", closing_hooks=True):
+                        decision.invalidated = True
+                    return decision
+                if operation is not None and not operation.pending:
+                    # Withdrawn meanwhile (an interrupt, the user's answer going stale): no later hook runs for it.
+                    decision.invalidated = True
+                    return decision
+                if not matches(hook, envelope):
+                    continue
+                step = await self._run_one_blocking(hook, envelope, decision, dispatch)
+                if decision.blocked or decision.invalidated:
+                    return decision
+                if step.ask is not None:
+                    if not await self._confirm(hook, step, decision, dispatch):
+                        return decision
+                    approved = True
+                if step.args_changed and operation is not None:
+                    changed = operation.replace_arguments(_tool_args(envelope))
+                    if changed and approved:
+                        recheck = True
+                        changed_by = step.run_id
+                        break
+            if not recheck:
+                return decision
+            rechecks += 1
+            key = args_key(_tool_args(envelope))
+            if rechecks > MAX_CONFIRMED_RECHECKS or key is None or key in seen:
+                if self._run_log is not None:
+                    await self._report(_Changed(runs=self._run_log.reject_call(changed_by)))
+                if rechecks > MAX_CONFIRMED_RECHECKS:
+                    why = f"stopped after {MAX_CONFIRMED_RECHECKS} rechecks"
+                elif key is None:
+                    why = "the new arguments cannot be compared with the earlier ones"
+                else:
+                    why = "they changed back to arguments already checked, which would repeat forever"
+                decision.blocked = True
+                decision.block_reason = f"hooks kept changing the arguments after the user confirmed them; {why}"
+                return decision
+            seen.add(key)
+
+    async def _confirm(
+        self, hook: HookConfig, step: _BlockingStep, decision: HookDecision, dispatch: _Dispatch
+    ) -> bool:
+        """Ask the user about *hook*'s ``ask``; True when they approved, else *decision* says why not."""
+        operation, confirmations = dispatch.operation, self.confirmations
+        if operation is None or confirmations is None:
+            result = HookConfirmationResult("unavailable", "cannot_ask")
+        else:
+            try:
+                result = await confirmations.ask(
+                    operation,
+                    run_id=step.run_id,
+                    hook_id=hook.id,
+                    hook_source=self._hook_sources.get(id(hook), ""),
+                    reason=step.ask or "",
+                    trajectory_context=dispatch.trajectory_context,
+                    trajectory_provider=self.trajectory_context_provider,
+                )
+            except asyncio.CancelledError:
+                await self._report(self._record_confirmation(step.run_id, "interrupted"))
+                raise
+        await self._report(self._record_confirmation(step.run_id, result.outcome))
+        if result.outcome == "approved":
+            return True
+        if result.outcome == "invalidated":
+            decision.invalidated = True
+            return False
+        decision.blocked = True
+        decision.confirmation = result.outcome
+        timeout = confirmations.timeout_seconds if confirmations is not None else None
+        tool_call = hook.event == HookEvent.BEFORE_TOOL_CALL
+        decision.block_reason = _ask_refusal(hook.id, step.ask or "", result, timeout, tool_call=tool_call)
+        return False
+
+    def _record_confirmation(self, run_id: str, outcome: HookConfirmationOutcome) -> _Changed:
+        """Set what came of the question on the run that asked; nothing when the run log no longer keeps it."""
+        if self._run_log is None:
+            return _Changed()
+        return _Changed(runs=self._run_log.confirm(run_id, outcome))
+
+    async def _run_one_blocking(
+        self, hook: HookConfig, envelope: dict[str, Any], decision: HookDecision, dispatch: _Dispatch
+    ) -> _BlockingStep:
+        """Run one blocking *hook*, fold its result into *decision*, and end its run; what else it asked for."""
+        run = self._new_run(envelope, origin=dispatch.origin)
+        trace = self._open_trace(
+            dispatch.target_operation_id, context=dispatch.trajectory_context, operation_id=run.run_id
+        )
+        try:
+            # Inside the block that closes the span: the start marker
+            # awaits its write ack, and an interrupt landing there would
+            # otherwise leave the hook operation open forever.
+            if trace is not None:
+                await trace.started(
+                    hook_id=hook.id,
+                    hook_event=str(dispatch.event),
+                    execution_mode=hook.execution.mode,
+                    detach=hook.execution.detach,
+                    delivery=hook.execution.delivery,
+                    scope=dispatch.scope,
+                    drain_scope=dispatch.scope,
+                )
+            if self._closed or self._session_drain_generation != dispatch.session_drain_generation:
+                if trace is not None:
+                    trace.finished_soon(outcome=HookOutcome.ABANDONED)
+                if dispatch.operation is not None and dispatch.operation.invalidate("hooks_closed", closing_hooks=True):
+                    decision.invalidated = True
+                return _BlockingStep(run_id=run.run_id)
+            result = await self._run_blocking(
+                hook,
+                envelope,
+                # Interrupt observers run on a task nobody waits on.
+                waited_at="none" if dispatch.scope == "detached" else "call",
+                run=run,
+                operation=dispatch.operation,
+            )
+        except asyncio.CancelledError:
+            if trace is not None:
+                trace.finished_soon(outcome=HookOutcome.CANCELLED)
+            await self._report(self._finish_run(run, outcome=HookOutcome.CANCELLED))
+            raise
+        except Exception as exc:
+            logger.exception("Blocking hook %r failed before producing a result", hook.id)
+            result = HookResult(hook_id=hook.id, exit_code=None, stderr=str(exc))
+        if result is None:
+            # The operation was withdrawn while the run queued: its script never started.
+            if trace is not None:
+                trace.finished_soon(outcome=HookOutcome.ABANDONED)
+            await self._report(self._finish_run(run, outcome=HookOutcome.CANCELLED))
+            decision.invalidated = True
+            return _BlockingStep(run_id=run.run_id)
+        event = dispatch.event
+        blocked_before = decision.blocked
+        override_before = decision.args_override
+        reminders_before = len(decision.system_reminders)
+        contexts_before = len(decision.extra_context)
+        try:
+            ask = _merge_blocking_result(decision, hook, result, event=event)
+            # Compared as JSON, what the tool gets: a hook returning the arguments as they were
+            # changed nothing, while 1 turned to true did, though Python finds them equal.
+            args_changed = False
+            if not decision.blocked and decision.args_override is not override_before:
+                args_before = args_key(_tool_args(envelope))
+                _apply_args_override_to_envelope(envelope, decision.args_override or {})
+                # Either side too deep to write as JSON: counted as changed, since the hook
+                # returned an override.
+                args_changed = args_before is None or args_before != args_key(_tool_args(envelope))
+            blocked = decision.blocked and not blocked_before
+            try:
+                arguments_modified = decision.args_override != override_before
+            except RecursionError:
+                # Too deep to compare: the hook returned an override, all that can be told.
+                arguments_modified = decision.args_override is not override_before
+            effect, applied = _blocking_effect(
+                event,
+                result,
+                decision,
+                blocked=blocked,
+                asked=ask is not None,
+                args_changed=args_changed,
+                args_after=_tool_args(envelope),
+                reminders_before=reminders_before,
+                contexts_before=contexts_before,
+            )
+        except Exception:
+            # The hook's result, written by the hook, could not be taken: its run ended all
+            # the same, and is ended and reported before the error goes on to the caller.
+            outcome = _hook_outcome(result, blocked=False)
+            await self._report_end(
+                self._finish_run(run, outcome=outcome, result=result),
+                trace,
+                outcome=outcome,
+                exit_code=result.exit_code,
+                timed_out=result.timed_out,
+            )
+            raise
+        await self._report_end(
+            self._finish_run(
+                run, outcome=_hook_outcome(result, blocked=False), result=result, effect=effect, applied=applied
+            ),
+            trace,
+            outcome=_hook_outcome(result, blocked=blocked, asked=ask is not None),
+            arguments_modified=arguments_modified,
+            exit_code=result.exit_code,
+            timed_out=result.timed_out,
+        )
+        return _BlockingStep(run_id=run.run_id, ask=ask, args_changed=args_changed)
 
     # ── runs ─────────────────────────────────────────────────────────
 
@@ -459,7 +661,7 @@ class HookManager:
         # Every event a sub-agent fires carries its profile name; only some carry its display name.
         sub_agent = _text_field(fields, "profile") if origin is not None and origin.kind == "sub_agent" else ""
         try:
-            payload_text: str | None = json.dumps(payload, default=str)
+            payload_text: str | None = encode_json_like(payload)
         except TypeError, ValueError, RecursionError:
             payload_text = None
         return _Run(
@@ -665,6 +867,10 @@ class HookManager:
         while the session files still exist and later events still fire.
         """
         self._session_drain_generation += 1
+        # The checks in flight belong to the session being drained: what they would vouch for ends with
+        # it, and an ask waiting for the user ends at once instead of holding the drain.
+        for operation in list(self._checking):
+            operation.invalidate("hooks_closed", closing_hooks=True)
         await self._drain(
             scopes={"turn", "session"},
             timeout=self._file.settings.shutdown_grace_seconds,
@@ -831,8 +1037,13 @@ class HookManager:
         *,
         waited_at: HookWaitPoint,
         run: _Run,
-    ) -> HookResult:
+        operation: HookOperation | None = None,
+    ) -> HookResult | None:
         """Queue *run*, take a slot and run it; the caller ends the run, however this ends.
+
+        None when *operation* was withdrawn by the time the script would start
+        (while the run queued for its slot or reported taking it): no script
+        runs for an operation that will not go on.
 
         Every end is reported, a cancelled run's too: the report runs on the
         run's own task and reads the set when it is stored, so the last stored
@@ -849,8 +1060,28 @@ class HookManager:
             # quick store (the TUI defers its render), or it delays every
             # run queued behind this one.
             await self._report(self._take_slot(run))
+            # Checked last, with no wait before the start: nothing can withdraw it in between.
+            if operation is not None and not operation.pending:
+                return None
             run.output = HookResult(hook_id=hook.id, exit_code=None)
             return await self._runner.run_and_wait(hook, payload, payload_text=run.payload_text, result=run.output)
+
+    def _drop_withdrawn_job(self, job: OutboxJob | None, operation: HookOperation | None) -> None:
+        """End *job*, written for *operation* and never handed to a run, when the operation was withdrawn.
+
+        A withdrawn operation never happens, so nothing is owed to recover, also when hooks close
+        after it was withdrawn. One that hooks closing ended keeps its job: recovery runs it later, as
+        durable promises. Decided by what ended the operation first (``ended_by_closing_hooks``), never
+        by ``end_reason``, whose codes are display text.
+        """
+        if job is None or operation is None or operation.state != "invalidated":
+            return
+        if operation.ended_by_closing_hooks:
+            return
+        try:
+            self._outbox.force_fail(job, reason=f"not run: its operation was withdrawn ({operation.end_reason})")
+        except OSError:
+            logger.warning("Could not end the outbox job of a withdrawn operation: %s", job.job_id, exc_info=True)
 
     async def _spawn_nonblocking(
         self,
@@ -862,13 +1093,19 @@ class HookManager:
         existing_job: OutboxJob | None = None,
         target_operation_id: str | None = None,
         origin: InvocationOrigin | None = None,
+        operation: HookOperation | None = None,
     ) -> None:
+        """Start a non-blocking *hook*; not when hooks closed or *operation* was withdrawn by then."""
         if self._closed or self._session_drain_generation != session_drain_generation:
+            return
+        if operation is not None and not operation.pending:
             return
         run = self._new_run(payload, origin=origin, retry=existing_job is not None)
         job = existing_job
+        # Written here, the job is a promise to run the hook, kept by recovery should this process die.
+        written: OutboxJob | None = None
         if hook.execution.delivery == "durable" and job is None:
-            job = self._outbox.write_pending(
+            job = written = self._outbox.write_pending(
                 hook_id=hook.id,
                 event=str(hook.event),
                 payload=payload,
@@ -903,10 +1140,13 @@ class HookManager:
                 # the trace drops the terminal by itself if that marker never
                 # took a sequence.
                 trace.finished_soon(outcome=HookOutcome.CANCELLED)
+                self._drop_withdrawn_job(written, operation)
                 raise
-        if self._closed or self._session_drain_generation != session_drain_generation:
+        withdrawn = operation is not None and not operation.pending
+        if withdrawn or self._closed or self._session_drain_generation != session_drain_generation:
             if trace is not None:
                 trace.finished_soon(outcome=HookOutcome.ABANDONED)
+            self._drop_withdrawn_job(written, operation)
             return
 
         # async / fire_and_forget — wrap in our internal task so we can
@@ -1155,18 +1395,6 @@ def _tool_args(envelope: dict[str, Any]) -> Any:
     return tool.get("args") if isinstance(tool, dict) else None
 
 
-def _args_key(args: Any) -> str | None:
-    """*args* as JSON with sorted keys, which two equal argument sets share.
-
-    None when they nest deeper than the encoder writes, which parsed JSON can:
-    the decoder takes deeper objects than the encoder (and dict equality) does.
-    """
-    try:
-        return json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
-    except RecursionError:
-        return None
-
-
 def _text_field(fields: dict[str, Any], key: str) -> str:
     """*fields*' *key* when it is a string, else empty."""
     value = fields.get(key)
@@ -1183,7 +1411,7 @@ def _asks_unsupported(event: HookEvent, decision: dict[str, Any]) -> bool:
     """Whether a result file asks for something *event* does not take."""
     action = _decision_action(decision)
     return (
-        (action == "block" and event not in GATED_EVENTS)
+        (action in ("block", "ask") and event not in GATED_EVENTS)
         or (action == "modify" and event not in _ARGS_OVERRIDE_EVENTS)
         or (bool(decision.get("system_reminder")) and event not in _SYSTEM_REMINDER_EVENTS)
         or (bool(decision.get("extra_context")) and event not in _EXTRA_CONTEXT_EVENTS)
@@ -1192,7 +1420,9 @@ def _asks_unsupported(event: HookEvent, decision: dict[str, Any]) -> bool:
 
 def _asks_anything(decision: dict[str, Any]) -> bool:
     action = _decision_action(decision)
-    return action in ("block", "modify") or bool(decision.get("system_reminder") or decision.get("extra_context"))
+    return action in ("block", "modify", "ask") or bool(
+        decision.get("system_reminder") or decision.get("extra_context")
+    )
 
 
 def _blocking_effect(
@@ -1201,6 +1431,7 @@ def _blocking_effect(
     decision: HookDecision,
     *,
     blocked: bool,
+    asked: bool,
     args_changed: bool,
     args_after: Any,
     reminders_before: int,
@@ -1208,8 +1439,8 @@ def _blocking_effect(
 ) -> tuple[HookRunEffect | None, HookRunApplied]:
     """What iCode took from one blocking run, folded into *decision*; at most one effect.
 
-    *blocked* when this run blocked; *args_changed* when its override changed the
-    arguments, *args_after*.
+    *blocked* when this run blocked; *asked* when it asked the user to confirm;
+    *args_changed* when its override changed the arguments, *args_after*.
     """
     failed = _result_failed(result)
     if blocked:
@@ -1218,6 +1449,8 @@ def _blocking_effect(
         )
     if failed:
         return None, HookRunApplied(not_applied="failed")
+    if asked:
+        return "asked", HookRunApplied()
     if args_changed:
         return "modified_args", HookRunApplied(args=indented_json(args_after))
     if len(decision.system_reminders) > reminders_before:
@@ -1256,8 +1489,14 @@ def _merge_blocking_result(
     result: HookResult,
     *,
     event: HookEvent,
-) -> None:
-    """Fold one blocking hook's outcome into the running :class:`HookDecision`."""
+) -> str | None:
+    """Fold one blocking hook's outcome into the running :class:`HookDecision`.
+
+    Returns the reason of an ``ask`` on a gating event, which the caller puts
+    to the user before the next hook runs; None when the run did not ask. An
+    ``ask`` takes nothing else from its result file: not an argument override,
+    a reminder or context.
+    """
     on_error = hook.execution.on_error
     failed = _result_failed(result)
 
@@ -1266,7 +1505,7 @@ def _merge_blocking_result(
         if on_error == "block" and event in GATED_EVENTS:
             decision.blocked = True
             decision.block_reason = f"hook '{hook.id}' failed ({msg_kind}): {result.stderr.strip()[:200]}"
-            return
+            return None
         if on_error == "warn":
             logger.warning("Hook %r failed (%s) but on_error=warn; continuing", hook.id, msg_kind)
         elif on_error == "block":
@@ -1278,7 +1517,7 @@ def _merge_blocking_result(
             )
         # A failed hook's decision file may be partial or stale.  Honour
         # only the configured error policy and ignore any action payload.
-        return
+        return None
 
     action = _decision_action(result.decision)
     if action == "block":
@@ -1286,8 +1525,13 @@ def _merge_blocking_result(
             decision.blocked = True
             reason = str(result.decision.get("reason") or "")
             decision.block_reason = f"hook '{hook.id}' blocked: {reason}" if reason else f"hook '{hook.id}' blocked"
-            return
+            return None
         logger.warning("Hook %r returned action=block for non-gated event %s; ignoring block", hook.id, event)
+    if action == "ask":
+        if event in GATED_EVENTS:
+            reason = result.decision.get("reason")
+            return reason[:ASK_REASON_MAX_CHARS] if isinstance(reason, str) else ""
+        logger.warning("Hook %r returned action=ask for non-gated event %s; ignoring ask", hook.id, event)
     if action == "modify" and event in _ARGS_OVERRIDE_EVENTS:
         args_override = result.decision.get("args_override")
         if isinstance(args_override, dict):
@@ -1299,6 +1543,35 @@ def _merge_blocking_result(
     extra = result.decision.get("extra_context")
     if event in _EXTRA_CONTEXT_EVENTS and isinstance(extra, str) and extra:
         decision.extra_context.append(extra)
+    return None
+
+
+def _ask_refusal(
+    hook_id: str, reason: str, result: HookConfirmationResult, timeout: float | None, *, tool_call: bool
+) -> str:
+    """Why an ``ask`` stopped the operation (English, no ``Error:`` prefix).
+
+    A tool call's is what the model reads in its result, so it also says that the call
+    did not run and whether calling it again can help: a model told only that nobody
+    answered tends to call it again, and ask the user once more. A refused input's is
+    shown to the user, who needs only the why.
+    """
+    asked = (
+        f"hook '{hook_id}' asked for confirmation ({reason})" if reason else f"hook '{hook_id}' asked for confirmation"
+    )
+    if result.outcome == "declined":
+        why = "the user declined"
+        then = "Do not call it again unless the user asks you to."
+    elif result.outcome == "timed_out":
+        why = f"the user did not answer within {timeout:g} s" if timeout else "the user did not answer in time"
+        then = "Ask the user before calling it again."
+    elif result.end_reason in ("frontend_unavailable", "error"):
+        why = "the confirmation could not be shown to the user"
+        then = "Tell the user; do not call it again."
+    else:
+        why = "no one can confirm it in this session"
+        then = "Calling it again will be refused the same way."
+    return f"{asked}; {why}, so the tool call did not run. {then}" if tool_call else f"{asked}; {why}"
 
 
 def _log_hook_failure(hook: HookConfig, result: HookResult) -> None:
@@ -1320,7 +1593,7 @@ def _result_failed(result: HookResult) -> bool:
     return result.timed_out or result.exit_code is None or result.exit_code != 0
 
 
-def _hook_outcome(result: HookResult, *, blocked: bool) -> str:
+def _hook_outcome(result: HookResult, *, blocked: bool, asked: bool = False) -> str:
     """Closed ``hook.operation.finished.outcome`` for one subprocess result."""
     if result.timed_out:
         return HookOutcome.TIMED_OUT
@@ -1330,6 +1603,8 @@ def _hook_outcome(result: HookResult, *, blocked: bool) -> str:
         return HookOutcome.FAILED
     if blocked:
         return HookOutcome.BLOCKED
+    if asked:
+        return HookOutcome.ASKED
     return HookOutcome.SUCCESS
 
 
@@ -1342,3 +1617,60 @@ def _result_failure_label(result: HookResult) -> str:
     if result.exit_code is None:
         return "launch_error"
     return f"exit_code={result.exit_code}"
+
+
+_NO_SNAPSHOT_REASON = "the before_tool_call hooks cannot check these tool arguments: they have no JSON form"
+
+
+async def check_operation(
+    manager: HookManager | None,
+    event: HookEvent,
+    operation: HookOperation,
+    payload: Callable[[], dict[str, Any]],
+    *,
+    target_operation_id: str | None = None,
+    trajectory_context: TrajectoryContext | None = None,
+    origin: InvocationOrigin | None = None,
+) -> HookDecision:
+    """Check *operation*'s current version with *event*'s hooks: the one way every gating entry does.
+
+    The one place a version is marked checked: once every hook configured for
+    *event* passed it. With none configured (no hooks file, a ``None``
+    manager, no hook for *event*) that holds at once, so the operation's
+    commit treats every entry alike. A manager that cannot run the hooks it
+    has (closed before or while they ran) passes nothing: ``fire`` reports the
+    operation invalidated. *payload* is built only when a hook will read it.
+    An operation already ended is not checked again, and a tool call whose
+    arguments have no snapshot (no canonical form) is refused where hooks
+    would check it: they cannot be shown it.
+    """
+    operation.begin_check()
+    if not operation.pending:
+        return HookDecision(invalidated=True)
+    if manager is None or not manager.has_hooks_for(event):
+        return _passed(operation, HookDecision())
+    if operation.subject == "tool" and not operation.has_snapshot:
+        return HookDecision(blocked=True, block_reason=_NO_SNAPSHOT_REASON)
+    decision = await manager.fire(
+        event,
+        payload(),
+        target_operation_id=target_operation_id,
+        trajectory_context=trajectory_context,
+        origin=origin,
+        operation=operation,
+    )
+    if decision.args_override and not (decision.blocked or decision.invalidated):
+        # The override the decision reports is already the operation's (``fire`` applied it as
+        # each hook returned it); folding it again changes nothing then, and keeps the decision's
+        # own contract for any caller that reads it.
+        operation.replace_arguments({**operation.arguments(), **decision.args_override})
+    if decision.blocked or decision.invalidated:
+        return decision
+    return _passed(operation, decision)
+
+
+def _passed(operation: HookOperation, decision: HookDecision) -> HookDecision:
+    """Mark *operation*'s current version checked; invalidated instead when it ended meanwhile."""
+    if not operation.mark_checked(operation.revision):
+        decision.invalidated = True
+    return decision

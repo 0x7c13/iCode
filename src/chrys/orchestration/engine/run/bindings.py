@@ -76,6 +76,7 @@ from chrys.service.agent_middleware import (
     ToolEventMiddleware,
 )
 from chrys.service.agent_middleware.control.approval import ApprovalRetrySnapshot
+from chrys.service.agent_middleware.control.hook_commit import HookCommitMiddleware
 from chrys.service.agent_middleware.events.hosted_tools import (
     FinalTextOp,
     HostedPresentationBridge,
@@ -226,6 +227,7 @@ class TurnBindings:
         # The pass's only publisher of model text, made at pass start.
         self._projector = None
         self._interrupt = InterruptMiddleware()
+        self._hook_commit = HookCommitMiddleware()
         self._extra_function_middleware = tuple(extra_function_middleware)
         # Fired once at the start of every user-initiated run cycle, before
         # the first attempt.  Components that carry state across the cycle's
@@ -532,7 +534,8 @@ class TurnBindings:
         # Chain order is pinned (first = outermost): extras sit INSIDE
         # tool_events (a short-circuiting extra must still publish
         # InvocationToolCallStart/InvocationToolCallResult) and INSIDE approval (no extra can
-        # bypass approval on gated kinds).
+        # bypass approval on gated kinds). The hook commit is innermost: nothing after it
+        # can change the arguments the before_tool_call hooks checked.
         kwargs: AgentRunKwargs = {
             "session": self._session,
             "middleware": [
@@ -542,6 +545,7 @@ class TurnBindings:
                 *self._extra_function_middleware,
                 self._sleep,
                 self._interrupt,
+                self._hook_commit,
             ],
             "client_kwargs": client_kwargs,
         }

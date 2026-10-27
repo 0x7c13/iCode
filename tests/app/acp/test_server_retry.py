@@ -27,7 +27,7 @@ from chrys.foundation.events.types import (
     TurnStarted,
 )
 from chrys.foundation.models.invocations import ContentChannel, InvocationOrigin
-from chrys.orchestration.session_host import Cancelled, EndTurn, Errored
+from chrys.orchestration.session_host import Cancelled, EndTurn, Errored, Refused
 from tests.app.acp._server_fakes import _FakeClient, _FakeEngine, _FakeHost, _FakeManager
 
 _TURN_ID = "4" * 32
@@ -181,6 +181,28 @@ async def test_session_retry_maps_a_failed_retry_to_a_request_error_with_its_tur
 
     assert exc_info.value.data["code"] == "model_failed"
     assert exc_info.value.data["turnId"] == _TURN_ID
+
+
+@pytest.mark.anyio
+async def test_session_retry_reports_a_refused_note_as_refusal() -> None:
+    error = Error(code="hook_blocked", message="hook 'notes' blocked: not this note", refused_input="retry_note")
+    host = _retry_host(can_retry=True, outcome=Refused(error=error))
+    client = _FakeClient()
+
+    result = await _server(host, client=client).ext_method("session/retry", {"sessionId": "s1", "text": "a note"})
+
+    assert result["stopReason"] == "refusal"
+    assert "userMessageId" not in result
+    assert (result["_meta"]["chrys"]["code"], result["_meta"]["chrys"]["message"]) == (
+        "hook_blocked",
+        "hook 'notes' blocked: not this note",
+    )
+    notices = [
+        u.update.content.text
+        for u in client.updates
+        if u.update.session_update == "agent_message_chunk" and u.update.content.text.startswith("Input rejected")
+    ]
+    assert notices == ["Input rejected: hook 'notes' blocked: not this note"]
 
 
 def _origin() -> InvocationOrigin:

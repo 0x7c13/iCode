@@ -20,9 +20,10 @@ from chrys.app.tui.screens.main.dialog_controllers import (
 )
 from chrys.app.tui.screens.main.ports import DialogGatewayView, StatusMessage
 from chrys.app.tui.widgets import PromptDraft
-from chrys.foundation.events.types import ApprovalRequest, ApprovalReviewed, QuestionToUser
+from chrys.foundation.events.types import ApprovalRequest, ApprovalReviewed, HookConfirmationRequest, QuestionToUser
 from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
+from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,7 @@ class UiGatewayCallbacks:
     ]
     publish_auto_fulfill_blocked: Callable[[ApprovalReviewed], Awaitable[None]]
     handle_ask_user_response: Callable[[str, tuple[AskUserAnswer, ...]], object]
+    publish_hook_confirmation_answer: Callable[[str | None, str, HookConfirmationAnswer], object]
     question_inline_preferred: Callable[[], bool]
     approval_defer_while_judging: Callable[[], bool]
     set_agent_loading: Callable[[bool], None]
@@ -71,6 +73,19 @@ class UiGateway:
 
     def dismiss_approval_dialog(self, dialog: ApprovalDialogHandle) -> None:
         self._view.dismiss_approval_dialog(dialog)
+
+    def show_hook_confirmation(
+        self, event: HookConfirmationRequest, on_result: Callable[[bool | None], None]
+    ) -> object:
+        return self._view.show_hook_confirmation(event, on_result)
+
+    def dismiss_hook_confirmation(self, dialog: object) -> None:
+        self._view.dismiss_hook_confirmation(dialog)
+
+    def publish_hook_confirmation_answer(
+        self, session_id: str | None, request_id: str, answer: HookConfirmationAnswer
+    ) -> None:
+        self._callbacks.publish_hook_confirmation_answer(session_id, request_id, answer)
 
     def approval_dialog_tool_name(self, dialog: ApprovalDialogHandle) -> str:
         return self._view.approval_dialog_tool_name(dialog)
