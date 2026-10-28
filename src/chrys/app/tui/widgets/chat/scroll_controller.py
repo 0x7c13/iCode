@@ -8,7 +8,7 @@ import gc
 from typing import Any
 
 from textual._arrange import DockArrangeResult
-from textual.geometry import Offset, Region, Size
+from textual.geometry import Offset, Region, Size, Spacing
 from textual.timer import Timer
 from textual.widget import Widget
 
@@ -177,8 +177,8 @@ class ChatScrollController:
         self._spacer_rows = 0
         """Rows the bottom spacer took in the last arrange: 0 when it was hidden or left out."""
         self._entries_bottom = 0
-        """Where the last arrange ended the last transcript entry: the chrome below it (the waiting row, the bottom gap
-        and the spacer) adds no reply."""
+        """Where the last arrange ended the last transcript entry: the chrome below it (the waiting row and the spacer)
+        adds no reply."""
         self._sized_entries_bottom = 0
         """``_entries_bottom`` as the last layout's size update had it."""
         self._unwatched_virtual_size: Size | None = None
@@ -189,26 +189,17 @@ class ChatScrollController:
         """A new user message to bring into view once a layout places it."""
         self._reveal_top = -1
         """Where that layout put the top of ``_reveal``, margin included; -1 until one does."""
-        self._floor = 0
-        """The height the last arrange showed the transcript at while a turn ran: it shows no less (:meth:`_pad_to_floor`)."""
-        self._floor_size = Size()
-        """The size that arrange laid the transcript out at: at another the floor starts again."""
-        self._floor_pad = 0
-        """The rows the last arrange padded the bottom gap with."""
         self._fold_shrink = False
-        """An entry folded, or the bottom gap gave up rows it held, since the last layout: the transcript shrinks in
-        that layout."""
+        """An entry folded, or gave rows up, since the last layout: the transcript shrinks in that layout."""
 
-    def entry_folded(self, *, by_user: bool) -> None:
-        """Show an entry that folded, *by_user* by hand, in the layout that places it.
+    def entry_folded(self) -> None:
+        """Show an entry that folded, or gave rows up, in the layout that places it.
 
-        The transcript it shrinks is no transient drop: a view below its new bottom comes up to it in the arrangement
-        that places the fold (:meth:`_show_fold_shrink`), and the size update after it holds no frame
-        (:meth:`size_updated`). One the user makes shows as made: no rows stand blank below the transcript in its
-        place, the floor drops.
+        A view below the transcript's new bottom comes up to it in the arrangement that places the shrink
+        (:meth:`_show_fold_shrink`), and the size update after it holds no frame (:meth:`size_updated`): a held frame
+        would show the rows blank under the last line. That goes for rows a streamed answer may take again as more
+        text arrives, too: until it does, they would stand blank.
         """
-        if by_user:
-            self._floor = 0
         self._fold_shrink = True
 
     def set_agent_running(self, running: bool) -> None:
@@ -216,9 +207,6 @@ class ChatScrollController:
         if running and not self.agent_running:
             self.final_response_started = False
         self.agent_running = running
-        if not running and self._floor_pad:
-            # The finished turn shows its own height: the layout drops the rows the gap holds (_pad_to_floor).
-            self._host.refresh(layout=True)
 
     def on_user_turn_started(self) -> None:
         """Reset live-turn scroll gates."""
@@ -359,7 +347,7 @@ class ChatScrollController:
         if not optimal:
             self._arrangement = result
             self._spacer_rows = self._arrange_bottom_spacer(result, size)
-            self._pad_to_floor(result, size)
+            self._drop_bottom_margin(result)
             self._entries_bottom = self._last_entry_bottom(result)
             if self._reveal is not None:
                 self._place_reveal(result)
@@ -428,53 +416,27 @@ class ChatScrollController:
                 return placement.region.bottom
         return 0
 
-    def _pad_to_floor(self, result: DockArrangeResult, size: Size) -> None:
-        """Pad the bottom gap so that the transcript a turn runs in never shows shorter than it last did.
+    def _drop_bottom_margin(self, result: DockArrangeResult) -> None:
+        """Drop the bottom margin of what ends the transcript: its last line sits on the panel's bottom border.
 
-        Rows fold as what follows them starts, and give up rows above that new entry: a view that follows the bottom
-        would pull the rows above them down by as many. Padded instead, what is above stays where it was, and the
-        entries below take the rows back as they grow. At most a third of the viewport stays blank: a larger fold
-        moves the view by the rest. At another size, once the turn ends, with the spacer filling a viewport the
-        transcript is shorter than, or from a fold the user makes on (:meth:`entry_folded`), the transcript
-        shows its own height.
+        A margin parts an entry from the one after it; below the last, it would stand blank under the transcript a
+        view that follows the bottom shows. The bottom spacer, filling a viewport the transcript is shorter than,
+        follows it there instead.
 
-        Runs on every arrange, including those that hand back the arrangement padded already: the pad is set from
-        the gap's own placement, which has no height of its own.
+        Runs on every arrangement that places the transcript, a cached one it dropped already included: that one is
+        left as it is, so a scroll's arrange does not build its spatial map again.
         """
-        gap = self._host.bottom_gap()
+        spacer = self._host.bottom_spacer()
         placements = result.placements
-        index = len(placements) - 1
-        while index >= 0 and placements[index].widget is not gap:
-            if not placements[index].fixed and placements[index].widget is not self._host.bottom_spacer():
-                # Entries follow the gap: no arrangement this places it in.
-                return
-            index -= 1
-        if index < 0:
-            self._floor = 0
-            self._floor_pad = 0
+        for index in range(len(placements) - 1, -1, -1):
+            placement = placements[index]
+            if placement.fixed:
+                continue
+            margin = placement.margin
+            if placement.widget is not spacer and margin.bottom:
+                placements[index] = placement._replace(margin=Spacing(margin.top, margin.right, 0, margin.left))
+                result._spatial_map = None
             return
-        placement = placements[index]
-        padded = placement.region.height
-        natural = result.spatial_map.total_region.bottom - padded
-        pad = 0
-        if self.agent_running and size == self._floor_size and self._spacer_rows == 0:
-            pad = min(max(0, self._floor - natural), size.height // 3)
-        if pad < self._floor_pad:
-            # The rows the gap held go in this layout, as a fold's do; an arrangement at another size, laid out
-            # anew, places the gap with none.
-            self._fold_shrink = True
-        self._floor = natural + pad
-        self._floor_size = size
-        self._floor_pad = pad
-        if pad == padded:
-            return
-        x, y, width, _height = placement.region
-        placements[index] = placement._replace(region=Region(x, y, width, pad))
-        shift = Offset(0, pad - padded)
-        for later in range(index + 1, len(placements)):
-            if not placements[later].fixed:
-                placements[later] = placements[later]._replace(region=placements[later].region + shift)
-        result._spatial_map = None
 
     def begin_view_hold(self) -> None:
         """Keep a scrolled-up view on its content while entries land above it."""
@@ -612,8 +574,8 @@ class ChatScrollController:
                 if self._host.virtual_size != old_virtual_size:
                     self.watch_virtual_size(old_virtual_size, self._host.virtual_size)
                 elif self._resume_following_reply(self._host.virtual_size.height):
-                    # The entries took rows the chrome below them gave back (thinking in the waiting row's place):
-                    # the size stays, but the reply came.
+                    # The entries took rows the chrome below them gave back (a compaction in the waiting row's
+                    # place): the size stays, but the reply came.
                     self.set_scroll_y_programmatically(self._host.max_scroll_y)
                 self._view_hold_rows = 0
                 self._sized_entries_bottom = self._entries_bottom
@@ -759,7 +721,7 @@ class ChatScrollController:
         """Take back a view the user message's soft release let go once the reply reaches over two rows below it.
 
         Only entries growing below are a reply: not rows a replay lands above the view, which the view hold moved
-        down with, nor the chrome under the last entry (the waiting row, the bottom gap and its pad, the spacer).
+        down with, nor the chrome under the last entry (the waiting row, the spacer).
         """
         if (
             self.agent_running
@@ -803,9 +765,6 @@ class ChatScrollController:
         self._arrangement = None
         self._reveal = None
         self._reveal_top = -1
-        self._floor = 0
-        self._floor_size = Size()
-        self._floor_pad = 0
         self._fold_shrink = False
         self._entries_bottom = 0
         self._sized_entries_bottom = 0

@@ -9,6 +9,7 @@ import gc
 import inspect
 import logging
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from threading import Event
 from types import SimpleNamespace
@@ -393,6 +394,23 @@ def test_session_json_highlight_descendants_are_acyclic_while_frozen() -> None:
         gc.collect()
 
 
+def _pool_runs_calls_in_turn() -> None:
+    """Give the running loop one pool thread, which runs its calls in turn; the loop shuts it down as it closes."""
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+
+
+async def _after_pool_calls_let_go() -> None:
+    """Return once the calls queued on the pool before now have let go of what they returned.
+
+    A cancelled call's thread holds what it returns until it returns it, and its future holds that until the loop
+    runs the callback the thread queued to hand it over. A call queued after it on the one pool thread ends once the
+    thread has moved on; then a loop turn runs that callback, which the thread queued before this call ended.
+    """
+    await asyncio.to_thread(lambda: None)
+    # A call that ends before its future is wrapped returns without a loop turn.
+    await asyncio.sleep(0)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancelled", [False, True], ids=["completed", "cancelled"])
 async def test_real_session_json_to_thread_payload_drops_while_frozen(
@@ -408,8 +426,8 @@ async def test_real_session_json_to_thread_payload_drops_while_frozen(
     path.write_text('{"value": [1, 2, 3]}', encoding="utf-8")
     original_highlight = SessionJsonPanel._highlight
     loop = asyncio.get_running_loop()
+    _pool_runs_calls_in_turn()
     started = asyncio.Event()
-    finished = asyncio.Event()
     release = Event()
     sentinel_refs: list[weakref.ReferenceType[_Sentinel]] = []
 
@@ -420,7 +438,6 @@ async def test_real_session_json_to_thread_payload_drops_while_frozen(
         payload[0][0]._text.append(sentinel)  # type: ignore[arg-type]
         loop.call_soon_threadsafe(started.set)
         release.wait()
-        loop.call_soon_threadsafe(finished.set)
         return payload
 
     monkeypatch.setattr(SessionJsonPanel, "_highlight", staticmethod(_blocked_highlight))
@@ -439,14 +456,11 @@ async def test_real_session_json_to_thread_payload_drops_while_frozen(
         release.set()
         with suppress(asyncio.CancelledError):
             await task
-        await finished.wait()
         del task
         del panel
         del _blocked_highlight
-        # A worker Future may retain its prior result after the coroutine has
-        # exited. Turn over every pool thread before inspecting the payload.
-        await asyncio.gather(*(asyncio.to_thread(lambda: None) for _ in range(32)))
-        await asyncio.sleep(0)
+        # A cancelled worker does not wait for its highlight to let go of the payload.
+        await _after_pool_calls_let_go()
 
         assert len(sentinel_refs) == 1
         assert sentinel_refs[0]() is None
@@ -698,15 +712,15 @@ async def test_cancelled_inflight_index_to_thread_drops_payload_while_frozen() -
     payload_box = [index]
     del index
     loop = asyncio.get_running_loop()
+    _pool_runs_calls_in_turn()
     started = asyncio.Event()
-    finished = asyncio.Event()
     release = Event()
 
     def _return_index() -> ProjectPathIndex:
+        # Read before it is released: the box is cleared once the call is cancelled, and it may resume after that.
+        value = payload_box[0]
         loop.call_soon_threadsafe(started.set)
         release.wait()
-        value = payload_box[0]
-        loop.call_soon_threadsafe(finished.set)
         return value
 
     task = asyncio.create_task(asyncio.to_thread(_return_index))
@@ -718,14 +732,11 @@ async def test_cancelled_inflight_index_to_thread_drops_payload_while_frozen() -
         release.set()
         with suppress(asyncio.CancelledError):
             await task
-        await finished.wait()
         del task
         del _return_index
         payload_box.clear()
-        # Turn over the pool after the cancelled worker exits; its Future may
-        # otherwise retain the prior return value even though no task/frame does.
-        await asyncio.gather(*(asyncio.to_thread(lambda: None) for _ in range(32)))
-        await asyncio.sleep(0)
+        # The cancelled call does not wait for its thread to let go of the index.
+        await _after_pool_calls_let_go()
 
         assert index_ref() is None
     finally:

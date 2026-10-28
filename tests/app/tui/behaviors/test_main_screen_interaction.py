@@ -162,13 +162,11 @@ async def test_startup_enter_spam_does_not_send_or_show_input_loading(tmp_path) 
         def __init__(self, bus: EventBus) -> None:
             self._bus = bus
             self.session_generation = 0
-            self.started = asyncio.Event()
             self.load_started = asyncio.Event()
             self.release = asyncio.Event()
             self.ready = asyncio.Event()
 
         async def start(self, _profile: AgentProfile) -> None:
-            self.started.set()
             await self._bus.publish(
                 AgentLoadStarted(operation="startup", to_profile=profile.name, to_display_name=profile.display_name)
             )
@@ -204,8 +202,7 @@ async def test_startup_enter_spam_does_not_send_or_show_input_loading(tmp_path) 
     )
 
     async with app.run_test() as pilot:
-        await asyncio.wait_for(engine.started.wait(), timeout=1)
-        await asyncio.wait_for(engine.load_started.wait(), timeout=1)
+        await wait_for(engine.load_started.is_set, pilot=pilot, description="the agent started loading")
         await pilot.pause()
         main_screen = next(screen for screen in pilot.app.screen_stack if isinstance(screen, MainScreen))
         ib = main_screen.query_one(InputBar)
@@ -235,7 +232,7 @@ async def test_startup_enter_spam_does_not_send_or_show_input_loading(tmp_path) 
         assert text_area.read_only is False
 
         engine.release.set()
-        await asyncio.wait_for(engine.ready.wait(), timeout=1)
+        await wait_for(engine.ready.is_set, pilot=pilot, description="the session is ready")
         await pilot.pause()
 
         assert messages == []

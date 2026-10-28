@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Callable
 from pathlib import Path
@@ -81,3 +82,57 @@ async def test_reports_during_and_after_removal_are_buffered(kind: str, removal:
     # Leaving run_test re-raises what a report raised on the way out.
     assert reported == [True]
     report(dialog)
+
+
+async def _push_as_the_app_exits(dialog: ModalScreen, window: str) -> None:
+    """Push *dialog* as the app shuts down, at the moment *window* names; leaving re-raises what its mount raised.
+
+    - ``prune``: as the test's last step: the app then closes its screens, which prunes the dialog's children first;
+    - ``late``: in the app's last running turn: the dialog mounts once the app stopped, and none of its children do;
+    - ``exit``: in the turn the app begins to exit, as the user quits: the dialog is detached and no child mounts.
+    """
+    if window == "exit":
+
+        class Quitting(_Host):
+            def on_ready(self) -> None:
+                self.exit()
+                self.push_screen(dialog)
+
+        app = Quitting()
+        await app.run_async(headless=True)
+        if app._exception is not None:
+            raise app._exception
+        return
+    app = _Host()
+    async with app.run_test():
+        if window == "prune":
+            app.push_screen(dialog)
+        else:
+            # Pushed as leaving run_test yields, before the app shuts down.
+            asyncio.get_running_loop().call_soon(app.push_screen, dialog)
+
+
+# What the dialog sees as it mounts in each window: whether it is pruning, the app running, and it attached.
+_MOUNTED_IN = {"prune": (True, False, True), "late": (False, False, True), "exit": (False, True, False)}
+
+
+@pytest.mark.parametrize("window", list(_MOUNTED_IN))
+@pytest.mark.parametrize("reported", [False, True], ids=["unreported", "reported"])
+@pytest.mark.parametrize("kind", list(_DIALOGS))
+async def test_a_dialog_that_mounts_as_the_app_exits_renders_nothing(kind: str, reported: bool, window: str) -> None:
+    """An owner can push its dialog as the app shuts down: its children are pruned before it mounts, or never mount."""
+    base, report = _DIALOGS[kind]
+    mounted: list[tuple[bool, bool, bool]] = []
+
+    class Mounting(base):
+        CSS_PATH = Path(inspect.getfile(base)).with_name(str(base.CSS_PATH))
+
+        def on_mount(self) -> None:
+            # Dispatch runs the dialog's own handler after this one.
+            mounted.append((self._pruning, self.app.is_running, self.is_attached))
+
+    dialog = Mounting()
+    if reported:
+        report(dialog)
+    await _push_as_the_app_exits(dialog, window)
+    assert mounted == [_MOUNTED_IN[window]]

@@ -10,7 +10,6 @@ from rich.style import Style
 from rich.text import Text
 from textual.content import Content
 from textual.message import Message
-from textual.widget import Widget
 from textual.widgets import Static
 
 from chrys.app.tui.i18n import render_content, render_str
@@ -25,9 +24,8 @@ from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 
 if TYPE_CHECKING:
-    from textual.app import RenderResult
     from textual.events import Click
-    from textual.geometry import Size
+    from textual.widget import Widget
 
     from chrys.app.tui.i18n import LocaleController
     from chrys.app.update_check import UpdateNotice
@@ -53,33 +51,6 @@ def _truncate_border_title(title: str, max_chars: int = _BORDER_TITLE_MAX_CHARS)
     if len(title) <= max_chars:
         return title
     return title[: max_chars - 1].rstrip() + "…"
-
-
-class ChatBottomGap(Widget):
-    """The blank row under the transcript's last line, so that line never sits on the panel's bottom border.
-
-    It has no height of its own: its top margin collapses into the last entry's bottom margin, so an answer, which
-    keeps a blank row below it, gets no second one, and a turn's thinking and tool rows, which keep none, get one.
-    While a turn runs, the rows the transcript gives up as its rows fold pad it (``ChatScrollController.arrange``).
-    """
-
-    ALLOW_SELECT = False
-
-    DEFAULT_CSS = """
-    ChatBottomGap {
-        height: 0;
-        margin-top: 1;
-    }
-    """
-
-    def render(self) -> RenderResult:
-        # Padded, its rows are blank: Textual's own render shows a plain widget's name.
-        return ""
-
-    def _size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
-        # The layout calling this placed it, padded, already; Textual's reactive virtual size would lay the whole
-        # transcript out again.
-        return super()._size_updated(size, virtual_size, container_size, layout=False)
 
 
 class ChatBottomSpacer(Static):
@@ -154,14 +125,13 @@ class ScrollToBottomButton(ClickAffordance):
 
 
 class ChatPanelChrome:
-    """Own welcome/waiting row/gap/spacer/button infrastructure and border metadata."""
+    """Own welcome/waiting row/spacer/button infrastructure and border metadata."""
 
     def __init__(self, host: ChatChromeHost, *, locale_controller: LocaleController | None = None) -> None:
         self._host = host
         self._locale_controller = locale_controller
         self._welcome: WelcomeWidget | None = None
         self._waiting_row: WaitingRow | None = None
-        self._bottom_gap: ChatBottomGap | None = None
         self._bottom_spacer: ChatBottomSpacer | None = None
         self._scroll_to_bottom_button: ScrollToBottomButton | None = None
         self._session_id: str = ""
@@ -183,11 +153,6 @@ class ChatPanelChrome:
     def waiting_row(self) -> WaitingRow | None:
         """Current waiting row widget: transcript entries mount above it."""
         return self._waiting_row
-
-    @property
-    def bottom_gap(self) -> ChatBottomGap | None:
-        """Current bottom gap widget, under the waiting row."""
-        return self._bottom_gap
 
     @property
     def bottom_spacer(self) -> ChatBottomSpacer | None:
@@ -219,7 +184,7 @@ class ChatPanelChrome:
 
     def initial_widgets(
         self,
-    ) -> tuple[WelcomeWidget, WaitingRow, ChatBottomGap, ChatBottomSpacer, ScrollToBottomButton]:
+    ) -> tuple[WelcomeWidget, WaitingRow, ChatBottomSpacer, ScrollToBottomButton]:
         """Create initial persistent chrome widgets in mount order."""
         return self._create_widgets()
 
@@ -227,19 +192,18 @@ class ChatPanelChrome:
         """Forget current chrome widget refs before async child removal."""
         self._welcome = None
         self._waiting_row = None
-        self._bottom_gap = None
         self._bottom_spacer = None
         self._scroll_to_bottom_button = None
 
     def rebuild_widgets(
         self,
-    ) -> tuple[WelcomeWidget, WaitingRow, ChatBottomGap, ChatBottomSpacer, ScrollToBottomButton]:
+    ) -> tuple[WelcomeWidget, WaitingRow, ChatBottomSpacer, ScrollToBottomButton]:
         """Create fresh persistent chrome widgets after transcript clear."""
         return self._create_widgets()
 
     def _create_widgets(
         self,
-    ) -> tuple[WelcomeWidget, WaitingRow, ChatBottomGap, ChatBottomSpacer, ScrollToBottomButton]:
+    ) -> tuple[WelcomeWidget, WaitingRow, ChatBottomSpacer, ScrollToBottomButton]:
         # Rebuild from panel metadata, which survives transcript and mode changes.
         welcome = WelcomeWidget(
             CHAT_LOGO, title=self._host.profile_name, cwd=self._host.workspace_cwd, notice=self._update_notice_text()
@@ -247,9 +211,6 @@ class ChatPanelChrome:
         # Shown only while a running turn waits.
         waiting = WaitingRow()
         waiting.display = False
-        # The welcome fills the panel: a gap below it would scroll it by a row.
-        gap = ChatBottomGap()
-        gap.display = False
         spacer = ChatBottomSpacer()
         spacer.display = False
         button = ScrollToBottomButton(
@@ -258,10 +219,9 @@ class ChatPanelChrome:
         )
         self._welcome = welcome
         self._waiting_row = waiting
-        self._bottom_gap = gap
         self._bottom_spacer = spacer
         self._scroll_to_bottom_button = button
-        return welcome, waiting, gap, spacer, button
+        return welcome, waiting, spacer, button
 
     async def dismiss_welcome(self) -> None:
         """Remove the welcome widget on first transcript content."""
@@ -272,8 +232,6 @@ class ChatPanelChrome:
         try:
             await remove_shielded(welcome)
         finally:
-            if self._bottom_gap is not None:
-                self._bottom_gap.display = True
             if self._bottom_spacer is not None:
                 self._bottom_spacer.display = True
 
@@ -369,7 +327,6 @@ class ChatPanelChrome:
         return (
             widget is self._welcome
             or widget is self._waiting_row
-            or widget is self._bottom_gap
             or widget is self._bottom_spacer
             or widget is self._scroll_to_bottom_button
         )

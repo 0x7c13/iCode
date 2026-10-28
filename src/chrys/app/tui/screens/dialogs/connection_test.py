@@ -104,6 +104,9 @@ class ConnectionTestDialog(BaseDialog[None]):
 
     def on_mount(self) -> None:
         self._mounted = True
+        if not self._composed_live:
+            # Pushed as the app shuts down: its children were pruned or never mounted; nothing will render it.
+            return
         if self._pending_result is not None:
             success, message, allow_esc, markdown = self._pending_result
             self._pending_result = None
@@ -127,9 +130,9 @@ class ConnectionTestDialog(BaseDialog[None]):
             return
         self._resolved = True
 
-        # Owners may still report after removal starts, which prunes the children before this
-        # dialog unmounts. Buffer as before mount; nothing will render it.
-        if not self._mounted or self._pruning or self._closing:
+        # Owners may still report once its children went, as removal starts, or never mounted, as
+        # the app shuts down. Buffer as before mount; nothing will render it.
+        if not self._mounted or not self._composed_live:
             self._pending_result = (success, message, allow_esc, markdown)
             return
 

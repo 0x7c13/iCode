@@ -269,6 +269,9 @@ class AgentLoadDialog(BaseDialog[None]):
 
     def on_mount(self) -> None:
         self._mounted = True
+        if not self._live:
+            # Pushed as the app shuts down: its children were pruned or never mounted; nothing will render it.
+            return
         if self._pending_result is not None:
             success, message, allow_esc = self._pending_result
             self._pending_result = None
@@ -281,9 +284,9 @@ class AgentLoadDialog(BaseDialog[None]):
 
     @property
     def _live(self) -> bool:
-        # Owners may still report after removal starts, which prunes the children before this
-        # dialog unmounts. Buffer those updates as before mount; nothing will render them.
-        return self._mounted and not self._pruning and not self._closing
+        # Owners may still report once its children went, as removal starts, or never mounted, as
+        # the app shuts down. Buffer those updates as before mount; nothing will render them.
+        return self._mounted and self._composed_live
 
     def update_progress(
         self,

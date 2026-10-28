@@ -840,7 +840,10 @@ async def test_a_toc_jump_queued_before_an_unmount_never_runs(monkeypatch: pytes
 async def test_fold_all_during_prepend_reaches_tool_groups_mounted_later(
     monkeypatch: pytest.MonkeyPatch, fold_processes: bool
 ) -> None:
-    count = _TOOL_TURNS * 2 if fold_processes else _TOOL_TURNS
+    # Folded turns hide entries, so the tail and the first batch mount all of the unfolded history but its first
+    # prompt: the turns past it leave a tool group each pending, six here. More would only add work the wait must
+    # outlast.
+    count = _TOOL_TURNS + 6 if fold_processes else _TOOL_TURNS
     async with ChatPanelApp(fold_finished_turns=lambda: fold_processes).run_test(size=_SIZE) as pilot:
         cp = pilot.app.query_one(ChatPanel)
         gate = _PrependGate(cp, monkeypatch)

@@ -21,15 +21,19 @@ from tests.support.waiting import wait_for
 if TYPE_CHECKING:
     from pathlib import Path
 
+# Enough turns to fill several screens. Every turn lays the whole transcript out again, so each one costs more than
+# the one before it.
+_TURNS = 24
 
-async def test_fifty_completed_turns_fold_without_global_restyle_or_recompose(tmp_path: Path) -> None:
+
+async def test_completed_turns_fold_without_global_restyle_or_recompose(tmp_path: Path) -> None:
     bus = EventBus()
     app = make_chrys_app(tmp_path, engine=SessionGenerationEngine(), event_bus=bus)
     async with app.run_test(size=(120, 36)) as pilot:
         main = app._main_screen
         assert main is not None
         panel = main.query_one(ChatPanel)
-        for turn in range(50):
+        for turn in range(_TURNS):
             await panel.add_user_message(f"Question {turn}")
             main._set_agent_running(True)
             origin = InvocationOrigin("turn", "s1", f"turn-{turn}", None)
@@ -56,9 +60,9 @@ async def test_fifty_completed_turns_fold_without_global_restyle_or_recompose(tm
                 raise_handler_errors=True,
             )
             await bus.publish(InvocationMessage(origin=origin, text=f"Answer {turn}."), raise_handler_errors=True)
-        await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="fifty completed turns settled")
+        await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="completed turns settled")
         blocks = list(panel.query(ProcessBlock))
-        assert len(blocks) == 50
+        assert len(blocks) == _TURNS
         assert all(block.collapsed for block in blocks)
         assert {rich_plain(block.render()) for block in blocks} == {"▸ 1 tool call · 1 read"}
         assert all(block not in main.focus_chain for block in blocks)

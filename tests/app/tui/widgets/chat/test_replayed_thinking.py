@@ -103,6 +103,12 @@ def _shape(panel: ChatPanel) -> list[tuple[str, str]]:
     return shape
 
 
+def _shown_bodies(message: Widget) -> list[VirtualizedMarkdown]:
+    """The bodies *message* shows. One it builds on opening shows once the parse of its text ends, which the worker
+    that waits for it hears after the parse installs."""
+    return [body for body in message.query(VirtualizedMarkdown) if body.display]
+
+
 async def _replayed_shape(messages: list[dict[str, Any]], *, shown: bool = True) -> list[tuple[str, str]]:
     """The replayed transcript's shape; not *shown*, the panel shows no thinking at all."""
     async with ChatPanelApp(thinking_expanded=(lambda: True) if shown else None).run_test() as pilot:
@@ -367,10 +373,14 @@ async def test_a_replayed_block_builds_its_body_when_first_opened_and_hands_it_t
         absorbs_before = len([message for message in app.gc_messages if isinstance(message, GcAbsorbRequested)])
 
         await click_when_settled(pilot, thinking.query_one(_AgentHeader))
+        # The parse installing hands it to the GC freeze, and the opening shows the body once that parse ended.
         await wait_for(
-            lambda: [message for message in app.gc_messages if isinstance(message, GcAbsorbRequested)][absorbs_before:],
+            lambda: (
+                [message for message in app.gc_messages if isinstance(message, GcAbsorbRequested)][absorbs_before:]
+                and _shown_bodies(thinking)
+            ),
             pilot=pilot,
-            description="the opened body's parse is handed to the GC freeze",
+            description="the opened body's parse is handed to the GC freeze and shows",
         )
 
         (body,) = thinking.query(VirtualizedMarkdown)
@@ -384,11 +394,8 @@ async def test_a_replayed_block_builds_its_body_when_first_opened_and_hands_it_t
         )
         assert thinking.collapsed
         await click_when_settled(pilot, thinking.query_one(_AgentHeader))
-        await wait_for(
-            lambda: bool(thinking.query(VirtualizedMarkdown)), pilot=pilot, description="thinking body rebuilt"
-        )
+        await wait_for(lambda: _shown_bodies(thinking), pilot=pilot, description="thinking body rebuilt and shown")
         assert thinking.query_one(VirtualizedMarkdown) is not body
-        assert thinking.query_one(VirtualizedMarkdown).display is True
 
 
 async def test_replayed_text_between_tool_calls_builds_its_body_only_once_opened() -> None:
@@ -433,12 +440,11 @@ async def test_fold_all_opens_and_folds_replayed_thinking_with_the_tool_groups()
         assert panel.toggle_fold_all() is False
         assert [group.collapsed, *(message.collapsed for message in thinking)] == [False, False, False]
         await wait_for(
-            lambda: all(message.query(VirtualizedMarkdown) for message in thinking),
+            lambda: all(_shown_bodies(message) for message in thinking),
             pilot=pilot,
-            description="fold-all rebuilds thinking bodies",
+            description="fold-all rebuilds thinking bodies and shows them",
         )
         bodies = [message.query_one(VirtualizedMarkdown) for message in thinking]
-        assert [body.display for body in bodies] == [True, True]
 
         assert panel.toggle_fold_all() is True
         assert [group.collapsed, *(message.collapsed for message in thinking)] == [True, True, True]
@@ -472,7 +478,7 @@ async def test_fold_all_between_a_batch_registering_and_mounting_still_opens_its
         thinking = list(panel.query(ThinkingMessage))
 
         def shown_bodies() -> list[str]:
-            return [body.shown_source for message in thinking for body in message.query(VirtualizedMarkdown)]
+            return [body.shown_source for message in thinking for body in _shown_bodies(message)]
 
         # Folded as the block was composed, so its body is built once it mounts.
         assert mounted_when_folded == [False, False]
@@ -481,10 +487,7 @@ async def test_fold_all_between_a_batch_registering_and_mounting_still_opens_its
             pilot=pilot,
             description="each opened block shows its body",
         )
-        assert [(message.collapsed, message.query_one(VirtualizedMarkdown).display) for message in thinking] == [
-            (False, True),
-            (False, True),
-        ]
+        assert [message.collapsed for message in thinking] == [False, False]
 
 
 async def test_a_resumed_session_shows_its_thinking_by_default(tmp_path: Path) -> None:
