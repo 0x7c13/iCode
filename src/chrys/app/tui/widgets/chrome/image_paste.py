@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
+import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from collections.abc import Sequence
@@ -31,12 +34,15 @@ if TYPE_CHECKING:
 CLIPBOARD_IMAGE_SESSION_SUBDIR = Path("attachments") / "clipboard"
 _CLIPBOARD_IMAGE_KEEP_COUNT = 100
 _CLIPBOARD_IMAGE_KEEP_BYTES = 512 * 1024 * 1024
-_WINDOWS_CLIPBOARD_GRAB_DELAYS_SECONDS = (0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.28)
-"""Backoff between Windows clipboard reads; a snipping tool can hold the clipboard while writing a large bitmap."""
+# Pillow itself waits 500 ms and retries once while another process holds the
+# clipboard, so five attempts already ride out ~2.5 s; the paste runs on the
+# UI thread, and each extra attempt freezes it for another half second.
+_WINDOWS_CLIPBOARD_GRAB_ATTEMPTS = 5
+_WINDOWS_CLIPBOARD_GRAB_DELAY_SECONDS = 0.02
 _MACOS_JXA_TIMEOUT_SECONDS = 10.0
 _MACOS_JXA_DECODE_FORMATS = ("PNG", "TIFF")
-_MACOS_JXA_PNG_TYPES = ("public.png", "PNGf")
-_MACOS_JXA_TIFF_TYPES = ("public.tiff", "TIFF")
+# Tried in order, one fetch each: a PNG Pillow refuses still leaves the TIFF.
+_MACOS_JXA_TYPE_GROUPS = (("public.png", "PNGf"), ("public.tiff", "TIFF"))
 _CLIPBOARD_IMAGE_SAVE_MODES = frozenset({"1", "L", "LA", "P", "RGB", "RGBA"})
 
 
@@ -79,26 +85,27 @@ def save_clipboard_image_to_file(directory: Path | None) -> Path | None:
     Chrys' existing ``@file`` image attachment flow. Browser-host sessions
     must not read the server machine's clipboard because it is unrelated to
     the browser client's clipboard and may belong to a different user.
-
-    Reading runs osascript and Pillow decoding, so callers keep it off the
-    UI thread.
     """
     if directory is None or running_under_textual_web_driver():
         return None
     info = get_platform()
     if not (info.is_macos or info.is_windows):
         return None
+    from PIL import Image
+
     try:
-        clipboard_payload = _grab_clipboard(directory)
+        clipboard_payload = _grab_clipboard()
         return _path_from_clipboard_payload(clipboard_payload, directory=directory)
-    except OSError, RuntimeError, ValueError:
+    # Pillow raises SyntaxError for a broken chunk once it decodes the pixels,
+    # and DecompressionBombError for an image too large to open safely.
+    except OSError, RuntimeError, SyntaxError, ValueError, Image.DecompressionBombError:
         return None
 
 
-def _grab_clipboard(directory: Path) -> object:
-    """Return the platform clipboard payload: an image, file bytes, or file paths."""
+def _grab_clipboard() -> object:
+    """Return the clipboard payload: a macOS grab, a Windows image or file-path list, or ``None``."""
     if get_platform().is_macos:
-        return _grab_macos_clipboard_image(directory)
+        return _grab_macos_clipboard_image()
     return _grab_windows_clipboard()
 
 
@@ -106,62 +113,95 @@ def _grab_windows_clipboard() -> object:
     """Read the Windows clipboard with retries for transient clipboard-owner races."""
     from PIL import ImageGrab
 
-    for delay in _WINDOWS_CLIPBOARD_GRAB_DELAYS_SECONDS:
+    for attempt in range(_WINDOWS_CLIPBOARD_GRAB_ATTEMPTS):
         try:
             return ImageGrab.grabclipboard()
         except OSError:
-            time.sleep(delay)
-    return ImageGrab.grabclipboard()
+            if attempt == _WINDOWS_CLIPBOARD_GRAB_ATTEMPTS - 1:
+                raise
+            time.sleep(_WINDOWS_CLIPBOARD_GRAB_DELAY_SECONDS)
+
+    return None
 
 
-def _grab_macos_clipboard_image(directory: Path) -> _ClipboardImageGrab | None:
-    """Read the pasteboard image with one JXA osascript call.
+def _grab_macos_clipboard_image() -> _ClipboardImageGrab | None:
+    """Read the pasteboard image with JXA osascript calls.
 
     ``get the clipboard as «class PNGf»`` marshals the image as hex text and
-    runs past any sane timeout on multi-megabyte screenshots; the JXA call
-    writes the raw bytes to a file instead. PNG wins over TIFF so screenshots
-    paste without decoding the uncompressed TIFF flavor.
+    runs past any sane timeout on multi-megabyte screenshots; JXA writes the
+    raw bytes to a file instead. PNG goes first so screenshots paste without
+    decoding the uncompressed TIFF flavor. AppKit offers a TIFF flavor for
+    every image it holds, so JPEG and GIF copies arrive as TIFF.
     """
+    # One budget for all fetches: a pasteboard that hangs one fetch would hang the next.
+    deadline = time.monotonic() + _MACOS_JXA_TIMEOUT_SECONDS
+    for types in _MACOS_JXA_TYPE_GROUPS:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        grab = _grab_macos_clipboard_types(types, timeout=remaining)
+        if grab is not None:
+            return grab
+    return None
+
+
+def _grab_macos_clipboard_types(types: Sequence[str], *, timeout: float) -> _ClipboardImageGrab | None:
+    """Fetch the pasteboard data for the first of *types* it holds, and decode it."""
     from PIL import Image, UnidentifiedImageError
 
+    tmp = _reserve_macos_grab_file()
+    grab: _ClipboardImageGrab | None = None
     try:
-        directory.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return None
-    tmp = directory / f".clipboard-grab-{uuid.uuid4().hex}.tmp"
-    if not _run_macos_jxa_fetch(tmp):
-        return None
-    try:
-        with Image.open(tmp, formats=_MACOS_JXA_DECODE_FORMATS) as image:
-            image.load()
-            return _ClipboardImageGrab(image=image, source_path=tmp)
-    except UnidentifiedImageError, OSError, ValueError:
-        with suppress(OSError):
-            tmp.unlink(missing_ok=True)
-        return None
+        with suppress(UnidentifiedImageError, Image.DecompressionBombError, OSError, SyntaxError, ValueError):
+            if _run_macos_jxa_fetch(tmp, types, timeout=timeout):
+                with Image.open(tmp, formats=_MACOS_JXA_DECODE_FORMATS) as image:
+                    image.load()
+                    grab = _ClipboardImageGrab(image=image, source_path=tmp)
+    finally:
+        # Until a grab takes the file, whatever the fetch wrote goes with it.
+        if grab is None:
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
+    return grab
 
 
-def _run_macos_jxa_fetch(destination: Path) -> bool:
-    """Write the pasteboard's first supported image to *destination*.
+def _reserve_macos_grab_file() -> Path:
+    """Create an empty owner-only (0600) file in the user's temp dir for the pasteboard bytes.
+
+    Outside the session dir, a paste with no image creates no attachment
+    folder, and a file left behind when iCode dies mid-paste goes with the
+    OS's temp cleanup. The JXA fills this file in place, so the clipboard
+    image stays private even when ``TMPDIR`` points at a directory other
+    users can read; a file JXA created itself would take the umask,
+    typically 0644.
+    """
+    fd, name = tempfile.mkstemp(prefix="chrys-clipboard-grab-", suffix=".tmp")
+    os.close(fd)
+    return Path(name)
+
+
+def _run_macos_jxa_fetch(destination: Path, types: Sequence[str], *, timeout: float) -> bool:
+    """Write the pasteboard data for the first of *types* it holds to *destination*.
 
     Returns ``True`` only when the file holds bytes afterwards: a pasteboard
-    without PNG/TIFF data leaves no file, and subprocess failures count as no
-    image. ``TimeoutExpired`` is a ``SubprocessError``, which the caller's
-    ``except OSError`` cannot catch — it dies here.
+    without any of *types* leaves it empty, and subprocess failures, a
+    *timeout* included, count as no image. ``TimeoutExpired`` is a
+    ``SubprocessError``, which the caller's ``except OSError`` cannot catch —
+    it dies here.
     """
     try:
-        subprocess.run(  # noqa: S603 - fixed osascript path and a fixed script with an escaped destination.
+        subprocess.run(  # noqa: S603 - fixed osascript path and a fixed script with JSON-encoded strings.
             [
                 "/usr/bin/osascript",
                 "-l",
                 "JavaScript",
                 "-e",
-                _macos_jxa_fetch_script(str(destination)),
+                _macos_jxa_fetch_script(str(destination), types),
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             check=False,
-            timeout=_MACOS_JXA_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except subprocess.SubprocessError, FileNotFoundError, OSError:
         return False
@@ -171,23 +211,23 @@ def _run_macos_jxa_fetch(destination: Path) -> bool:
         return False
 
 
-def _macos_jxa_fetch_script(destination: str) -> str:
-    """Build the JXA that writes the pasteboard's PNG/TIFF bytes to *destination*.
+def _macos_jxa_fetch_script(destination: str, types: Sequence[str]) -> str:
+    """Build the JXA that writes the data for the first of *types* on the pasteboard to *destination*.
 
     Type matching must go through ``containsObject``: JXA does not bridge the
     pasteboard's NSString elements to JS strings, so ``types.js.includes``
-    never matches and no image would be written.
+    never matches and no image would be written. Strings are JSON-encoded: a
+    JSON string is a JavaScript string literal, so any path, newlines
+    included, survives. The write is not atomic, so it fills the reserved
+    owner-only file in place and keeps its mode; an atomic write's side file
+    would also outlive an osascript killed mid-write.
     """
-    escaped = destination.replace("\\", "\\\\").replace("'", "\\'")
-    png_types = ", ".join(f"'{candidate}'" for candidate in _MACOS_JXA_PNG_TYPES)
-    tiff_types = ", ".join(f"'{candidate}'" for candidate in _MACOS_JXA_TIFF_TYPES)
     return (
         "ObjC.import('AppKit');"
         "const pasteboard = $.NSPasteboard.generalPasteboard;"
-        "const pick = (candidates) => candidates.find((type) => pasteboard.types.containsObject(type));"
-        f"const imageType = pick([{png_types}]) || pick([{tiff_types}]);"
+        f"const imageType = {json.dumps(list(types))}.find((type) => pasteboard.types.containsObject(type));"
         "if (imageType !== undefined) {"
-        f"pasteboard.dataForType(imageType).writeToFileAtomically('{escaped}', true);"
+        f"pasteboard.dataForType(imageType).writeToFileAtomically({json.dumps(destination)}, false);"
         "}"
     )
 
@@ -210,7 +250,11 @@ def _save_clipboard_image(
     directory: Path,
     source_path: Path | None = None,
 ) -> Path | None:
-    """Save *image* as PNG in *directory*; a PNG *source_path* moves in without re-encoding."""
+    """Save *image* as PNG in *directory*; a PNG *source_path* moves in without re-encoding.
+
+    ``shutil.move`` because the temp dir and the session dir can be on
+    different volumes.
+    """
     converted: Image.Image | None = None
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -220,7 +264,7 @@ def _save_clipboard_image(
             converted = image.convert("RGBA")
             image_to_save = converted
         if source_path is not None and image_to_save is image and image.format == "PNG":
-            os.replace(source_path, path)
+            shutil.move(source_path, path)
         else:
             image_to_save.save(path, format="PNG")
         saved = path.resolve(strict=True)
