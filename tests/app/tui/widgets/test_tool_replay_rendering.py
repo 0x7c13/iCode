@@ -26,6 +26,7 @@ from chrys.app.tui.widgets.chat.tool_call import (
     ToolCall,
     ToolCardHeader,
     ToolGroup,
+    ToolGroupTitle,
 )
 from chrys.app.tui.widgets.chat.tool_renderers import register_kind_renderer
 from chrys.app.tui.widgets.hatch import HATCH_GLYPH
@@ -102,8 +103,7 @@ async def test_replay_history_defers_tool_renderer_creation_until_expand(monkeyp
         assert group._tool_records["tool1#0"].duration_known is True
         expected_tool_timestamp = format_message_created_at("2026-08-19T01:02:03+00:00")
         assert group._tool_records["tool1#0"].timestamp == expected_tool_timestamp
-        assert group._elapsed_ms() == 0
-        assert group._timer is None
+        assert group.query_one(ToolGroupTitle).render().plain == "▸ Made 1 other call"
 
         group.collapsed = False
         await wait_for(lambda: created, pilot=pilot, description="created")

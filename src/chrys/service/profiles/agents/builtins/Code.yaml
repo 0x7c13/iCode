@@ -160,7 +160,6 @@ tools:
     - shell
     - search
     - ask_user
-    - sleep
     - doc_converter
     - todo
 

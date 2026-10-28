@@ -607,7 +607,7 @@ async def test_agent_config_clone_builtin_saves_editable_custom_copy(
             "#bc-name",
             "#bc-model-use-active",
             "#tc-cat-filesystem-read",
-            "#tc-cat-sleep",
+            "#tc-cat-todo",
         )
         # The input mounts in its builtin (disabled) state then transitions
         # to enabled for the custom clone — wait for that transition.
@@ -615,7 +615,7 @@ async def test_agent_config_clone_builtin_saves_editable_custom_copy(
         await _wait_for_hydrated(screen, pilot)
 
         copied = screen._drafts[screen._selected_draft_key].profile
-        assert screen.query_one("#tc-cat-sleep", Checkbox).value is True
+        assert screen.query_one("#tc-cat-todo", Checkbox).value is True
         save = screen.query_one("#ac-save", Button)
         await wait_for(
             lambda: not save.disabled,
@@ -661,7 +661,7 @@ async def test_agent_config_clone_builtin_saves_editable_custom_copy(
     assert copied.model == original.model
     assert saved is not None
     assert set(saved.tools.builtins) == set(original.tools.builtins)
-    assert "sleep" in saved.tools.builtins
+    assert "todo" in saved.tools.builtins
     assert [ref.profile for ref in saved.sub_agents.agents] == [ref.profile for ref in original.sub_agents.agents]
     assert [ref.tool_name for ref in saved.sub_agents.agents] == [ref.tool_name for ref in original.sub_agents.agents]
     assert not registry.is_builtin(copied.name)

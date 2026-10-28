@@ -180,6 +180,23 @@ def test_runtime_details_dialog_merges_web_tool_and_provider_details() -> None:
     assert _section_text(sections[0]).splitlines() == ["web_search", "corp: https://search.example.com"]
 
 
+def test_runtime_details_dialog_lists_context_tools_before_sub_agent_tools() -> None:
+    details = AgentRuntimeDetails(
+        builtin_tools={"sleep": ["sleep"]},
+        context_tools=["compress_context", "recall_context", "list_compressed_contexts"],
+        sub_agent_tools=["Explore"],
+    )
+
+    sections = RuntimeDetailsDialog(details)._tool_sections()
+
+    assert [str(section.border_title) for section in sections] == [
+        "sleep",
+        "Context management tools",
+        "Sub-agent tools",
+    ]
+    assert _section_text(sections[1]).splitlines() == ["compress_context", "recall_context", "list_compressed_contexts"]
+
+
 def test_runtime_details_dialog_groups_mcp_tools_and_failures() -> None:
     details = AgentRuntimeDetails(
         mcp_tools={

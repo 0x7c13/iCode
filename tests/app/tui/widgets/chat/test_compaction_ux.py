@@ -26,14 +26,16 @@ from chrys.app.tui.widgets.chat.agent_transcript_surface import (
 )
 from chrys.app.tui.widgets.chat.compaction_card import CompactionCard, CompactionCardTitle
 from chrys.app.tui.widgets.chat.live_renderer import LiveTranscriptRenderer
+from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.toc_model import TurnTocModel
-from chrys.app.tui.widgets.chat.tool_call import ToolCopyButton, is_tool_copy_excluded
+from chrys.app.tui.widgets.chat.tool_call import ToolCopyButton, ToolGroup, is_tool_copy_excluded
 from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
-from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.config.settings import Settings
-from tests.support.tui_helpers import mount_sub_agent_detail
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ
+from tests.support.pilot_barrier import screen_is_settled
+from tests.support.tui_helpers import ChatPanelApp, mount_sub_agent_detail
 from tests.support.waiting import wait_for
 
 
@@ -76,7 +78,7 @@ class _FakeToolGroup:
     def finalize_activity_header(self) -> None:
         return None
 
-    def cancel_running(self) -> None:
+    def cancel_running(self, *, stopped_at: float | None = None) -> None:
         return None
 
 
@@ -108,15 +110,18 @@ class _CardApp(App):
 
 
 @pytest.mark.asyncio
-async def test_compaction_card_running_state_shows_indicator_and_label() -> None:
+async def test_compaction_card_running_state_shows_its_running_dot_before_the_label() -> None:
     async with _CardApp().run_test() as pilot:
         await pilot.pause()
         card = pilot.app.query_one(CompactionCard)
 
         assert card.status == "running"
-        assert card.query_one(ChrysLoadingIndicator).display is True
-        label = card.query_one("#compaction-label", Static).render().plain
-        assert "Compacting conversation..." in label
+        title = card.query_one(CompactionCardTitle)
+        assert title._work_running is True
+        # The dot blinks between its lit and dim glyphs.
+        label = title.render().plain
+        assert label[:2] in {"• ", "◦ "}
+        assert label[2:].startswith("Compacting conversation...")
         assert card.query_one("#compaction-note-panel").display is False
 
 
@@ -179,7 +184,7 @@ async def test_compaction_card_header_is_copy_excluded_but_note_is_selectable() 
         await pilot.pause()
         card = pilot.app.query_one(CompactionCard)
 
-        assert is_tool_copy_excluded(card.query_one(ChrysLoadingIndicator))
+        # The title carries the running dot.
         assert is_tool_copy_excluded(card.query_one("#compaction-label", Static))
         assert is_tool_copy_excluded(card.query_one(ToolCopyButton))
         assert not is_tool_copy_excluded(card.query_one("#compaction-note", VirtualizedMarkdown))
@@ -196,7 +201,7 @@ async def test_compaction_card_completes_with_summary_collapsed_by_default() -> 
         await pilot.pause()
 
         assert card.status == "ok"
-        assert card.query_one(ChrysLoadingIndicator).display is False
+        assert card.query_one(CompactionCardTitle)._work_running is False
         label = card.query_one("#compaction-label", Static).render().plain
         assert "Conversation summarized ✓" in label
         assert "(1m 8s)" in label
@@ -204,7 +209,7 @@ async def test_compaction_card_completes_with_summary_collapsed_by_default() -> 
         assert card.collapsed is True
         assert card.query_one("#compaction-note-panel").display is False
         assert card.query_one("#compaction-note", VirtualizedMarkdown).source == note
-        assert label.startswith("▶ ")
+        assert label.startswith("▸ ")
 
 
 @pytest.mark.asyncio
@@ -375,7 +380,7 @@ async def test_compaction_card_header_click_toggles_summary_panel() -> None:
         assert not card.has_class("-collapsed")
         assert card.query_one("#compaction-note-panel").display is True
         label = card.query_one("#compaction-label", Static).render().plain
-        assert label.startswith("▼ ")
+        assert label.startswith("▾ ")
 
         await pilot.click(CompactionCardTitle)
         await pilot.pause()
@@ -383,7 +388,7 @@ async def test_compaction_card_header_click_toggles_summary_panel() -> None:
         assert card.collapsed is True
         assert card.query_one("#compaction-note-panel").display is False
         label = card.query_one("#compaction-label", Static).render().plain
-        assert label.startswith("▶ ")
+        assert label.startswith("▸ ")
 
 
 @pytest.mark.asyncio
@@ -464,6 +469,27 @@ async def test_add_compaction_start_closes_group_and_mounts_card() -> None:
     assert "anchor_sync" in calls
     assert isinstance(mount.widgets[0], CompactionCard)
     assert mount.widgets[0].compaction_id == "c-1"
+
+
+@pytest.mark.asyncio
+async def test_a_compaction_card_keeps_a_blank_row_below_a_folded_tool_group() -> None:
+    """Thinking and tool rows have no vertical margin: the card's own top margin keeps the row between them."""
+    app = ChatPanelApp()
+    async with app.run_test(size=(70, 20)) as pilot:
+        panel = app.query_one(ChatPanel)
+        await panel.add_user_message("prompt")
+        await panel.add_tool_start("r1", "read_file", KIND_FILESYSTEM_READ, args={})
+        await panel.add_tool_result("r1", "read_file", "ok")
+        await panel.add_compaction_start("c-1")
+        group = panel.query_one(ToolGroup)
+        card = panel.query_one(CompactionCard)
+        await wait_for(
+            lambda: group.collapsed and card.region.height > 0 and screen_is_settled(app, app.screen),
+            pilot=pilot,
+            description="the card mounted below the folded group",
+        )
+
+        assert card.region.y == group.region.bottom + 1
 
 
 @pytest.mark.asyncio

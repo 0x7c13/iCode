@@ -118,7 +118,7 @@ tools:
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `builtins` | 字符串列表 | `[]` | 要启用的内置工具类别，可用值见[类别和名称概览](./tool-kinds-and-names.md#类别和名称概览)中“内置”为“是”的行。内置智能体都不包含 `web_search` 和 `web_fetch`。 |
+| `builtins` | 字符串列表 | `[]` | 要启用的内置工具类别，可用值见[类别和名称概览](./tool-kinds-and-names.md#类别和名称概览)中“内置”为“是”的行。内置智能体都不包含 `web_search` 和 `web_fetch`。每个智能体都有 `sleep`，无需列出。 |
 | `mcp` | 对象列表 | `[]` | 模型上下文协议（Model Context Protocol，MCP）服务器配置，见 [tools.mcp](#toolsmcp)。 |
 | `shell_filter` | 字符串或对象 | 未设置（不进行 Shell 过滤） | 限制 Shell 工具可以执行的命令，见 [tools.shell_filter](#toolsshell_filter)。 |
 | `web_search` | 对象 | 未设置（使用用户设置） | `web_search` 工具的模式和搜索提供方，见 [tools.web_search](#toolsweb_search)。 |

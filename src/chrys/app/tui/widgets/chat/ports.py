@@ -224,7 +224,11 @@ class ChatScrollHost(Protocol):
 
     def place_fixed_scroll_button(self, result: DockArrangeResult, size: Size) -> None: ...
 
+    def is_infrastructure(self, widget: Widget) -> bool: ...
+
     def bottom_spacer(self) -> Widget | None: ...
+
+    def bottom_gap(self) -> Widget | None: ...
 
     def scroll_to_bottom_button(self) -> Widget | None: ...
 
@@ -239,16 +243,3 @@ class ChatScrollHost(Protocol):
     def refresh(self, *, layout: bool = False) -> Self: ...
 
     def set_timer(self, delay: float, callback: Callable[[], object]) -> Timer: ...
-
-
-class ChatTranscriptPanelMarker:
-    """Nominal marker base identifying the chat transcript panel.
-
-    Chat helper modules must not import :mod:`chrys.app.tui.widgets.chat.panel`
-    (see ``tests/architecture/test_tui_structure.py``). Helpers that need to
-    recognize the transcript panel among a widget's ancestors — e.g. the
-    selection controller's hot per-mouse-move filter — check this base with a
-    plain ``isinstance`` instead of importing the concrete ``ChatPanel``.
-    """
-
-    __slots__ = ()

@@ -49,7 +49,7 @@ def test_enabling_web_search_without_configuration_uses_keyless_exa():
     ):
         registry = ToolRegistry()
         registry.load_builtins(["web_search"], settings=Settings(), web=assemble(["web_search"]))
-        tools = registry.get_all()
+        tools = registry.get_by_category("web_search")
     assert [tool.name for tool in tools] == ["web_search"]
     assert get_tool_kind(tools[0]) == "web_search"
     assert "exa (https://mcp.exa.ai)" in tools[0].description

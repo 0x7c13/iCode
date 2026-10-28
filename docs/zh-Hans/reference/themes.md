@@ -112,6 +112,7 @@ variables:
 | --- | --- | --- |
 | `border-color` | 各区域原有的配色 | 统一普通界面边框；消息、警告和错误状态边框仍保留各自颜色，按钮边框仍跟随按钮背景 |
 | `tool-group-title-color` | `warning` | 工具调用组标题 |
+| `user-message-background` | `foreground` 的 6% 不透明度混合色（`chrys` 和 `chrys-legacy`：`#262626`） | 聊天中你发送的消息的背景；ANSI 主题沿用终端背景 |
 | `control-background`、`control-background-muted` | `surface` | 控件的背景及弱化背景 |
 | `control-disabled-background` | `background` | 禁用控件背景 |
 | `control-foreground-muted` | `text-disabled` | 控件的弱化文字 |

@@ -1173,6 +1173,8 @@ class AgentRuntimeDetails:
     model: RuntimeModelDetails = field(default_factory=RuntimeModelDetails)
     builtin_tools: dict[str, list[str]] = field(default_factory=dict)
     web_search_providers: dict[str, str] = field(default_factory=dict)
+    context_tools: list[str] = field(default_factory=list)
+    """The context management tools the agent has besides its built-in ones: compressing and recalling context."""
     sub_agent_tools: list[str] = field(default_factory=list)
     mcp_tools: dict[str, list[str]] = field(default_factory=dict)
     mcp_failures: dict[str, str] = field(default_factory=dict)

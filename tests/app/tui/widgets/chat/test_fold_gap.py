@@ -1,0 +1,224 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""A turn's fold rows stand one blank row apart: a gap above a row that follows a folded one, its guide under the arrows."""
+
+from __future__ import annotations
+
+from itertools import pairwise
+
+from textual.geometry import Region
+from textual.widget import Widget
+
+from chrys.app.tui.widgets.chat.agent_transcript_surface import (
+    AgentTranscriptJournal,
+    AgentTranscriptSurface,
+    TranscriptAssistantOp,
+    TranscriptToolResultOp,
+    TranscriptToolStartOp,
+)
+from chrys.app.tui.widgets.chat.fold_gap import FOLD_GAP_ROWS, FoldGap
+from chrys.app.tui.widgets.chat.messages import AgentMessage, ThinkingMessage, UserMessage
+from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
+from chrys.app.tui.widgets.chat.tool_call import ToolGroup
+from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
+from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_SHELL
+from tests.support.pilot_barrier import screen_is_settled
+from tests.support.tui_helpers import ChatPanelApp, LocalizedWidgetApp
+from tests.support.waiting import wait_for
+
+
+async def _steps(panel: ChatPanel, steps: int) -> None:
+    """Thinking, then a command, *steps* times: the turn moving on folds each."""
+    for index in range(steps):
+        await panel.add_thinking_delta(f"r{index}", "reasoning", f"Step {index}.")
+        panel.finish_thinking_segment(f"r{index}")
+        await panel.add_tool_start(f"s{index}", "zsh", KIND_SHELL, args={"command": "make"})
+        await panel.add_tool_result(f"s{index}", "zsh", "ok")
+
+
+def _rows(panel: ChatPanel) -> list[Widget]:
+    """The fold rows shown, in order."""
+    return [child for child in panel.displayed_children if isinstance(child, (ThinkingMessage, ToolGroup))]
+
+
+def _top_row(widget: Widget) -> str:
+    """The row *widget* draws at its top, under what it shows."""
+    return widget.render_lines(Region(0, 0, widget.outer_size.width, 1))[0].text
+
+
+def _header(row: Widget) -> Widget:
+    return row.children[0]
+
+
+async def test_rows_under_an_open_summary_stand_one_gap_apart_and_the_last_has_none_below_it() -> None:
+    app = ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True)
+    async with app.run_test(size=(90, 40)) as pilot:
+        panel = app.query_one(ChatPanel)
+        await panel.add_user_message("prompt")
+        await _steps(panel, 3)
+        await panel.add_answer_delta("a", "Done.")
+        panel.finish_answer_segment("a", completed=True)
+        await panel.add_agent_message("Done.")
+        block = panel.query_one(ProcessBlock)
+        block.action_toggle_process()
+        await wait_for(
+            lambda: len(_rows(panel)) == 6 and screen_is_settled(app, panel.screen),
+            pilot=pilot,
+            description="the summary opened to its rows",
+        )
+        rows = _rows(panel)
+        assert all(isinstance(row, FoldGap) and row.ends_folded() for row in rows)
+        # The first follows the summary row, each next one the row before it: a gap above each.
+        assert rows[0].region.y == block.region.bottom
+        for above, row in pairwise(rows):
+            assert row.region.y == above.region.bottom
+        for row in rows:
+            assert row.gap_above
+            assert row.outer_size.height == FOLD_GAP_ROWS + 1
+            assert _header(row).region.y == row.region.y + FOLD_GAP_ROWS
+            # Its own guide, then the gap's under the fold arrow.
+            assert _top_row(row)[:3] == "│ │"
+            assert _header(row).region.x == row.region.x + 2
+        # Nothing follows the last row but the margin before the answer.
+        answer = panel.query(AgentMessage).last()
+        assert answer.region.y == rows[-1].region.bottom + 1
+        assert not answer.gap_above
+
+
+async def test_an_open_row_s_own_blank_row_parts_it_from_the_row_below_until_it_folds_again() -> None:
+    app = ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True)
+    async with app.run_test(size=(90, 40)) as pilot:
+        panel = app.query_one(ChatPanel)
+        await panel.add_user_message("prompt")
+        await _steps(panel, 2)
+        await panel.add_agent_message("Done.")
+        panel.query_one(ProcessBlock).action_toggle_process()
+        await wait_for(lambda: len(_rows(panel)) == 4, pilot=pilot, description="the summary opened")
+        thinking, group = _rows(panel)[2:]
+        assert isinstance(thinking, ThinkingMessage)
+
+        thinking.collapsed = False
+        await wait_for(
+            lambda: not group.gap_above and screen_is_settled(app, panel.screen),
+            pilot=pilot,
+            description="the row below the open thinking gave up its gap",
+        )
+        assert thinking.gap_above
+        assert group.region.y == thinking.region.bottom
+        assert group.outer_size.height == 1
+        assert _header(group).region.y == group.region.y
+
+        thinking.collapsed = True
+        await wait_for(
+            lambda: group.gap_above and screen_is_settled(app, panel.screen),
+            pilot=pilot,
+            description="the row below the folded thinking took its gap back",
+        )
+        assert group.region.y == thinking.region.bottom
+        assert group.outer_size.height == FOLD_GAP_ROWS + 1
+
+
+async def test_a_live_turn_s_first_row_follows_its_prompt_with_no_gap() -> None:
+    async with ChatPanelApp(thinking_expanded=lambda: False).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_user_message("prompt")
+        await _steps(panel, 1)
+        await wait_for(
+            lambda: len(_rows(panel)) == 2 and screen_is_settled(pilot.app, panel.screen),
+            pilot=pilot,
+            description="the turn's rows laid out",
+        )
+        first, second = _rows(panel)
+        prompt = panel.query_one(UserMessage)
+        assert not first.gap_above
+        assert first.region.y == prompt.region.bottom + prompt.styles.margin.bottom
+        assert second.gap_above
+
+
+async def test_the_waiting_row_below_a_folded_row_keeps_its_gap_so_the_next_row_s_arrow_comes_in_at_its_dot() -> None:
+    async with ChatPanelApp(thinking_expanded=lambda: False).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        panel.agent_running = True
+        await panel.add_user_message("prompt")
+        await panel.add_thinking_delta("r", "reasoning", "Look at the file.")
+        panel.finish_thinking_segment("r")
+        row = panel.query_one(WaitingRow)
+        await wait_for(
+            lambda: row.display and row.gap_above and screen_is_settled(pilot.app, panel.screen),
+            pilot=pilot,
+            description="the turn waits below its folded thinking",
+        )
+        assert row.outer_size.height == FOLD_GAP_ROWS + 1
+        assert row.render().plain.split("\n")[0] == "│"
+        dot_y = row.region.y + FOLD_GAP_ROWS
+
+        await panel.add_tool_start("c", "read_file", KIND_FILESYSTEM_READ, args={"path": "a.py"})
+        group = panel.query_one(ToolGroup)
+        await wait_for(
+            lambda: not row.display and group.gap_above and screen_is_settled(pilot.app, panel.screen),
+            pilot=pilot,
+            description="the tool call took the waiting row's place",
+        )
+        assert _header(group).region.y == dot_y
+
+
+async def test_text_below_a_folded_row_folds_with_its_gap_and_parts_the_tool_call_after_it_by_one() -> None:
+    """The text settles and folds as the call starts: a folded row below a folded row, then the call's below it."""
+    async with ChatPanelApp().run_test(size=(80, 40)) as pilot:
+        app = pilot.app
+        panel = app.query_one(ChatPanel)
+        panel.agent_running = True
+        await panel.add_user_message("prompt")
+        await panel.add_tool_start("c1", "read_file", KIND_FILESYSTEM_READ, args={"path": "a.py"})
+        await panel.add_tool_result("c1", "read_file", "ok")
+        text = "\n\n".join(f"Line {index}." for index in range(5))
+        await panel.add_answer_delta("a", text)
+        panel.finish_answer_segment("a", completed=True)
+        group = panel.query_one(ToolGroup)
+        note = panel.query(AgentMessage).last()
+        await wait_for(
+            lambda: (
+                group.collapsed
+                and note.query_one(VirtualizedMarkdown).source == text
+                and screen_is_settled(app, panel.screen)
+            ),
+            pilot=pilot,
+            description="the note laid out below the folded group",
+        )
+        assert not note.gap_above
+
+        await panel.add_tool_start("c2", "read_file", KIND_FILESYSTEM_READ, args={"path": "b.py"})
+        following = panel.query(ToolGroup).last()
+        await wait_for(
+            lambda: following is not group and note.collapsed and screen_is_settled(app, panel.screen),
+            pilot=pilot,
+            description="the next tool call folded the note",
+        )
+        assert note.gap_above and following.gap_above
+        assert note.outer_size.height == FOLD_GAP_ROWS + 1
+        assert following.region.y == note.region.bottom
+        assert _header(following).region.y == note.region.bottom + FOLD_GAP_ROWS
+
+
+async def test_a_nested_transcript_parts_text_from_the_folded_tool_group_above_it() -> None:
+    journal = AgentTranscriptJournal()
+    surface = AgentTranscriptSurface(journal)
+    async with LocalizedWidgetApp(lambda: surface).run_test() as pilot:
+        journal.record(TranscriptToolStartOp("c1", "read_file", KIND_FILESYSTEM_READ, {"path": "a.py"}))
+        journal.record(TranscriptToolResultOp("c1", "read_file", "ok"))
+        journal.record(TranscriptAssistantOp("Next, the tests."))
+        journal.record(TranscriptToolStartOp("c2", "read_file", KIND_FILESYSTEM_READ, {"path": "b.py"}))
+        await wait_for(
+            lambda: len(surface.query(ToolGroup)) == 2 and screen_is_settled(pilot.app, surface.screen),
+            pilot=pilot,
+            description="the text settled between the two tool groups",
+        )
+        above, below = surface.query(ToolGroup)
+        text = surface.query_one(AgentMessage)
+        assert above.collapsed and not above.gap_above
+        assert text.gap_above
+        assert text.region.y == above.region.bottom
+        # Open text ends with its own blank row.
+        assert not text.collapsed and not below.gap_above

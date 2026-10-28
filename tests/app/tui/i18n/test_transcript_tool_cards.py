@@ -366,15 +366,15 @@ async def test_compaction_state_labels_render_chinese_with_literal_reason() -> N
             return card.query_one("#compaction-label", Static).render().plain
 
         assert "正在压缩对话..." in _label(running)
-        assert _label(summarized) == "▶ 对话已总结 ✓ (1m 8s)"
+        assert _label(summarized) == "▸ 对话已总结 ✓ (1m 8s)"
         assert _label(interrupted) == "✗ 压缩已中断 (1s)"
         assert _label(failed) == "✗ 压缩失败 (1s)"
         assert _label(reasoned) == "✗ 压缩失败（[quota] limit exceeded\nRetry-After: 30）"  # noqa: RUF001
 
 
 @pytest.mark.asyncio
-async def test_tool_group_title_renders_balanced_parentheses_per_locale() -> None:
-    from chrys.app.tui.widgets.chat.tool_call import ToolGroup
+async def test_tool_group_title_summarizes_its_calls_per_locale() -> None:
+    from chrys.app.tui.widgets.chat.tool_call import ToolGroup, ToolGroupTitle
 
     class _EnglishHost(App[None]):
         def __init__(self, widget: Widget) -> None:
@@ -392,7 +392,8 @@ async def test_tool_group_title_renders_balanced_parentheses_per_locale() -> Non
         localized_group.finalize_activity_header()
         await pilot.pause()
 
-        assert localized_group._title_text().plain == "▼ 工具（1/1）"  # noqa: RUF001
+        # The row says what the calls did, in the words of the language.
+        assert localized_group.query_one(ToolGroupTitle).render().plain == "▾ 运行 1 条命令"
 
     english_group = ToolGroup()
     english_app = _EnglishHost(english_group)
@@ -402,4 +403,4 @@ async def test_tool_group_title_renders_balanced_parentheses_per_locale() -> Non
         english_group.finalize_activity_header()
         await pilot.pause()
 
-        assert english_group._title_text().plain == "▼ Tools (1/1)"
+        assert english_group.query_one(ToolGroupTitle).render().plain == "▾ Ran 1 command"

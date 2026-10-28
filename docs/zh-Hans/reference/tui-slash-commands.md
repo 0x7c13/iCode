@@ -47,14 +47,14 @@
 | `/language [locale]` | — | 切换界面显示语言。详见[外观设置](../guides/configuration/settings.md#外观)。 | `locale`：直接切换到指定语言。当前支持 `system`（跟随系统）、`en`（英文）和 `zh-Hans`（简体中文）。省略参数时，按空格键或 **Enter** 显示可用值。 |
 | `/chdir [path]` | `/cd` | 切换当前会话的工作目录。详见[在会话中切换工作目录](../guides/daily-use/workspaces.md#在会话中切换工作目录)。 | `path`：已存在的目标目录，可以使用绝对路径或相对于当前工作目录的路径。省略时打开目录选择器。 |
 | `/copy [N]`<br>`/copy agent [N\|all]`<br>`/copy user [N\|all]`<br>`/copy all` | — | 将对话内容复制到剪贴板。 | 省略参数：复制最近一条智能体消息（智能体在工具调用之间显示的文本也算作单独一条）。<br>`N`：要复制的最近智能体消息数，必须是正整数；`/copy N` 是 `/copy agent N` 的简写。<br>`agent [N\|all]`：复制最近 `N` 条或全部智能体消息；省略数量时复制最近一条。<br>`user [N\|all]`：复制最近 `N` 条或全部用户消息；省略数量时复制最近一条。<br>`all`：复制完整对话记录。 |
-| `/fold` | — | 统一切换执行过程块、工具调用组和**思考**。有展开的内容就全部收起，否则全部展开，包括过程块里的详情；仍在写出的思考和等待你输入的控件除外。 | — |
+| `/fold` | — | 统一切换执行过程块、工具调用组、**思考**和工具调用之间的文字。有展开的内容就全部收起，否则全部展开，包括过程块里的详情；仍在写出的思考和等待你输入的控件除外。 | — |
 | `/diff` | — | 打开差异视图，逐行显示当前会话产生的新增、修改和删除文件，便于检查智能体所做的更改。当前工作目录内的文件显示在目录树中，目录外的文件显示在 **External（外部）** 分组中；正在运行的轮次也按此规则显示。 | — |
 | `/rollback`<br>`/rollback <N>`<br>`/rollback to <N>` | — | 回滚分为两种：仅回滚对话并保留当前文件变更；同时回滚对话，并恢复 iCode 能够恢复的文件变更。回滚还会停止被丢弃轮次启动的[后台命令](../guides/configuration/tools.md#在后台继续运行的命令)。回滚结果无法撤销。 | 省略参数：打开回滚选择器，默认选择最近的可回滚目标。通过“回滚”窗口左下角的文件还原选项（名称中会显示文件数量），可以决定是否同时恢复文件变更。<br>`N`：立即丢弃最近 `N` 轮，必须是正整数。从一次用户提交开始，到该次智能体运行结束为一轮。<br>`to N`：保留第 1 轮至第 `N` 轮并丢弃之后的轮次；`N` 必须是非负整数，`0` 表示回到会话开始处。<br>`/rollback N` 和 `/rollback to N` 都会立即执行（只有会停止正在运行的后台命令时才会先询问），并恢复被丢弃轮次中 iCode 能够恢复的文件变更。 |
 | `/approval [manual\|auto\|bypass]` | — | 切换当前审批模式，所选模式也会保存为下次启动的默认模式（`bypass` 保存为 `auto`）。详见[配置审批模式](../guides/configuration/approval.md)。 | `manual`：需要审批的调用由用户决定。<br>`auto`：由审批裁判模型判断；无法确认安全的调用仍交由用户决定。<br>`bypass`：跳过工具调用审批。<br>省略参数：按空格键或 **Enter** 显示审批模式建议列表。 |
 | `/models` | — | 打开模型配置窗口。详见[配置模型](../guides/configuration/models.md)。 | — |
 | `/buddy [command]` | — | 管理 Buddy 伙伴。尚未孵化时，只能使用 `hatch`；孵化后可使用其余选项。 | 省略参数：按空格键或 **Enter** 显示可用命令。<br>`hatch`：孵化新伙伴。<br>`info`：显示伙伴信息。<br>`pet`：与伙伴互动并生成回复。<br>`mute`：开启或关闭伙伴通知。<br>`name <new-name>`：将伙伴重命名为 `new-name`。 |
 | `/agents [target]` | `/agent`<br>`/config` | 打开智能体配置窗口。详见[配置智能体](../guides/configuration/agents.md#打开智能体配置窗口)。 | 省略参数：按空格键或 **Enter** 显示可用标签页。<br>`target`：直接打开指定标签页。可用值为 `basic`、`instructions`、`tools`、`sub-agents`、`skills`、`mcp`、`memory` 和 `compaction`。<br>参数别名：`subagents` 等同于 `sub-agents`，`skill` 等同于 `skills`。 |
-| `/runtime` | `/details` | 打开“运行时详情”窗口，查看当前模型配置和模型 ID、按类别分组的内置工具、子智能体工具、按服务器分组的 MCP 工具、按来源分组的 Skills、已加载的钩子，以及预配置记忆文件。 | — |
+| `/runtime` | `/details` | 打开“运行时详情”窗口，查看当前模型配置和模型 ID、按类别分组的内置工具、上下文管理工具、子智能体工具、按服务器分组的 MCP 工具、按来源分组的 Skills、已加载的钩子，以及预配置记忆文件。 | — |
 | `/settings [tab]` | — | 打开设置窗口。详见[配置 iCode 设置](../guides/configuration/settings.md#设置窗口)。 | `tab`：直接打开指定标签页。可用值为 `general`、`models`、`security`、`sessions`、`tools` 和 `notifications`。省略参数时，按空格键或 **Enter** 显示可用标签页。 |
 | `/workflow` | — | 打开工作流模式并选择工作流。详见[创建和运行工作流](../guides/running/workflows.md)。 | — |
 | `/help` | — | 打开“iCode 用户指南”窗口，查看本文档。也可以按 **F8** 或点击底栏的 `f8 帮助`。 | — |

@@ -4,14 +4,23 @@
 
 from __future__ import annotations
 
+from types import ModuleType
+
 import pytest
 from textual.app import App, ComposeResult
+from textual.pilot import Pilot
+from textual.screen import Screen
 from textual.widgets import Static
 
+from chrys.app.tui.i18n import LocaleController, LocaleSwitchStatus
+from chrys.app.tui.widgets.chat import tool_call as tool_call_module
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.renderers import sleep as sleep_module
+from chrys.app.tui.widgets.chat.renderers.sleep import SleepToolCall
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup, ToolGroupTitle, _tool_activity_reference
 from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.tool_kinds import (
     KIND_ASK_USER,
@@ -20,8 +29,12 @@ from chrys.foundation.tool_kinds import (
     KIND_SEARCH,
     KIND_SHELL,
     KIND_SKILL,
+    KIND_SLEEP,
     KIND_SUB_AGENT,
 )
+from tests.support.pilot_barrier import screen_is_settled
+from tests.support.tui_helpers import title_runs, title_text
+from tests.support.waiting import wait_for, wait_until
 
 
 class _PanelApp(App):
@@ -33,8 +46,27 @@ class _PanelApp(App):
         yield ChatPanel(tool_groups_expanded=lambda: self.expanded)
 
 
+def _painted(app: App) -> str:
+    """What the screen paints, as the compositor composes it from each widget's rendered lines."""
+    return "\n".join(strip.text for strip in app.screen._compositor.render_strips())
+
+
 def _title(group: ToolGroup) -> str:
-    return group.query_one(ToolGroupTitle).render().plain
+    return title_text(group.query_one(ToolGroupTitle))
+
+
+async def _running(pilot: Pilot[None], group: ToolGroup) -> bool:
+    """Whether the title shows the group running: the dot before it, and its refresh timer ticking.
+
+    The timer ticks once the title's Show is handled: a tick before then, the title not yet composited, parks it.
+    """
+    title = group.query_one(ToolGroupTitle)
+    await wait_for(lambda: screen_is_settled(pilot.app, title.screen), pilot=pilot, description="the title shown")
+    shown = title_runs(title)
+    assert shown is group.shows_running
+    timer = title._auto_refresh_timer
+    assert timer is not None and timer._active.is_set() is shown
+    return shown
 
 
 @pytest.mark.asyncio
@@ -68,18 +100,17 @@ async def test_live_group_activity_survives_manual_expand_and_falls_back_by_rece
         await pilot.pause()
 
         group = panel.query_one(ToolGroup)
-        indicator = group.query_one(ChrysLoadingIndicator)
         assert group.collapsed is True
         assert _title(group) == "Running focused tests"
-        assert indicator.display is True
-        assert list(group.query_one("#tg-header").children) == [indicator, group.query_one(ToolGroupTitle)]
-        assert indicator.styles.color == group.query_one(ToolGroupTitle).styles.color
+        assert await _running(pilot, group) is True
+        # The dot takes the fold arrow's place in the title itself.
+        assert list(group.query_one("#tg-header").children) == [group.query_one(ToolGroupTitle)]
 
         await pilot.click(ToolGroupTitle)
         await pilot.pause()
         assert group.collapsed is False
         assert _title(group) == "Running focused tests"
-        assert indicator.display is True
+        assert await _running(pilot, group) is True
 
         await panel.add_tool_start(
             "read",
@@ -93,31 +124,28 @@ async def test_live_group_activity_survives_manual_expand_and_falls_back_by_rece
 
         await panel.add_tool_result("read", "read_file", "done")
         assert _title(group) == "Updated shell work"
-        assert indicator.display is True
+        assert await _running(pilot, group) is True
 
         await panel.add_tool_result("shell", "zsh", "done")
         assert _title(group) == "Updated shell work"
-        assert indicator.display is True
-        assert indicator._auto_refresh_timer._active.is_set() is True
+        assert await _running(pilot, group) is True
 
         await panel.add_tool_start("write", "write_file", KIND_FILESYSTEM_WRITE, args={"path": "report.md"})
         assert _title(group) == "Writing report.md"
-        assert indicator.display is True
-        assert indicator._auto_refresh_timer._active.is_set() is True
+        assert await _running(pilot, group) is True
 
         await panel.add_tool_result("write", "write_file", "done")
         assert _title(group) == "Writing report.md"
-        assert indicator.display is True
+        assert await _running(pilot, group) is True
 
         await panel.add_answer_delta("s1", "Moving on")
-        assert _title(group).startswith("▶ Tools (3/3")
-        assert indicator.display is False
-        assert indicator._auto_refresh_timer._active.is_set() is False
+        assert _title(group) == "▸ Read 1 file · edited 1 file · ran 1 command"
+        assert await _running(pilot, group) is False
 
         group.on_tool_group_title_clicked()
         await pilot.pause()
         assert group.collapsed is False
-        assert _title(group).startswith("▼ Tools (3/3")
+        assert _title(group) == "▾ Read 1 file · edited 1 file · ran 1 command"
 
 
 @pytest.mark.asyncio
@@ -237,25 +265,25 @@ async def test_sub_agent_inner_activity_updates_parent_header_and_retains_latest
             tool_kind=KIND_FILESYSTEM_READ,
         )
 
-        indicator = group.query_one(ChrysLoadingIndicator)
         assert _title(group) == "Running Explore Agent: Reading notes.txt"
         assert group._tool_records["parent"].nested_activities["inner"].args == {"path": "notes.txt"}
 
         panel._end_tool_group()
         assert _title(group) == "Running Explore Agent: Reading notes.txt"
-        assert indicator.display is True
+        assert await _running(pilot, group) is True
 
         panel.complete_sub_agent_tool("Explore", "invocation", "inner", "done", 1)
         assert _title(group) == "Running Explore Agent: Reading notes.txt"
         assert group._tool_records["parent"].nested_activities == {}
 
         await panel.add_tool_result("parent", "Explore", "done")
-        assert _title(group).startswith("▶ Tools (1/1")
-        assert indicator.display is False
+        assert _title(group) == "▸ Ran 1 agent"
+        assert await _running(pilot, group) is False
 
 
 def _sub_agent_line(panel: ChatPanel) -> str:
-    return panel.query_one(SubAgentToolCall).query_one("#sa-activity-text", Static).render().plain
+    """The card's activity line, without the running dot before it while the agent runs."""
+    return title_text(panel.query_one(SubAgentToolCall).query_one("#sa-activity-text", Static))
 
 
 @pytest.mark.asyncio
@@ -312,32 +340,34 @@ async def test_system_retry_and_interrupt_are_tool_group_presentation_boundaries
         await panel.add_tool_result("system", "read_file", "done")
         assert _title(first) == "Reading system.txt"
         await panel.add_system("Environment changed")
-        assert _title(first).startswith("▶ Tools (1/1")
+        assert _title(first) == "▸ Read 1 file"
 
         await panel.add_tool_start("retry", "read_file", KIND_FILESYSTEM_READ, args={"path": "retry.txt"})
         second = panel._tool_groups_by_call_id["retry"]
         await panel.add_tool_result("retry", "read_file", "done")
         assert _title(second) == "Reading retry.txt"
         await panel.add_retry("Trying again", 1, 2, 0)
-        assert _title(second).startswith("▶ Tools (1/1")
+        assert _title(second) == "▸ Read 1 file"
 
         await panel.add_tool_start("interrupt", "read_file", KIND_FILESYSTEM_READ, args={"path": "active.txt"})
         third = panel._tool_groups_by_call_id["interrupt"]
         assert _title(third) == "Reading active.txt"
         await panel.add_interrupted()
-        assert _title(third).startswith("▶ Tools (1/1")
-        assert third.query_one(ChrysLoadingIndicator).display is False
+        # The read was cut short: the row counts it, and says it was interrupted.
+        assert _title(third) == "▸ Read 1 file · 1 interrupted"
+        assert await _running(pilot, third) is False
 
 
 @pytest.mark.asyncio
-async def test_replay_group_has_no_live_indicator() -> None:
+async def test_a_replayed_group_s_title_never_runs_and_keeps_no_refresh_timer() -> None:
     class _ReplayGroupApp(App):
         def compose(self) -> ComposeResult:
             yield ToolGroup(live=False)
 
     async with _ReplayGroupApp().run_test() as pilot:
-        group = pilot.app.query_one(ToolGroup)
-        assert list(group.query(ChrysLoadingIndicator)) == []
+        title = pilot.app.query_one(ToolGroup).query_one(ToolGroupTitle)
+        assert title._work_running is False
+        assert title._auto_refresh_timer is None
 
 
 def test_loading_indicator_pause_and_resume_are_safe_before_mount() -> None:
@@ -372,3 +402,201 @@ def test_activity_copy_uses_kind_specific_safe_arguments(
     activity = _tool_activity_reference(tool_name, tool_kind, args)
 
     assert (activity if isinstance(activity, str) else format_message(activity)) == expected
+
+
+class _Clock:
+    """The tool group's and the sleep card's own ``time``, read as the test sets it."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.now = 1000.0
+        shadow = ModuleType("time")
+        shadow.monotonic = lambda: self.now  # type: ignore[attr-defined]
+        monkeypatch.setattr(tool_call_module, "time", shadow)
+        monkeypatch.setattr(sleep_module, "time", shadow)
+
+
+def _card_time_frames(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The time a sleep card shows, as each frame paints it."""
+    frames: list[str] = []
+    paint = Screen._compositor_refresh
+
+    def record(screen: Screen) -> None:
+        paint(screen)
+        painted = [strip.text for strip in screen._compositor.render_strips()]
+        if shown := " ".join(line.strip(" │") for line in painted if "seconds/" in line or "Remaining" in line):
+            frames.append(shown)
+
+    monkeypatch.setattr(Screen, "_compositor_refresh", record)
+    return frames
+
+
+@pytest.mark.asyncio
+async def test_a_running_sleep_counts_down_in_its_group_title_after_why_it_sleeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock(monkeypatch)
+    async with _PanelApp(expanded=True).run_test(size=(100, 30)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30, "reason": "Waiting for CI"})
+        group = panel.query_one(ToolGroup)
+        await wait_for(
+            lambda: "Sleeping: Waiting for CI · 30s left" in _painted(pilot.app), pilot=pilot, description="30s"
+        )
+        # Its card counts from the same start as the title, though it was built after it.
+        assert panel.query_one(SleepToolCall)._start_time == clock.now
+
+        clock.now += 1.0
+        await wait_for(
+            lambda: "Sleeping: Waiting for CI · 29s left" in _painted(pilot.app),
+            pilot=pilot,
+            description="the title paints the next second left as it comes",
+        )
+        clock.now += 65.0
+        await wait_for(
+            lambda: "Sleeping: Waiting for CI · 0s left" in _painted(pilot.app), pilot=pilot, description="0s"
+        )
+
+        await panel.add_tool_result("s1", "sleep", "Slept 30 seconds.", 30_000)
+        # Its activity stays until what follows starts, with no time left to show.
+        assert _title(group) == "Sleeping: Waiting for CI"
+        # The running title's own frames paint the time left: the group keeps no timer for it.
+        assert not group._timers
+
+
+@pytest.mark.asyncio
+async def test_a_sleep_title_counts_down_only_while_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = _Clock(monkeypatch)
+    async with _PanelApp(expanded=True).run_test(size=(100, 30)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30})
+        title = panel.query_one(ToolGroupTitle)
+        await wait_for(lambda: "Sleeping · 30s left" in _painted(pilot.app), pilot=pilot, description="30s")
+        main = pilot.app.screen
+        await pilot.app.push_screen(Screen())
+        await wait_for(lambda: pilot.app.screen is not main, pilot=pilot, description="covered")
+
+        refreshes: list[object] = []
+        refresh = title.refresh
+        monkeypatch.setattr(
+            title, "refresh", lambda *args, **kwargs: (refreshes.append(args), refresh(*args, **kwargs))
+        )
+        clock.now += 3.0
+        # Longer than a second: a countdown ticking each second under the covering screen would repaint by then.
+        assert not await wait_until(lambda: refreshes, timeout=1.5, pilot=pilot)
+
+        pilot.app.pop_screen()
+        await wait_for(
+            lambda: "Sleeping · 27s left" in _painted(pilot.app),
+            pilot=pilot,
+            description="the time left as it is now, once the title shows again",
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_narrow_sleep_title_cuts_why_it_sleeps_and_keeps_its_time_left(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Clock(monkeypatch)
+    async with _PanelApp(expanded=False).run_test(size=(40, 12)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_tool_start(
+            "s1", "sleep", KIND_SLEEP, args={"seconds": 3600, "reason": "Waiting for the nightly build to finish"}
+        )
+        title = panel.query_one(ToolGroupTitle)
+        await pilot.pause()
+        rendered = title.render()
+        assert rendered.plain.endswith("… · 1h left")
+        assert rendered.cell_len <= title.content_size.width
+
+        await panel.add_tool_start("s2", "sleep", KIND_SLEEP, args={"seconds": 90})
+        assert title_text(title) == "Sleeping · 1m 30s left"
+
+
+@pytest.mark.asyncio
+async def test_a_sleep_keeps_its_start_only_while_its_call_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = _Clock(monkeypatch)
+    async with _PanelApp(expanded=False).run_test(size=(100, 30)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30})
+        group = panel.query_one(ToolGroup)
+        clock.now += 10.0
+        # Started again while it runs, as an ACP agent does when what it shows changes: it goes on counting.
+        await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30})
+        assert _title(group) == "Sleeping · 20s left"
+
+        await panel.add_tool_result("s1", "sleep", "Slept 30 seconds.", 30_000)
+        clock.now += 60.0
+        # A later call with the same id is a new sleep: it counts from its own start.
+        await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30})
+        assert _title(group) == "Sleeping · 30s left"
+
+
+@pytest.mark.asyncio
+async def test_a_sleep_card_built_after_its_call_started_counts_from_the_start_in_its_first_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock(monkeypatch)
+    frames = _card_time_frames(monkeypatch)
+    composed: list[str] = []
+    compose = SleepToolCall.compose
+
+    def record_compose(card: SleepToolCall) -> ComposeResult:
+        composed.append(card._running_label_text().plain)
+        return compose(card)
+
+    monkeypatch.setattr(SleepToolCall, "compose", record_compose)
+    async with _PanelApp(expanded=True).run_test(size=(100, 30)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        # As a nested transcript built later hands it the start its journal recorded.
+        await panel._tool_registry.add_tool_start(
+            "s1", "sleep", KIND_SLEEP, args={"seconds": 60}, started_at=clock.now - 40.0
+        )
+        await wait_for(lambda: frames, pilot=pilot, description="the card paints")
+        assert set(frames) == {"- sleep (40 seconds/60 seconds) Skip    Remaining: 20 seconds"}
+        # It composes with it: no frame, however soon after its mount, shows another.
+        assert composed == ["- sleep (40 seconds/60 seconds)"]
+
+
+@pytest.mark.asyncio
+async def test_a_sleep_card_its_folded_group_opens_shows_the_time_left_now_in_its_first_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock(monkeypatch)
+    frames = _card_time_frames(monkeypatch)
+    async with _PanelApp(expanded=False).run_test(size=(100, 30)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 60})
+        group = panel.query_one(ToolGroup)
+        clock.now += 40.0
+        # Folded, the card did not count.
+        group.collapsed = False
+        await wait_for(lambda: frames, pilot=pilot, description="the card paints")
+        assert set(frames) == {"- sleep (40 seconds/60 seconds) Skip    Remaining: 20 seconds"}
+
+
+@pytest.mark.asyncio
+async def test_a_sleep_title_reads_in_one_language_after_a_locale_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Clock(monkeypatch)
+    app = _PanelApp(expanded=False)
+    controller = LocaleController(Settings(locale="en"))
+    app.locale_controller = controller  # type: ignore[attr-defined]
+    async with app.run_test(size=(100, 30)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30, "reason": "CI"})
+        await wait_for(lambda: "Sleeping: CI · 30s left" in _painted(pilot.app), pilot=pilot, description="English")
+
+        assert controller.switch_locale("zh-Hans").status is LocaleSwitchStatus.EFFECTIVE_CHANGED
+        # It repaints every frame while it runs: what it does reads in the language its time left does.
+        chinese = "休眠中：CI · 还剩 30 秒"  # noqa: RUF001
+        await wait_for(lambda: chinese in _painted(pilot.app), pilot=pilot, description="Chinese")
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_sleep_counts_what_it_slept_until_then(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = _Clock(monkeypatch)
+    async with _PanelApp(expanded=False).run_test(size=(100, 30)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_tool_start("s1", "sleep", KIND_SLEEP, args={"seconds": 30})
+        group = panel.query_one(ToolGroup)
+        clock.now += 20.0
+        await panel.add_interrupted()
+        # As a replay of the turn reads it, from the timing the interrupted call recorded.
+        assert _title(group) == "▸ Slept 20s · 1 interrupted"

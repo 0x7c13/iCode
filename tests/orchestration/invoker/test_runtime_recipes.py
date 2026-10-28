@@ -216,6 +216,11 @@ async def test_real_build_preserves_main_child_model_context_approval_and_chat_i
         root_names = {tool.name for tool in root_options["tools"]}
         child_names = {tool.name for tool in child_options["tools"]}
         assert {"Explore", "compress_context", "recall_context", "list_compressed_contexts"} <= root_names
+        assert engine.current.manifest.runtime_details.context_tools == [
+            "compress_context",
+            "recall_context",
+            "list_compressed_contexts",
+        ]
         assert "read_file" in child_names
         assert not {"Explore", "compress_context", "recall_context", "view_image"} & child_names
         assert root_messages[-1].text.startswith("root question <system-reminder>")

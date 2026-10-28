@@ -114,7 +114,7 @@ def test_build_and_registry_require_no_credentials(provider_type):
     ):
         registry = ToolRegistry()
         registry.load_builtins(["web_search"], settings=Settings(), web=assemble(["web_search"], config(provider_type)))
-        assert [tool.name for tool in registry.get_all()] == ["web_search"]
+        assert [tool.name for tool in registry.get_by_category("web_search")] == ["web_search"]
 
 
 @pytest.mark.parametrize("provider_type", ["bing_html", "duckduckgo_html"])

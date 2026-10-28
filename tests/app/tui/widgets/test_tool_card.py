@@ -15,6 +15,7 @@ from textual.widgets import Static
 
 from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.widgets.chat import tool_renderers
+from chrys.app.tui.widgets.chat.fold_rows import FoldRow
 from chrys.app.tui.widgets.chat.messages import (
     MessageCopyButton,
 )
@@ -49,7 +50,7 @@ async def test_click_affordance_buttons_prevent_widget_default_action() -> None:
         def compose(self) -> ComposeResult:
             yield ToolViewButton()
             yield ToolCopyButton()
-            yield ToolGroupTitle("tools")
+            yield ToolGroupTitle(FoldRow("tools"))
             yield MessageCopyButton(tooltip="copy")
             yield _ScrollToBottomButton()
 

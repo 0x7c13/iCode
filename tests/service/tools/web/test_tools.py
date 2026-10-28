@@ -494,9 +494,11 @@ def test_profile_round_trip_and_registry_gate(tmp_path):
         settings=Settings(),
         web=assemble(profile.tools.builtins, profile.tools.web_search, profile.tools.web_fetch),
     )
-    assert [tool.name for tool in tools] == ["web_fetch"]
+    assert [tool.name for tool in tools] == ["web_fetch", "sleep"]
     assert tools[0].kind is None and get_tool_kind(tools[0]) == "web_fetch"
-    assert not ToolRegistry().load_builtins(["web_fetch"])
+    unwired = ToolRegistry()
+    unwired.load_builtins(["web_fetch"])
+    assert unwired.get_by_category("web_fetch") == []
 
 
 @pytest.mark.parametrize(

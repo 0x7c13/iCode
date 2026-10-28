@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from weakref import WeakKeyDictionary, WeakSet, ref
 
 from textual.widget import Widget
 
+from chrys.app.tui.widgets.chat.compaction_card import CompactionCard
+from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
+from chrys.app.tui.widgets.chat.fold_rows import ToolTally
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
     ErrorMessage,
@@ -17,11 +20,15 @@ from chrys.app.tui.widgets.chat.messages import (
     RetryMessage,
     ThinkingMessage,
     UserMessage,
+    folds_with_turn,
 )
 from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.process_model import ProcessEntry, plan_process_segments
 from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 class ProcessHost(Protocol):
@@ -41,12 +48,19 @@ def process_entry(widget: Widget) -> ProcessEntry:
             return ProcessEntry("failure")
         return ProcessEntry("answer" if widget.is_process_final else "intermediate")
     if isinstance(widget, ToolGroup):
-        return ProcessEntry("tool", widget.process_tool_count)
+        return ProcessEntry("tool")
     if isinstance(widget, (ErrorMessage, InterruptedMessage)):
         return ProcessEntry("failure")
     if isinstance(widget, RetryMessage):
         return ProcessEntry("retry")
+    if isinstance(widget, (CompactionCard, ContextFoldWidget)):
+        return ProcessEntry("compaction")
     return ProcessEntry("other")
+
+
+def process_tally(members: Iterable[Widget]) -> ToolTally:
+    """What the calls of *members*' tool groups were, as their process header counts them."""
+    return sum((member.tool_tally for member in members if isinstance(member, ToolGroup)), ToolTally())
 
 
 class ProcessController:
@@ -93,15 +107,15 @@ class ProcessController:
             if any(not isinstance(member, ProcessMember) for member in members):
                 raise TypeError("A planned process member must support process visibility")
             typed_members = [member for member in members if isinstance(member, ProcessMember)]
-            if len(typed_members) == 1 and isinstance(thinking := typed_members[0], ThinkingMessage):
-                if thinking.foldable:
-                    thinking.collapsed = True
+            if len(typed_members) == 1 and folds_with_turn(only := typed_members[0]):
+                if only.foldable:
+                    only.collapsed = True
                 self._completed.add(anchor)
                 continue
             block = ProcessBlock(
                 typed_members,
                 segment_index=segment.index,
-                tool_count=segment.tool_count,
+                tally=process_tally(typed_members),
                 is_compressed=segment.compressed,
             )
             insertions[segment.anchor] = block
@@ -145,9 +159,9 @@ class ProcessController:
         return reference() if reference is not None else None
 
     def member_changed(self, block: ProcessBlock) -> None:
-        count = sum(member.process_tool_count for member in block.members if isinstance(member, ToolGroup))
-        if block.tool_count != count:
-            block.tool_count = count
+        tally = process_tally(block.members)
+        if block.tally != tally:
+            block.tally = tally
             block.refresh(layout=False)
         block.try_finalize_fold()
 

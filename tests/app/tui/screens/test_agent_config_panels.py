@@ -188,6 +188,17 @@ async def test_tools_panel_todo_checkbox_defaults_off_when_profile_omits_categor
         assert app.query_one(ToolsConfigPanel).get_config() == ["shell"]
 
 
+async def test_tools_panel_has_no_switch_for_the_always_loaded_sleep() -> None:
+    """Every agent has sleep, so the panel neither shows it nor writes it."""
+    app = WidgetApp(lambda: ToolsConfigPanel(ToolsConfig(builtins=["shell"])))
+    async with app.run_test(size=(80, 40)) as pilot:
+        await pilot.pause()
+
+        assert app.query("#tc-cat-shell")
+        assert not app.query("#tc-cat-sleep")
+        assert app.query_one(ToolsConfigPanel).get_config() == ["shell"]
+
+
 async def test_tools_panel_toggles_web_search_and_web_fetch_independently() -> None:
     """Web search and Web fetch are separate switches, each writing only its own category."""
     app = WidgetApp(lambda: ToolsConfigPanel(ToolsConfig(builtins=["web_fetch", "shell"])))

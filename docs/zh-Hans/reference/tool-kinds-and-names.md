@@ -2,7 +2,7 @@
 
 iCode 使用工具类别（`tool_kind`）对用途或来源相近的工具进行分组，使用工具名称（`tool_name`）标识具体工具。同一类别可以包含多个工具，例如 `filesystem.write` 类别包含 `write_file` 和 `edit_file`。
 
-在终端用户界面（Terminal User Interface，TUI）的输入栏中输入 `/runtime`，或点击输入栏上方状态栏右端显示的工具数量，打开“运行时详情”窗口。“工具”标签页列出按类别分组的内置工具和子智能体工具，“MCP”标签页列出按服务器分组的 MCP 工具名称。Skill 工具和上下文工具不会在该窗口中列出。智能体只能调用当前已加载的工具。
+在终端用户界面（Terminal User Interface，TUI）的输入栏中输入 `/runtime`，或点击输入栏上方状态栏右端显示的工具数量，打开“运行时详情”窗口。“工具”标签页列出按类别分组的内置工具，以及上下文管理工具和子智能体工具，“MCP”标签页列出按服务器分组的 MCP 工具名称。Skill 工具不会在该窗口中列出。智能体只能调用当前已加载的工具。
 
 ## 类别和名称概览
 
@@ -17,7 +17,7 @@ iCode 使用工具类别（`tool_kind`）对用途或来源相近的工具进行
 | `web_search` | 是 | 在网络上搜索链接和摘要 | `web_search` |
 | `web_fetch` | 是 | 按 URL 读取网页内容 | `web_fetch` |
 | `ask_user` | 是 | 在任务中询问用户 | `ask_user` |
-| `sleep` | 是 | 等待 | `sleep` |
+| `sleep` | 否，每个智能体都有 | 等待 | `sleep` |
 | `doc_converter` | 是 | 转换 PDF 和 Office 文档 | `convert_document` |
 | `todo` | 是 | 维护待办事项 | `todo_write` |
 | `sub_agent` | 否 | 调用子智能体 | 由智能体配置决定 |
@@ -26,6 +26,8 @@ iCode 使用工具类别（`tool_kind`）对用途或来源相近的工具进行
 | `context` | 否 | 压缩和查询对话上下文 | `compress_context`、`recall_context`、`list_compressed_contexts` |
 
 具体工具是否可用还取决于当前智能体、模型能力和运行方式。例如，`view_image` 只会提供给支持图片输入的模型，无界面命令行模式 `icode run` 不提供 `ask_user`。
+
+无论 `tools.builtins` 列出哪些类别，每个智能体都有 `sleep`。仍列出 `sleep` 的配置照常加载，下次保存该配置时 iCode 会将其移除。
 
 iCode 自带的智能体都没有启用 `web_search` 和 `web_fetch`。智能体包含这两个工具时，如果某个工具的模式为 `off`，或模型提供方运行同名的网络工具，对应的本地工具不会提供。参阅[配置网络工具](../guides/configuration/web-tools.md)。
 

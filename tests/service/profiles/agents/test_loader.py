@@ -16,6 +16,7 @@ from chrys.service.profiles.agents.loader import (
     load_profile_from_yaml,
     load_profiles_from_dir,
 )
+from chrys.service.profiles.agents.serializer import save_profile
 from tests.support.paths import SRC_ROOT
 
 
@@ -420,6 +421,21 @@ def test_load_tools_ignores_unknown_keys_and_keeps_unknown_categories(
     # save from this version never deletes another version's tool.
     assert profile.tools.builtins == ["shell", "future_category"]
     assert "builtinz" in caplog.text
+
+
+def test_load_tools_drops_a_listed_sleep_quietly_so_a_save_no_longer_writes_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``sleep`` was a switch before every agent got it: older profiles list it, and must still load."""
+    p = tmp_path / "older.yaml"
+    p.write_text("name: older\ntools:\n  builtins: [shell, sleep, todo]\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        profile = load_profile_from_yaml(p)
+    assert profile.tools.builtins == ["shell", "todo"]
+    assert caplog.records == []
+
+    saved = save_profile(profile, target_dir=tmp_path / "saved")
+    assert yaml.safe_load(saved.read_text(encoding="utf-8"))["tools"]["builtins"] == ["shell", "todo"]
 
 
 def test_load_tools_drops_non_string_categories_with_a_warning(
