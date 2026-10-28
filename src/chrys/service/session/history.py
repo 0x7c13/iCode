@@ -55,6 +55,7 @@ from chrys.service.session.message_metadata import (
     normalize_created_at,
     persisted_tool_call_kind,
     stamp_message_created_at,
+    try_normalize_created_at,
 )
 from chrys.service.session.sub_agent_logs import SUB_AGENT_RESTORE_CONSUMED_KEY
 from chrys.service.trajectory.items import ensure_history_item_ids
@@ -369,15 +370,15 @@ class SessionHistoryManager:
     # Marker operations
     # ------------------------------------------------------------------
 
-    def insert_turn_marker(self) -> None:
-        """Insert a turn marker at the end of history."""
+    def insert_turn_marker(self, started_at: datetime | str | None = None) -> None:
+        """Insert a turn marker at the end of history, with when its pass began (*started_at*) if known."""
         state = self._state
         if state is None or not state.get("messages"):
             return
         from chrys.service.context.providers.history import CompressibleHistoryProvider
 
         turn_counter = state.get("turn_counter", 0) + 1
-        CompressibleHistoryProvider.insert_marker(state, turn_counter)
+        CompressibleHistoryProvider.insert_marker(state, turn_counter, started_at=try_normalize_created_at(started_at))
 
     def insert_interrupted_marker(
         self,

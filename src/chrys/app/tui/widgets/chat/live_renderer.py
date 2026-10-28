@@ -22,6 +22,7 @@ from chrys.app.tui.widgets.chat.messages import (
     UserMessage,
     format_message_created_at,
     resolve_interrupted_message_copy,
+    turn_duration_ms,
 )
 from chrys.app.tui.widgets.chat.ports import (
     ChatMountPort,
@@ -63,6 +64,11 @@ class LiveTranscriptRenderer:
         self._tools = tools
         self._resolve_message = localization.render if localization is not None else format_message
         self._current_agent_msg: AgentMessage | None = None
+        self._streamed_answer: AgentMessage | None = None
+        """The answer text streamed last, until more of the turn follows it: the turn's completion stamps it.
+
+        A boundary (a context fold, a message sent mid-turn) may have let its cursor go first.
+        """
         self._profile_name: str = ""
         self._compaction_cards: dict[str, CompactionCard] = {}
         # The answer segment being streamed, and its text while it is still
@@ -110,6 +116,7 @@ class LiveTranscriptRenderer:
     def reset_for_clear(self) -> None:
         """Clear per-transcript cursors while preserving durable metadata."""
         self._current_agent_msg = None
+        self._streamed_answer = None
         self._compaction_cards.clear()
         self._segment_id = ""
         self._blank_segment_text = ""
@@ -133,6 +140,7 @@ class LiveTranscriptRenderer:
 
     def stop_answer(self) -> None:
         """The run stopped before completing its answer: the text it streamed stays, final."""
+        self._streamed_answer = None
         self._segment_id = ""
         self._blank_segment_text = ""
         self._finalize_current_agent_message()
@@ -143,6 +151,7 @@ class LiveTranscriptRenderer:
         Streamed thinking ends there too.
         """
         self._finalize_thinking()
+        self._streamed_answer = None
         message = self._current_agent_msg
         if message is None:
             return
@@ -164,6 +173,7 @@ class LiveTranscriptRenderer:
             self._ui.on_live_user_turn_started()
             await self._remove_failed_turn()
             self._answer_streamed = False
+            self._streamed_answer = None
             self._thinking_to_fold = None
             self._group_to_fold = None
         elif self._tools.current_tool_group is not None:
@@ -231,6 +241,7 @@ class LiveTranscriptRenderer:
         )
         self._blank_segment_text = ""
         self._current_agent_msg = message
+        self._streamed_answer = message
         await self._mount.mount_transcript_widget(message)
         self._ui.schedule_anchor_sync()
 
@@ -341,14 +352,18 @@ class LiveTranscriptRenderer:
         streamed: bool = True,
         structured_output_completed: bool = False,
         created_at: Any = None,
+        turn_started_at: Any = None,
     ) -> None:
         """Complete the agent's answer: its text already streamed, so only its message finalizes.
 
         The text is mounted only when no answer streamed (a transcript replayed
         without its deltas) or when it is not the streamed answer (*streamed*
-        False: a failure result).
+        False: a failure result). Its header tells how long the turn took to it
+        from *turn_started_at*, when the pass began, as replay tells it.
         """
         timestamp = format_message_created_at(created_at)
+        duration_ms = turn_duration_ms(turn_started_at, created_at)
+        streamed_answer, self._streamed_answer = self._streamed_answer, None
         await self._status.remove_trailing_status()
         self._ui.on_final_response_started()
         if self._tools.current_tool_group is not None:
@@ -359,13 +374,18 @@ class LiveTranscriptRenderer:
         self._finalize_thinking()
         self.fold_passed_text()
         if streamed and self._current_agent_msg is not None:
-            self._current_agent_msg.stream_update(self._current_agent_msg.text, is_final=True, timestamp=timestamp)
+            self._current_agent_msg.stream_update(
+                self._current_agent_msg.text, is_final=True, timestamp=timestamp, duration_ms=duration_ms
+            )
             self._current_agent_msg = None
             self._ui.schedule_anchor_sync()
             return
         self._finalize_current_agent_message()
         final_text = "" if (streamed and self._answer_streamed) or not text.strip() else text
         if not final_text and not structured_output_completed:
+            if streamed and streamed_answer is not None and streamed_answer.is_attached:
+                # Its text already showed whole: only its header learns when the turn completed it.
+                streamed_answer.set_timestamp(timestamp, duration_ms=duration_ms)
             return
         msg = AgentMessage(
             final_text or "✓",
@@ -373,6 +393,7 @@ class LiveTranscriptRenderer:
             profile_name=self._profile_name,
             is_structured_completion=structured_output_completed and not final_text,
             timestamp=timestamp,
+            duration_ms=duration_ms,
         )
         await self._mount.mount_transcript_widget(msg)
         self._ui.schedule_anchor_sync()

@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from chrys.app.tui.widgets.chat.context_fold import ContextFoldWidget
@@ -20,6 +20,7 @@ from chrys.app.tui.widgets.chat.messages import (
     UserMessage,
     format_message_created_at,
     resolve_interrupted_message_copy,
+    turn_duration_ms,
 )
 from chrys.app.tui.widgets.chat.ports import ChatMountPort, TranscriptLocalizationPort, TranscriptUiPort
 from chrys.app.tui.widgets.chat.toc_model import TurnTocModel, turn_index_from_extra
@@ -39,6 +40,7 @@ from chrys.foundation.models.history_markers import (
     SUB_AGENT_STATE_DISCARDED_MESSAGE,
     HistoryMarkerKind,
 )
+from chrys.foundation.models.turns import opens_turn
 from chrys.foundation.text.images import is_image_media_type
 from chrys.foundation.tool_result_metadata import TOOL_INTERRUPTED_METADATA_KEY
 from chrys.foundation.trajectory_timing import trajectory_timing_from_metadata
@@ -66,6 +68,7 @@ from chrys.service.agent_middleware.events.hosted_tools import (
     normalize_hosted_replay_content,
 )
 from chrys.service.agent_middleware.events.result_persistence import PERSISTED_RESULT_METADATA_KEYS
+from chrys.service.context.providers.history import TURN_STARTED_AT_KEY
 from chrys.service.llm.reasoning_display import readable_reasoning
 from chrys.service.mutations.tool_names import _FILE_TOOLS
 from chrys.service.session.message_metadata import (
@@ -151,6 +154,8 @@ class ReplayToolCall:
 @dataclass(frozen=True)
 class ReplayTurnMarker:
     turn_index: int | None
+    started_at: Any = None
+    """When the pass the marker ends began, which the answer before it is timed from."""
 
 
 @dataclass(frozen=True)
@@ -184,8 +189,8 @@ class ReplayAgentMessage:
 class ReplayStructuredCompletion:
     """The ✓ of a turn that ended with successful structured hosted output and no answer text.
 
-    It carries the timing of the agent message whose output it completes, and
-    follows the thinking after it, as it did live.
+    It carries when the agent message whose output it completes finished, and
+    how long its turn took, and follows the thinking after it, as it did live.
     """
 
     created_at: Any = None
@@ -755,6 +760,8 @@ class HistoryReplayPlanner:
     ) -> list[ReplayEntry]:
         entries: list[ReplayEntry] = []
         seen_user_in_turn = False
+        # When the turn's opening message was sent: when its pass began, unless Continue or Retry began it later.
+        turn_opened_at: Any = None
         retry_action_marker_index = _trailing_retry_marker_index(merged)
 
         for msg_index, entry in enumerate(merged):
@@ -765,7 +772,6 @@ class HistoryReplayPlanner:
                         created_at=_message_created_at(entry.additional_properties),
                         is_intermediate=entry.is_intermediate,
                         intermediate_texts=list(entry.intermediate_texts),
-                        duration_ms=_trajectory_duration_ms(entry.additional_properties),
                     )
                 )
                 continue
@@ -778,8 +784,11 @@ class HistoryReplayPlanner:
             status_code = _recognized_status_code(extra)
 
             if marker == HistoryMarkerKind.TURN:
-                entries.append(ReplayTurnMarker(turn_index_from_extra(extra)))
+                # A marker written before turns kept when their pass began times it from the opening message.
+                started_at = extra.get(TURN_STARTED_AT_KEY) or turn_opened_at
+                entries.append(ReplayTurnMarker(turn_index_from_extra(extra), started_at=started_at))
                 seen_user_in_turn = False
+                turn_opened_at = None
                 continue
 
             if marker == HistoryMarkerKind.SUMMARY:
@@ -863,18 +872,49 @@ class HistoryReplayPlanner:
                 )
                 if not is_injection:
                     seen_user_in_turn = True
+                if opens_turn(_TurnMessageView(role, extra)):
+                    # By its flags, not its place: a message sent after a stopped pass opens a turn of its own,
+                    # though the stopped pass left no marker before it.
+                    turn_opened_at = _message_created_at(extra)
                 continue
 
             if role == "assistant":
-                entries.append(
-                    ReplayAgentMessage(
-                        contents=list(contents),
-                        created_at=_message_created_at(extra),
-                        duration_ms=_trajectory_duration_ms(extra),
-                    )
-                )
+                entries.append(ReplayAgentMessage(contents=list(contents), created_at=_message_created_at(extra)))
 
-        return _add_structured_output_completions(entries, show_reasoning=show_reasoning)
+        return _time_turn_answers(_add_structured_output_completions(entries, show_reasoning=show_reasoning))
+
+
+@dataclass(frozen=True)
+class _TurnMessageView:
+    """A persisted message dict as :func:`opens_turn` reads it."""
+
+    role: str
+    additional_properties: dict[str, Any]
+    text: str | None = None
+
+
+def _time_turn_answers(entries: list[ReplayEntry]) -> list[ReplayEntry]:
+    """Tell on the answer each pass ended with how long its turn took, from when the pass began, as live.
+
+    The answer is the last thing the pass showed before its marker, skipping thinking and messages sent mid-turn
+    (history may place one after the answer): its text, or the ✓ of its structured output. A pass that ended
+    otherwise (interrupted, failed, awaiting sub-agents) has none to time.
+    """
+    for index, marker in enumerate(entries):
+        if not isinstance(marker, ReplayTurnMarker):
+            continue
+        before = index - 1
+        while before >= 0 and (
+            _shows_at_most_thinking(previous := entries[before])
+            or (isinstance(previous, ReplayUserMessage) and previous.is_injection)
+        ):
+            before -= 1
+        answer = entries[before] if before >= 0 else None
+        if isinstance(answer, ReplayStructuredCompletion) or (
+            isinstance(answer, ReplayAgentMessage) and not answer.is_status
+        ):
+            entries[before] = replace(answer, duration_ms=turn_duration_ms(marker.started_at, answer.created_at))
+    return entries
 
 
 def _add_structured_output_completions(entries: list[ReplayEntry], *, show_reasoning: bool) -> list[ReplayEntry]:
@@ -906,7 +946,7 @@ def _add_structured_output_completions(entries: list[ReplayEntry], *, show_reaso
             after = candidate_index
             while after + 1 < len(entries) and _shows_at_most_thinking(entries[after + 1]):
                 after += 1
-            completions[after] = ReplayStructuredCompletion(candidate.created_at, candidate.duration_ms)
+            completions[after] = ReplayStructuredCompletion(candidate.created_at)
         candidate_index = None
 
     for index, entry in enumerate(entries):
