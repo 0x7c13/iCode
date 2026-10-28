@@ -30,6 +30,9 @@ class _RunTaskChainDrainer(Protocol):
 
 DEFAULT_WAIT_TIMEOUT = 5.0
 ENGINE_TURN_TIMEOUT = 15.0
+# A wait whose window builds the TUI's main screen: some 270 widgets composed, styled and mounted on the loop, about
+# 0.3 s locally and up to 5 s on a slow macOS CI runner, with no single step to make faster.
+MAIN_SCREEN_BUILD_TIMEOUT = 10.0
 ENGINE_TEST_WAIT_TIMEOUT = 45.0
 QUIET_WAIT_TIMEOUT = 20.0
 _OBSERVATION_REPR = reprlib.Repr()
