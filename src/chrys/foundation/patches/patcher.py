@@ -21,6 +21,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from chrys.foundation.platform.files import replace_with_retry
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,7 +83,10 @@ def _atomic_write_text(path: Path, payload: str) -> None:
     mode avoids ``\\r\\n`` translation under Windows and lets
     ``os.fsync`` accept the file descriptor uniformly.  The original
     file's mode bits are preserved so a stricter umask on the temp
-    file doesn't leave the patched module unreadable.
+    file doesn't leave the patched module unreadable.  Windows refuses
+    the rename while another program has the target open, such as a
+    virus scanner or another launch importing it, so it is tried again
+    briefly.
     """
     target_mode = stat.S_IMODE(path.stat().st_mode)
     fd, tmp_name = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=path.parent)
@@ -92,7 +97,7 @@ def _atomic_write_text(path: Path, payload: str) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.chmod(tmp_path, target_mode)
-        os.replace(tmp_path, path)
+        replace_with_retry(tmp_path, path)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
@@ -113,6 +118,10 @@ def _missing_fragment_detail(patch: FilePatch, target: Path) -> str:
     )
 
 
+def _io_error_detail(action: str, target: Path, exc: OSError) -> str:
+    return f"Could not {action} the file: {exc}\nFile: {target}"
+
+
 def apply_patch(patch: FilePatch) -> PatchResult:
     """Apply a single patch, returning the result."""
     try:
@@ -127,7 +136,10 @@ def apply_patch(patch: FilePatch) -> PatchResult:
     if not target.is_file():
         return PatchResult(patch, "error", f"File not found: {target}")
 
-    source = target.read_text(encoding="utf-8")
+    try:
+        source = target.read_text(encoding="utf-8")
+    except OSError as exc:
+        return PatchResult(patch, "error", _io_error_detail("read", target, exc))
 
     if patch.new_fragment in source or any(fragment in source for fragment in patch.equivalent_fragments):
         return PatchResult(patch, "skipped", "Already patched.")
@@ -136,7 +148,13 @@ def apply_patch(patch: FilePatch) -> PatchResult:
         return PatchResult(patch, "error", _missing_fragment_detail(patch, target))
 
     patched = source.replace(patch.old_fragment, patch.new_fragment, 1)
-    _atomic_write_text(target, patched)
+    try:
+        _atomic_write_text(target, patched)
+    except OSError as exc:
+        # Like a missing fragment, a file that cannot be written (a
+        # read-only install, or one held open past the retries) leaves the
+        # launch without this patch rather than stopping it.
+        return PatchResult(patch, "error", _io_error_detail("write", target, exc))
     return PatchResult(patch, "applied", f"Patched {target}")
 
 
@@ -164,7 +182,10 @@ def apply_patch_group(patches: list[FilePatch]) -> list[PatchResult]:
     if not target.is_file():
         return [PatchResult(patch, "error", f"File not found: {target}") for patch in patches]
 
-    source = target.read_text(encoding="utf-8")
+    try:
+        source = target.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [PatchResult(patch, "error", _io_error_detail("read", target, exc)) for patch in patches]
     staged_source = source
     staged_results: list[PatchResult] = []
 
@@ -192,7 +213,15 @@ def apply_patch_group(patches: list[FilePatch]) -> list[PatchResult]:
         staged_results.append(PatchResult(patch, "applied", f"Patched {target}"))
 
     if staged_source != source:
-        _atomic_write_text(target, staged_source)
+        try:
+            _atomic_write_text(target, staged_source)
+        except OSError as exc:
+            # The launch goes on without this file's patches — see apply_patch.
+            detail = _io_error_detail("write", target, exc)
+            return [
+                result if result.status == "skipped" else PatchResult(result.patch, "error", detail)
+                for result in staged_results
+            ]
     return staged_results
 
 
@@ -210,6 +239,7 @@ def apply_all() -> list[PatchResult]:
     # Import patch definition modules so they call ``register()``.
     import chrys.foundation.patches.mdurl_cache as mdurl_cache
     import chrys.foundation.patches.textual_block_border as textual_block_border
+    import chrys.foundation.patches.textual_box_model_children as textual_box_model_children
     import chrys.foundation.patches.textual_button_ansi as textual_button_ansi
     import chrys.foundation.patches.textual_callback_cache as textual_callback_cache
     import chrys.foundation.patches.textual_callback_dispatch as textual_callback_dispatch
@@ -270,6 +300,8 @@ def apply_all() -> list[PatchResult]:
             ("textual_one_shot_timer", textual_one_shot_timer.apply_runtime_patch),
             ("textual_timer_skip", textual_timer_skip.apply_runtime_patch),
             ("textual_reflow_reuse", textual_reflow_reuse.apply_runtime_patch),
+            # After the reusing reflow: it wraps the NodeList.updated that patch installs.
+            ("textual_box_model_children", textual_box_model_children.apply_runtime_patch),
             ("textual_strip_cycles", textual_strip_cycles.apply_runtime_patch),
             ("textual_lru_acyclic", textual_lru_acyclic.apply_runtime_patch),
             ("textual_node_diet", textual_node_diet.apply_runtime_patch),

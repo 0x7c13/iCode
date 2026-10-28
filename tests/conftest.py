@@ -29,6 +29,7 @@ import pytest
 from chrys.foundation import platform as platform_mod
 from chrys.foundation.patches import mdurl_cache as _mdurl_cache
 from chrys.foundation.patches import textual_block_border as _textual_block_border
+from chrys.foundation.patches import textual_box_model_children as _textual_box_model_children
 from chrys.foundation.patches import textual_dispatch_cache as _textual_dispatch_cache
 from chrys.foundation.patches import textual_lru_acyclic as _textual_lru_acyclic
 from chrys.foundation.patches import textual_node_diet as _textual_node_diet
@@ -134,6 +135,11 @@ _textual_timer_skip.apply_runtime_patch()
 # Screens lay out through the reusing reflow exactly as in the app; it must be installed before
 # the first widget exists.
 _textual_reflow_reuse.apply_runtime_patch()
+
+# Widgets sized to their children measure them anew once one shows or hides, exactly as in the app;
+# unpatched, a layout another widget asked for measures a folded entry at its open height. It wraps
+# the NodeList.updated the reusing reflow installs.
+_textual_box_model_children.apply_runtime_patch()
 
 # Screens paint strips exactly as in the app; unpatched, every line painted at its own width is
 # a reference cycle that only the cyclic collector frees.

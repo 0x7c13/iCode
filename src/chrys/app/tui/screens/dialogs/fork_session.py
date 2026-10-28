@@ -137,9 +137,9 @@ class ForkSessionDialog(BaseDialog[ForkSessionResult | None]):
         self._apply_state()
 
     def _apply_state(self) -> None:
-        # Owners may still report after removal starts, which prunes the children before this
-        # dialog unmounts. Buffer as before mount; nothing will render it.
-        if not self._mounted or self._pruning or self._closing:
+        # Owners may still report once its children went, as removal starts, or never mounted, as
+        # the app shuts down. Buffer as before mount; nothing will render it.
+        if not self._mounted or not self._composed_live:
             return
 
         self.remove_class("-loading", "-success", "-error")

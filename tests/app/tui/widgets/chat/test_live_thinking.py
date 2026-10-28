@@ -448,9 +448,12 @@ async def test_thinking_opened_as_its_last_text_arrives_shows_that_text(monkeypa
 
         monkeypatch.setattr(thinking, "mount", mount_as_the_stream_ends)
         thinking.collapsed = False
+        # It shows once the parse it waits for ends, after that parse installs.
         await wait_for(
-            lambda: [body.shown_source for body in thinking.query(VirtualizedMarkdown)] == ["First.\n\nLast."],
+            lambda: (
+                [body.shown_source for body in thinking.query(VirtualizedMarkdown) if body.display]
+                == ["First.\n\nLast."]
+            ),
             pilot=pilot,
             description="opened, the body shows the text the stream ended with",
         )
-        assert thinking.query_one(VirtualizedMarkdown).display

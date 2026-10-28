@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 import sys
 from typing import TYPE_CHECKING
@@ -12,6 +13,7 @@ import pytest
 
 from chrys.foundation.patches import patcher
 from chrys.foundation.patches.patcher import FilePatch
+from tests.support.windows_replace import briefly_locked_rename
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -193,6 +195,107 @@ def test_patch_group_preserves_target_file_mode(
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 
+def test_patch_group_tries_again_while_windows_refuses_the_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A virus scanner, or another launch importing the target, can hold it open for a moment."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    target = pkg / "target.py"
+    target.write_text("first = 'old'\n", encoding="utf-8")
+    monkeypatch.setattr(patcher, "_locate_package_dir", lambda _package: pkg)
+    rename = briefly_locked_rename(monkeypatch, failures=2)
+
+    results = patcher.apply_patch_group([_patch("first = 'old'", "first = 'new'", "first")])
+
+    assert [result.status for result in results] == ["applied"]
+    assert target.read_text(encoding="utf-8") == "first = 'new'\n"
+    assert len(rename.attempts) == 3
+    assert list(pkg.glob("*.tmp")) == []
+
+
+@pytest.mark.parametrize("apply", ["single", "group"])
+def test_a_patch_that_cannot_be_written_is_an_error_and_leaves_the_file_as_it_was(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    apply: str,
+) -> None:
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    target = pkg / "target.py"
+    original = "first = 'new'\nsecond = 'old'\n"
+    target.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(patcher, "_locate_package_dir", lambda _package: pkg)
+    rename = briefly_locked_rename(monkeypatch, failures=6)
+    second = _patch("second = 'old'", "second = 'new'", "second")
+
+    if apply == "single":
+        results = [patcher.apply_patch(second)]
+    else:
+        results = patcher.apply_patch_group([_patch("first = 'old'", "first = 'new'", "first"), second])
+
+    assert [result.status for result in results] == (["error"] if apply == "single" else ["skipped", "error"])
+    assert results[-1].detail.startswith("Could not write the file: ")
+    assert len(rename.attempts) == 6
+    assert target.read_text(encoding="utf-8") == original
+    assert list(pkg.glob("*.tmp")) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows os.chmod cannot take read access away.")
+def test_a_patch_target_that_cannot_be_read_is_an_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    target = pkg / "target.py"
+    target.write_text("first = 'old'\n", encoding="utf-8")
+    monkeypatch.setattr(patcher, "_locate_package_dir", lambda _package: pkg)
+    target.chmod(0)
+    try:
+        if os.access(target, os.R_OK):
+            pytest.skip("this user reads files whatever their mode")
+        single = patcher.apply_patch(_patch("first = 'old'", "first = 'new'", "single"))
+        group = patcher.apply_patch_group([_patch("first = 'old'", "first = 'new'", "first")])
+    finally:
+        target.chmod(0o644)
+
+    assert single.status == "error"
+    assert single.detail.startswith("Could not read the file: ")
+    assert [result.status for result in group] == ["error"]
+    assert target.read_text(encoding="utf-8") == "first = 'old'\n"
+
+
+def test_apply_all_goes_on_when_a_patch_cannot_be_written(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A launch from a read-only install, or with a target held open past the retries, still starts."""
+    with monkeypatch.context() as loading:
+        # The patch modules register their patches as apply_all() first imports them.
+        loading.setattr(patcher, "apply_patch_group", lambda _patches: [])
+        loading.setattr(patcher, "_apply_runtime_patches", lambda _runtime_patches: None)
+        patcher.apply_all()
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    target = pkg / "target.py"
+    target.write_text("first = 'old'\n", encoding="utf-8")
+    monkeypatch.setattr(patcher, "_locate_package_dir", lambda _package: pkg)
+    monkeypatch.setattr(patcher, "_patches", [_patch("first = 'old'", "first = 'new'", "first")])
+    runtime: list[int] = []
+    monkeypatch.setattr(patcher, "_apply_runtime_patches", lambda runtime_patches: runtime.append(len(runtime_patches)))
+    briefly_locked_rename(monkeypatch, failures=6)
+
+    results = patcher.apply_all()
+
+    assert [result.status for result in results] == ["error"]
+    assert len(runtime) == 1
+    assert "Patch error: first — Could not write the file: " in caplog.text
+    assert target.read_text(encoding="utf-8") == "first = 'old'\n"
+
+
 def test_apply_all_isolates_runtime_patch_failures(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -200,6 +303,7 @@ def test_apply_all_isolates_runtime_patch_failures(
     """One broken runtime patch must not block startup or later patches."""
     from chrys.foundation.patches import (
         textual_block_border,
+        textual_box_model_children,
         textual_button_ansi,
         textual_callback_cache,
         textual_callback_dispatch,
@@ -252,6 +356,7 @@ def test_apply_all_isolates_runtime_patch_failures(
     monkeypatch.setattr(textual_one_shot_timer, "apply_runtime_patch", lambda: calls.append("one_shot_timer"))
     monkeypatch.setattr(textual_timer_skip, "apply_runtime_patch", lambda: calls.append("timer_skip"))
     monkeypatch.setattr(textual_reflow_reuse, "apply_runtime_patch", lambda: calls.append("reflow_reuse"))
+    monkeypatch.setattr(textual_box_model_children, "apply_runtime_patch", lambda: calls.append("box_model_children"))
     monkeypatch.setattr(textual_strip_cycles, "apply_runtime_patch", lambda: calls.append("strip_cycles"))
     monkeypatch.setattr(textual_lru_acyclic, "apply_runtime_patch", lambda: calls.append("lru_acyclic"))
     monkeypatch.setattr(textual_node_diet, "apply_runtime_patch", lambda: calls.append("node_diet"))
@@ -287,6 +392,7 @@ def test_apply_all_isolates_runtime_patch_failures(
         "one_shot_timer",
         "timer_skip",
         "reflow_reuse",
+        "box_model_children",
         "strip_cycles",
         "lru_acyclic",
         "node_diet",

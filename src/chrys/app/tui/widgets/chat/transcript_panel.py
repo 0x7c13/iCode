@@ -22,22 +22,17 @@ class ChatTranscriptPanelMarker:
 
     __slots__ = ()
 
-    def entry_folded(self, *, by_user: bool) -> None:
-        """An entry folded: show the transcript at its new height in the layout that places it.
-
-        *by_user*, it was folded by hand: it shows as made, without the rows a turn holds below the transcript for
-        its own folds.
-        """
+    def entry_folded(self) -> None:
+        """An entry folded, or gave rows up: show the transcript at its new height in the layout that places it."""
         raise NotImplementedError
 
 
-def note_fold(widget: Widget, *, by_user: bool = False) -> None:
-    """Tell the chat transcript *widget* is in that it folded, *by_user* by hand, before a layout shows it.
+def note_fold(widget: Widget) -> None:
+    """Tell the chat transcript *widget* is in that it folded, or gave rows up, before a layout shows it.
 
-    The rows it gives up go in that layout, not a frame after it. As a turn runs, the transcript holds those of its
-    own folds, up to a third of the view; one the user makes shows as made.
+    The rows it gives up go in that layout, not a frame after it.
     """
     for ancestor in widget.ancestors:
         if isinstance(ancestor, ChatTranscriptPanelMarker):
-            ancestor.entry_folded(by_user=by_user)
+            ancestor.entry_folded()
             return
