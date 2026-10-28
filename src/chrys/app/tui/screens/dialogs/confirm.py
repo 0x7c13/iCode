@@ -140,7 +140,7 @@ class ConfirmDialog(BaseDialog[bool]):
         return text
 
     def on_mount(self) -> None:
-        if not self.app.is_running or self._closing or self._pruning:
+        if not self._composed_live:
             return
         if self._locale_controller is not None:
             self._locale_controller.register_surface(self)

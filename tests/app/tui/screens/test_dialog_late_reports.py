@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Progress dialogs buffer reports their operation sends while Textual removes them."""
+"""Dialogs their owners report to, or push, while Textual removes them or the app shuts down render nothing."""
 
 from __future__ import annotations
 
@@ -15,9 +15,16 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from chrys.app.tui.screens.dialogs.agent_load import AgentLoadDialog
+from chrys.app.tui.screens.dialogs.approval.dialog import ApprovalDialog
+from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.dialogs.connection_test import ConnectionTestDialog
 from chrys.app.tui.screens.dialogs.fork_session import ForkSessionDialog
 from chrys.app.tui.screens.dialogs.image_compression import ImageCompressionDialog
+from chrys.app.tui.screens.dialogs.vision_unsupported import VisionUnsupportedDialog
+from chrys.app.tui.screens.main.hook_confirmation_dialog import HookConfirmationDialog
+from chrys.foundation.events.types import HookConfirmationRequest
+from chrys.foundation.tool_kinds import KIND_SHELL
+from chrys.service.approval.judge import JudgeVerdict
 
 
 def _report_workflow_load(dialog: AgentLoadDialog) -> None:
@@ -44,13 +51,32 @@ def _report_compressed(dialog: ImageCompressionDialog) -> None:
     dialog.finish()
 
 
-_DIALOGS: dict[str, tuple[type[ModalScreen], Callable]] = {
-    "agent-load-finish": (AgentLoadDialog, _report_workflow_load),
-    "agent-load-result": (AgentLoadDialog, _report_agent_failure),
-    "fork-session": (ForkSessionDialog, _report_fork),
-    "connection-test": (ConnectionTestDialog, _report_connection),
-    "image-compression": (ImageCompressionDialog, _report_compressed),
+def _report_flagged(dialog: ApprovalDialog) -> None:
+    dialog.receive_verdict(JudgeVerdict(approved=False, reason="Deletes files outside the workspace"))
+
+
+def _bare[D: ModalScreen](cls: type[D]) -> D:
+    return cls()
+
+
+def _shell_approval(cls: type[ApprovalDialog]) -> ApprovalDialog:
+    return cls("Code", "zsh", KIND_SHELL, {"command": "rm -rf build"})
+
+
+# Each dialog, how to build it (or a subclass of it), and a report its owner sends it.
+_DIALOGS: dict[str, tuple[type[ModalScreen], Callable, Callable]] = {
+    "agent-load-finish": (AgentLoadDialog, _bare, _report_workflow_load),
+    "agent-load-result": (AgentLoadDialog, _bare, _report_agent_failure),
+    "fork-session": (ForkSessionDialog, _bare, _report_fork),
+    "connection-test": (ConnectionTestDialog, _bare, _report_connection),
+    "image-compression": (ImageCompressionDialog, _bare, _report_compressed),
+    "approval-verdict": (ApprovalDialog, _shell_approval, _report_flagged),
 }
+
+
+def _css_path(base: type[ModalScreen]) -> Path:
+    """*base*'s stylesheet: a relative CSS_PATH resolves against the subclass's module."""
+    return Path(inspect.getfile(base)).parent / str(base.CSS_PATH)
 
 
 class _Host(App[None]):
@@ -61,19 +87,18 @@ class _Host(App[None]):
 @pytest.mark.parametrize("removal", ["pop", "app-exit"])
 @pytest.mark.parametrize("kind", list(_DIALOGS))
 async def test_reports_during_and_after_removal_are_buffered(kind: str, removal: str) -> None:
-    base, report = _DIALOGS[kind]
+    base, build, report = _DIALOGS[kind]
     reported: list[bool] = []
 
     class Reporting(base):
-        # A relative CSS_PATH resolves against the subclass's module.
-        CSS_PATH = Path(inspect.getfile(base)).with_name(str(base.CSS_PATH))
+        CSS_PATH = _css_path(base)
 
         def on_unmount(self) -> None:
             # Removal has pruned every child; the dialog itself has not unmounted yet.
             reported.append(not self.children)
             report(self)
 
-    dialog = Reporting()
+    dialog = build(Reporting)
     app = _Host()
     async with app.run_test():
         await app.push_screen(dialog)
@@ -121,18 +146,59 @@ _MOUNTED_IN = {"prune": (True, False, True), "late": (False, False, True), "exit
 @pytest.mark.parametrize("kind", list(_DIALOGS))
 async def test_a_dialog_that_mounts_as_the_app_exits_renders_nothing(kind: str, reported: bool, window: str) -> None:
     """An owner can push its dialog as the app shuts down: its children are pruned before it mounts, or never mount."""
-    base, report = _DIALOGS[kind]
+    base, build, report = _DIALOGS[kind]
     mounted: list[tuple[bool, bool, bool]] = []
 
     class Mounting(base):
-        CSS_PATH = Path(inspect.getfile(base)).with_name(str(base.CSS_PATH))
+        CSS_PATH = _css_path(base)
 
         def on_mount(self) -> None:
             # Dispatch runs the dialog's own handler after this one.
             mounted.append((self._pruning, self.app.is_running, self.is_attached))
 
-    dialog = Mounting()
+    dialog = build(Mounting)
     if reported:
         report(dialog)
     await _push_as_the_app_exits(dialog, window)
+    assert mounted == [_MOUNTED_IN[window]]
+
+
+def _hook_request() -> HookConfirmationRequest:
+    return HookConfirmationRequest(
+        session_id="s1",
+        request_id="r1",
+        operation_id="op-r1",
+        revision=1,
+        run_id="run-r1",
+        hook_id="guard",
+        subject="tool",
+        tool_name="edit_file",
+    )
+
+
+# Questions the backend puts to the user, who may be quitting meanwhile, and how to build each.
+_QUESTIONS: dict[str, tuple[type[ModalScreen], Callable]] = {
+    "vision-unsupported": (VisionUnsupportedDialog, lambda cls: cls("The model can't read images")),
+    "vision-unsupported-paths": (
+        VisionUnsupportedDialog,
+        lambda cls: cls("The model can't read images", show_path_action=True),
+    ),
+    "confirm": (ConfirmDialog, _bare),
+    "hook-confirmation": (HookConfirmationDialog, lambda cls: cls(_hook_request())),
+}
+
+
+@pytest.mark.parametrize("window", list(_MOUNTED_IN))
+@pytest.mark.parametrize("kind", list(_QUESTIONS))
+async def test_a_question_that_mounts_as_the_app_exits_renders_nothing(kind: str, window: str) -> None:
+    base, build = _QUESTIONS[kind]
+    mounted: list[tuple[bool, bool, bool]] = []
+
+    class Mounting(base):
+        CSS_PATH = _css_path(base)
+
+        def on_mount(self) -> None:
+            mounted.append((self._pruning, self.app.is_running, self.is_attached))
+
+    await _push_as_the_app_exits(build(Mounting), window)
     assert mounted == [_MOUNTED_IN[window]]

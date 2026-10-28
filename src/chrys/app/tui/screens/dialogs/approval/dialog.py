@@ -22,6 +22,7 @@ from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.i18n import render_str, widget_localizer
 from chrys.app.tui.screens.dialogs.approval.bodies.file_edit import ApprovalDiffPreview
 from chrys.app.tui.screens.dialogs.approval.review_reason import review_reason
+from chrys.app.tui.screens.dialogs.base import composed_live
 from chrys.app.tui.util.source_text import mark_hidden_format
 from chrys.app.tui.widgets import Checkbox, ChrysLoadingIndicator, EnhancedTextArea, StableAutoHeightScroll
 from chrys.app.tui.widgets.text_area import NEWLINE_SHORTCUT_KEYS
@@ -243,7 +244,7 @@ class ApprovalDialog(
         self._dismiss_result: tuple[bool, str, dict[str, Any] | None] | None = None
         self._user_decision_submitted = False
         self._dismiss_on_resume = False
-        # A flag that lands before ``on_mount`` waits here; its widgets exist only then.
+        # A flag that lands while its widgets cannot show it waits here: before ``on_mount``, or once removal began.
         self._flagged: JudgeVerdict | None = None
         self._verdict_widgets_ready = False
         super().__init__()
@@ -424,6 +425,8 @@ class ApprovalDialog(
         return title
 
     def on_mount(self) -> None:
+        if not composed_live(self):
+            return
         self.call_after_refresh(self._notify_ready)
         self._verdict_widgets_ready = True
         if self._flagged is not None:
@@ -532,7 +535,7 @@ class ApprovalDialog(
         Called by the event handler once the judge finishes.  If the verdict
         approves the tool call, the dialog auto-dismisses.  Otherwise it
         shows the concern and lets the user decide; before mount it keeps
-        the verdict and opens flagged.
+        the verdict and opens flagged, and once removal began it only keeps it.
 
         If the user already clicked Approve/Decline, this is a no-op.
         """
@@ -544,7 +547,7 @@ class ApprovalDialog(
             return
 
         self._flagged = verdict
-        if self._verdict_widgets_ready:
+        if self._verdict_widgets_ready and composed_live(self):
             self._show_flagged(verdict)
 
     def _show_flagged(self, verdict: JudgeVerdict) -> None:

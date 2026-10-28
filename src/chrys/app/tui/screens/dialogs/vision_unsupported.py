@@ -89,6 +89,8 @@ class VisionUnsupportedDialog(BaseDialog[VisionUnsupportedDialogResult]):
             )
 
     def on_mount(self) -> None:
+        if not self._composed_live:
+            return
         button_id = "#vision-unsupported-use-paths" if self._show_path_action else "#vision-unsupported-ok"
         self.query_one(button_id, Button).focus()
 
