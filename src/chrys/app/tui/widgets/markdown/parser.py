@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import html
 import re
+import string
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
@@ -42,6 +43,7 @@ _ZERO_WIDTH_JOINER = "\u200d"
 _LINKIFY_SOURCE_META = "_chrys_linkify_source"
 _FENCE_CLOSED_META = "_chrys_fence_closed"
 _HTML_LINE_BREAK_RULE = "chrys_html_line_break"
+_LITERAL_USER_BACKSLASH_RULE = "chrys_literal_user_backslash"
 _HTML_LINE_BREAK = re.compile(r"<br\s*/?>[ \t]*(?:\n[ \t]*)?", re.IGNORECASE)
 # CJK sentence punctuation (fullwidth/halfwidth variants and their vertical and
 # small presentation forms included), the ellipsis leaders CJK prose typically
@@ -380,6 +382,30 @@ def _html_line_break(state: StateInline, silent: bool) -> bool:
     return True
 
 
+def _literal_user_backslash(state: StateInline, silent: bool) -> bool:
+    """Keep a typed backslash before punctuation or a newline, so a path reads as typed.
+
+    It still does the escape's other job: the punctuation after it is plain
+    text, so ``\\*`` starts no emphasis. Before a newline the backslash stays
+    and the newline breaks the line as any other does.
+    """
+    pos = state.pos
+    if state.src[pos] != "\\" or pos + 1 >= state.posMax:
+        return False
+    escaped = state.src[pos + 1]
+    if escaped == "\n":
+        if not silent:
+            state.pending += "\\"
+        state.pos = pos + 1
+        return True
+    if escaped not in string.punctuation:
+        return False
+    if not silent:
+        state.pending += "\\" + escaped
+    state.pos = pos + 2
+    return True
+
+
 def _create_markdown_parser() -> MarkdownIt:
     """Create the default Markdown parser used by the TUI.
 
@@ -415,12 +441,15 @@ def create_line_break_markdown_parser() -> MarkdownIt:
 
 
 def create_user_text_markdown_parser() -> MarkdownIt:
-    """The line-break parser for text a person typed, where ``<br>`` stays text too.
+    """The line-break parser for text a person typed, where ``<br>`` and backslashes stay text too.
 
-    A person typing ``<br>`` means those characters, as with any other tag.
+    A person typing ``<br>`` means those characters, as with any other tag, and
+    a backslash is usually part of a Windows path (``D:\\project\\.code``), so it
+    shows as typed (``_literal_user_backslash``).
     """
     parser = create_line_break_markdown_parser()
     parser.inline.ruler.disable(_HTML_LINE_BREAK_RULE)
+    parser.inline.ruler.before("escape", _LITERAL_USER_BACKSLASH_RULE, _literal_user_backslash)
     disable_math(parser)
     return parser
 
