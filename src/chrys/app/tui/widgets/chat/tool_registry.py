@@ -52,10 +52,12 @@ class ToolGroupRegistry:
         finalize_agent_message: Callable[[], None] | None = None,
         tool_groups_expanded: Callable[[], bool] | None = None,
         tool_widget_configurator: Callable[[Widget], None] | None = None,
+        workspace_cwd: Callable[[], str] | None = None,
     ) -> None:
         self._mount = mount
         self._ui = ui
         self._status = status
+        self._workspace_cwd = workspace_cwd
         self._finalize_agent_message = finalize_agent_message
         self._tool_groups_expanded = tool_groups_expanded or _expanded_by_default
         self._tool_widget_configurator = tool_widget_configurator
@@ -298,10 +300,9 @@ class ToolGroupRegistry:
             await self._status.remove_trailing_status()
             if self._group_generation != group_generation:
                 return None
-            if self._tool_widget_configurator is None:
-                group = ToolGroup()
-            else:
-                group = ToolGroup(tool_widget_configurator=self._tool_widget_configurator)
+            group = ToolGroup(
+                tool_widget_configurator=self._tool_widget_configurator, workspace_cwd=self._workspace_cwd
+            )
             group.collapsed = not self._tool_groups_expanded()
             mounted = await self._mount.mount_transcript_widget(group)
             if not mounted or self._group_generation != group_generation:

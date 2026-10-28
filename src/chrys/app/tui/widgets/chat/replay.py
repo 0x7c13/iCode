@@ -982,10 +982,12 @@ class HistoryReplayRenderer:
         default_profile: Callable[[], str],
         localization: TranscriptLocalizationPort | None = None,
         tool_widget_configurator: Callable[[Widget], None] | None = None,
+        workspace_cwd: Callable[[], str] | None = None,
         show_reasoning: bool = False,
         fold_passed_text: bool = False,
     ) -> None:
         self._mount = mount
+        self._workspace_cwd = workspace_cwd
         self._ui = ui
         self._toc = toc
         self._tool_kind_resolver = tool_kind_resolver
@@ -1311,7 +1313,9 @@ class HistoryReplayRenderer:
         async def flush_tools() -> None:
             if not pending_tools:
                 return
-            group = ToolGroup(live=False, tool_widget_configurator=self._tool_widget_configurator)
+            group = ToolGroup(
+                live=False, tool_widget_configurator=self._tool_widget_configurator, workspace_cwd=self._workspace_cwd
+            )
             for idx, tc in enumerate(pending_tools):
                 if isinstance(tc, ReplayToolCall):
                     name = tc.name

@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypedDict, Unpack
 
 import pytest
 from textual.widget import Widget
@@ -131,8 +132,16 @@ class _FakeQuery:
         return list(self.children)
 
 
+class _ToolGroupOptions(TypedDict, total=False):
+    """The keywords the registry builds a ``ToolGroup`` with."""
+
+    tool_widget_configurator: Callable[[Widget], None] | None
+    workspace_cwd: Callable[[], str] | None
+
+
 class _FakeToolGroup:
-    def __init__(self) -> None:
+    def __init__(self, **options: Unpack[_ToolGroupOptions]) -> None:
+        self.options = options
         self.added: list[tuple[str, str, str]] = []
         self.completed: list[str] = []
         self.progress: list[str] = []
@@ -573,8 +582,8 @@ async def test_tool_registry_delayed_start_does_not_clobber_reused_call_id(
     instances: list[_FakeToolGroup] = []
 
     class _FirstAddBlocksToolGroup(_FakeToolGroup):
-        def __init__(self) -> None:
-            super().__init__()
+        def __init__(self, **options: Unpack[_ToolGroupOptions]) -> None:
+            super().__init__(**options)
             instances.append(self)
             self._blocks = len(instances) == 1
 
@@ -628,8 +637,8 @@ async def test_tool_registry_delayed_start_supersedes_older_reused_call_id_owner
     instances: list[_FakeToolGroup] = []
 
     class _SecondAddBlocksToolGroup(_FakeToolGroup):
-        def __init__(self) -> None:
-            super().__init__()
+        def __init__(self, **options: Unpack[_ToolGroupOptions]) -> None:
+            super().__init__(**options)
             instances.append(self)
             self._blocks = len(instances) == 2
 
@@ -684,8 +693,8 @@ async def test_tool_registry_result_racing_replacement_start_routes_to_new_card(
     instances: list[_FakeToolGroup] = []
 
     class _SecondAddBlocksToolGroup(_FakeToolGroup):
-        def __init__(self) -> None:
-            super().__init__()
+        def __init__(self, **options: Unpack[_ToolGroupOptions]) -> None:
+            super().__init__(**options)
             instances.append(self)
             self._blocks = len(instances) == 2
 
@@ -1036,8 +1045,8 @@ async def test_tool_registry_concurrent_start_waits_for_group_mount(
             return mounted
 
     class _MountAwareToolGroup(_FakeToolGroup):
-        def __init__(self) -> None:
-            super().__init__()
+        def __init__(self, **options: Unpack[_ToolGroupOptions]) -> None:
+            super().__init__(**options)
             self.mount_completed = False
 
         async def add_tool(

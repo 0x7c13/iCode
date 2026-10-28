@@ -12595,6 +12595,140 @@ msgstr "{seconds} 秒"
 msgid "tui.tool_card.group.label"
 msgstr "工具"
 
+#. English: Ran agent {agent}
+#. chrys-meta={"fingerprint":"0f5b50f289bc6f5a848444915b3a6fc39e058806c6fc877d1d76dd4dc986885a","multiline":false,"placeholders":["agent"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.agent"
+msgstr "运行子智能体 {agent}"
+
+#. English: Ran command: {command}
+#. chrys-meta={"fingerprint":"4b2adacfdb27af87b7a461c6ebc5ade54dc919cc2e056af181c7268f36e3f458","multiline":false,"placeholders":["command"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.command"
+msgstr "运行命令：{command}"
+
+#. English: Edited {path}
+#. chrys-meta={"fingerprint":"bb9b228aa0f09749b0ad6d370e3f215b863a4fc91331441454addea935b69ca3","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.edit"
+msgstr "编辑 {path}"
+
+#. English: Fetched {url}
+#. chrys-meta={"fingerprint":"554e85ef961f04859b2e8d478a8ec65e4ceee6752c5d2498b1900cb79e054175","multiline":false,"placeholders":["url"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.fetch"
+msgstr "抓取 {url}"
+
+#. English: Found files matching {pattern}
+#. chrys-meta={"fingerprint":"506d08f4ec7ce2bff5c5989ec1905a48d0c201943e7045b6444f73bcb9824369","multiline":false,"placeholders":["pattern"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.find_files"
+msgstr "查找文件 {pattern}"
+
+#. English: Loaded skill {skill}
+#. chrys-meta={"fingerprint":"4c3ba41e1b3f2ba8dea6ef55f8e9c8e944bba19eb72d881940361c50c9e2a274","multiline":false,"placeholders":["skill"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.load_skill"
+msgstr "加载 Skill {skill}"
+
+#. English: Called MCP tool {tool}
+#. chrys-meta={"fingerprint":"5f76d586a631c7dd81f026f2b4e7c9a1e79133612b9799e92d8490b64f71651b","multiline":false,"placeholders":["tool"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.mcp"
+msgstr "调用 MCP 工具 {tool}"
+
+#. English: Called {tool}
+#. chrys-meta={"fingerprint":"31f4725ceb8aaca35b31cf08aed1c6e9f352f04336e8ecacd2356f05823d76df","multiline":false,"placeholders":["tool"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.other"
+msgstr "调用 {tool}"
+
+#. English: Asked you: {question}
+#. chrys-meta={"fingerprint":"706600a72a97b75bed1eca8c442a14225ef2aa52147aaa08acef59dd88f77399","multiline":false,"placeholders":["question"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.question"
+msgstr "向你提问：{question}"
+
+#. English: Asked you {count} question
+#. English-plural: Asked you {count} questions
+#. chrys-meta={"fingerprint":"a3f987a90227d2bccf230b5f41ac7d22a7467137d136539e652b7596cfdc6e0c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.questions"
+msgid_plural "tui.tool_card.group.single.questions#plural"
+msgstr[0] "向你提了 {count} 个问题"
+
+#. English: Read {path}
+#. chrys-meta={"fingerprint":"e21c2298fc388e61e6c10cb7d0f8ed3e21efb66b029565b97569cd76dfbedbad","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.read"
+msgstr "读取 {path}"
+
+#. English: Read document {path}
+#. chrys-meta={"fingerprint":"6176d37f265b2e5221a61eab05a1c26ac30c01840904041f12a9c998a26473c8","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.read_document"
+msgstr "读取文档 {path}"
+
+#. English: Searched for {pattern}
+#. chrys-meta={"fingerprint":"0aaa3b9d77954cc73e6b683726b6cb3d9e4fbf3b5689de9b5331703026689547","multiline":false,"placeholders":["pattern"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.search"
+msgstr "搜索 {pattern}"
+
+#. English: Searched for {pattern} in {path}
+#. chrys-meta={"fingerprint":"d4afc73ec10819f7849e129ff1a35eaa24851c68162a37c6944cc09c490c9cdf","multiline":false,"placeholders":["path","pattern"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.search_in"
+msgstr "搜索 {pattern}（在 {path} 中）"
+
+#. English: Ran {shell} command: {command}
+#. chrys-meta={"fingerprint":"9ea7529efcbb6c87059821e1eda418e900e87a93952f36f778c528bf10f3c16a","multiline":false,"placeholders":["command","shell"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.shell_command"
+msgstr "运行 {shell} 命令：{command}"
+
+#. English: Read skill resource {resource}
+#. chrys-meta={"fingerprint":"9de18d4ca870de7fe47ccc64f3ff394169c793edfc1f0599850b9f298e86b115","multiline":false,"placeholders":["resource"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.skill_resource"
+msgstr "读取 Skill 资源 {resource}"
+
+#. English: Ran skill script {script}
+#. chrys-meta={"fingerprint":"e92a970f5b9af2f2bdea9cb96f5af4f715a99c08c1c0f56265f812488829da08","multiline":false,"placeholders":["script"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.skill_script"
+msgstr "执行 Skill 脚本 {script}"
+
+#. English: Slept {duration}: {reason}
+#. chrys-meta={"fingerprint":"749666e79e40d0f8e176e0bbcbf5b3567dfb3e20ce057b8772e7bef5062936b1","multiline":false,"placeholders":["duration","reason"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.sleep"
+msgstr "休眠了 {duration}：{reason}"
+
+#. English: Updated the todo list
+#. chrys-meta={"fingerprint":"62033c1e41f83903e763db06f4dd9154edb0f7b5daf7c312e804408171c41b87","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.todo"
+msgstr "更新待办列表"
+
+#. English: Viewed image {path}
+#. chrys-meta={"fingerprint":"3ca5372b2017536b06b6bf2ae99dac3eb4ed9d438cf0f588c7a2f0db8df2b9c4","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.view_image"
+msgstr "查看图片 {path}"
+
+#. English: Searched the web: {query}
+#. chrys-meta={"fingerprint":"990712a5d58c67b80bb6c2e13c6038db45d00ad747062be573486b07377fcab2","multiline":false,"placeholders":["query"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.web_search"
+msgstr "网页搜索：{query}"
+
+#. English: Wrote {path}
+#. chrys-meta={"fingerprint":"e668077d528368f0ea1409b3b21466f814903db43a8b1dc68a5ba3fa05b57bd7","multiline":false,"placeholders":["path"]}
+#: src/chrys/app/tui/widgets/chat/single_call_row.py
+msgid "tui.tool_card.group.single.write"
+msgstr "写入 {path}"
+
 #. English: {count} agent
 #. English-plural: {count} agents
 #. chrys-meta={"fingerprint":"e347789a4968a77e329f7d646eaa0e05b30a08d013998c6cd83c699600a8768b","multiline":false,"placeholders":[]}

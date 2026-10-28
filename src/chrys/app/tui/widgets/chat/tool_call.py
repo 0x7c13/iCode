@@ -59,6 +59,7 @@ from chrys.app.tui.widgets.chat.fold_rows import (
     tool_category,
 )
 from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
+from chrys.app.tui.widgets.chat.single_call_row import SingleCallRow, single_call_row
 from chrys.app.tui.widgets.chat.tool_view_builders import (
     TOOL_VIEW_EMPTY,
     TOOL_VIEW_OUTPUT,
@@ -70,7 +71,7 @@ from chrys.app.tui.widgets.chat.tool_view_builders import (
 from chrys.app.tui.widgets.chat.transcript_panel import note_fold
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
 from chrys.app.tui.widgets.loading import RunningTitle
-from chrys.foundation.i18n import MessageRef, msg
+from chrys.foundation.i18n import Localizer, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block, sanitize_legacy_scalar
 from chrys.foundation.patches.textual_precompose import precompose_tree
 from chrys.foundation.platform.files import surrogate_safe_text
@@ -1647,7 +1648,8 @@ class ToolGroup(ToolCopyExcludedMixin, FoldGap, ProcessMember):
     """Collapsible group of tool calls within a single agent turn.
 
     Consecutive tool starts are grouped together. While they run, the title shows
-    the latest activity; once the group closes, how many calls of each kind it made.
+    the latest activity; once the group closes, how many calls of each kind it made,
+    or, for its one call that succeeded, what that call did.
     """
 
     DEFAULT_CSS = """
@@ -1692,12 +1694,16 @@ class ToolGroup(ToolCopyExcludedMixin, FoldGap, ProcessMember):
         *,
         live: bool = True,
         tool_widget_configurator: Callable[[Widget], None] | None = None,
+        workspace_cwd: Callable[[], str] | None = None,
     ) -> None:
+        """*workspace_cwd* gives the folder the chat works in, which a path inside it reads relative to; None keeps
+        paths as the calls gave them, as a transcript that may run elsewhere does."""
         self._collapse_lock_call_ids: set[str] = set()
         self._process_status: tuple[ToolTally, bool, bool] | None = None
         super().__init__()
         self._live = live
         self._tool_widget_configurator = tool_widget_configurator
+        self._workspace_cwd = workspace_cwd
         self._tools: dict[str, Widget] = {}
         self._tool_records: dict[str, _ToolRecord] = {}
         self._activity_sequence = 0
@@ -2243,13 +2249,45 @@ class ToolGroup(ToolCopyExcludedMixin, FoldGap, ProcessMember):
         tally = self.tool_tally
         actions = tally.action_words(localizer)
         failed, interrupted = tally.outcomes(localizer)
+        subject = ""
+        if (single := self._single_call_row(localizer)) is not None:
+            actions, subject = (single.words,), single.subject
         if self.shows_running:
-            return FoldRow("" if actions else render_str(localizer, TOOLS_LABEL.bind()), actions, failed, interrupted)
+            head = "" if actions else render_str(localizer, TOOLS_LABEL.bind())
+            return FoldRow(head, actions, failed, interrupted, subject=subject)
         arrow = FOLDED_ARROW if self.collapsed else OPEN_ARROW
-        return FoldRow(f"{arrow} ", actions, failed, interrupted)
+        return FoldRow(f"{arrow} ", actions, failed, interrupted, subject=subject)
+
+    def _single_call_row(self, localizer: Localizer) -> SingleCallRow | None:
+        """What the group's one call did, once it succeeded; None for more calls, or one that failed or still runs."""
+        records = [record for record in self._tool_records.values() if record is not None]
+        if len(records) != 1:
+            return None
+        (record,) = records
+        if record.status == "running" or _record_outcome(record):
+            return None
+        return single_call_row(
+            localizer,
+            record.tool_name,
+            record.tool_kind,
+            record.args,
+            hosted_family=record.hosted_family,
+            slept_ms=_slept_ms(record),
+            workspace_cwd=self._workspace_cwd() if self._workspace_cwd is not None else "",
+        )
+
+    def refresh_title(self) -> None:
+        """Show the title again, as what it reads from outside the group changed: the folder paths read relative to.
+
+        Its calls did not change, so the process block it belongs to hears nothing.
+        """
+        self._show_title()
 
     def _update_title(self) -> None:
         self._notify_process_state()
+        self._show_title()
+
+    def _show_title(self) -> None:
         try:
             title = self.query_one(ToolGroupTitle)
         except NoMatches:

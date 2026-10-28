@@ -392,7 +392,8 @@ async def test_tool_group_title_summarizes_its_calls_per_locale() -> None:
         localized_group.finalize_activity_header()
         await pilot.pause()
 
-        # The row says what the calls did, in the words of the language.
+        # The row says what the calls did, in the words of the language; a call with no command to name keeps its
+        # count.
         assert localized_group.query_one(ToolGroupTitle).render().plain == "▾ 运行 1 条命令"
 
     english_group = ToolGroup()
