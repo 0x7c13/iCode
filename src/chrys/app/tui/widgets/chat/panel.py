@@ -1322,12 +1322,14 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         *,
         structured_output_completed: bool = False,
         created_at: Any = None,
+        turn_started_at: Any = None,
     ) -> None:
-        """Complete the turn's answer, whose text already streamed as deltas."""
+        """Complete the turn's answer, whose text already streamed as deltas; it took from *turn_started_at*."""
         await self._live_renderer.add_agent_message(
             text,
             structured_output_completed=structured_output_completed,
             created_at=created_at,
+            turn_started_at=turn_started_at,
         )
         self._sync_waiting_row()
         if self._fold_finished_turns():

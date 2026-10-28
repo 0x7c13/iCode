@@ -10,7 +10,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, TypeGuard
 
 from rich.cells import cell_len
@@ -151,18 +151,35 @@ def resolve_interrupted_message_copy(
     )
 
 
+def _aware_created_at(value: Any) -> datetime | None:
+    """A persisted message timestamp; one with no zone is UTC."""
+    dt = parse_created_at(value)
+    if dt is not None and (dt.tzinfo is None or dt.utcoffset() is None):
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
 def format_message_created_at(value: Any) -> str:
     """Format a persisted message timestamp in the user's local time."""
-    dt = parse_created_at(value)
+    dt = _aware_created_at(value)
     if dt is None:
         return ""
 
-    if dt.tzinfo is None or dt.utcoffset() is None:
-        dt = dt.replace(tzinfo=UTC)
     local = dt.astimezone()
     hour = local.hour % 12 or 12
     suffix = "AM" if local.hour < 12 else "PM"
     return f"- {hour}:{local.minute:02d} {suffix}"
+
+
+def turn_duration_ms(started_at: Any, finished_at: Any) -> int | None:
+    """How long a turn took to its answer, in milliseconds: from when its pass began to when the answer finished.
+
+    None unless both are timestamps, in that order.
+    """
+    start, end = _aware_created_at(started_at), _aware_created_at(finished_at)
+    if start is None or end is None or end < start:
+        return None
+    return (end - start) // timedelta(milliseconds=1)
 
 
 def format_chat_copy_payload(messages: list[tuple[str, str]]) -> str:
@@ -1186,11 +1203,14 @@ class AgentMessage(StreamedMarkdownMessage):
         if self._is_final:
             self.collapsed = not self.collapsed
 
-    def set_timestamp(self, timestamp: str) -> None:
-        """Update the header timestamp."""
-        if not timestamp or timestamp == self._ts:
+    def set_timestamp(self, timestamp: str, *, duration_ms: int | None = None) -> None:
+        """Update the header timestamp, and how long the turn took to this answer (*duration_ms*) when given."""
+        timestamp = timestamp or self._ts
+        duration_ms = self._duration_ms if duration_ms is None else duration_ms
+        if (timestamp, duration_ms) == (self._ts, self._duration_ms):
             return
         self._ts = timestamp
+        self._duration_ms = duration_ms
         self._refresh_header()
 
     def _should_show_copy_button(self) -> bool:
@@ -1234,10 +1254,11 @@ class AgentMessage(StreamedMarkdownMessage):
             return
         self.copy_agent_response()
 
-    def stream_update(self, text: str, is_final: bool = False, *, timestamp: str = "") -> None:
-        """Update the message text (for streaming); a *timestamp* goes in the header first."""
-        if timestamp:
-            self.set_timestamp(timestamp)
+    def stream_update(
+        self, text: str, is_final: bool = False, *, timestamp: str = "", duration_ms: int | None = None
+    ) -> None:
+        """Update the message text (for streaming); a *timestamp* and *duration_ms* go in the header first."""
+        self.set_timestamp(timestamp, duration_ms=duration_ms)
         super().stream_update(text, is_final)
 
     def settle_intermediate(self, *, folded: bool = False) -> None:

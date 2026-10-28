@@ -13,6 +13,7 @@ from chrys.app.tui.widgets.chat.replay import (
     ReplayInterrupted,
     ReplayStructuredCompletion,
     ReplayToolCall,
+    ReplayTurnMarker,
     ReplayUserMessage,
 )
 from chrys.foundation.models.history_markers import HistoryMarkerKind
@@ -25,6 +26,7 @@ from chrys.foundation.tool_result_metadata import (
 )
 from chrys.foundation.trajectory_timing import TRAJECTORY_TIMING_KEY
 from chrys.kernel import ChatResponse, Content, Message
+from chrys.service.context.providers.history import TURN_STARTED_AT_KEY
 from chrys.service.session.message_metadata import (
     MESSAGE_CREATED_AT_KEY,
     TOOL_CALL_KIND_METADATA_KEY,
@@ -152,7 +154,7 @@ def test_replay_history_preserves_legacy_input_annotations() -> None:
     assert function_call["_replay_approval"] == approval
 
 
-def test_planner_restores_assistant_and_paired_tool_durations() -> None:
+def test_planner_restores_tool_durations_not_response_durations() -> None:
     call = _fc("c1")
     call["additional_properties"] = {TRAJECTORY_TIMING_KEY: _timing(125)}
     result = _fr("c1")
@@ -187,12 +189,13 @@ def test_planner_restores_assistant_and_paired_tool_durations() -> None:
     assert user_message.created_at == "2026-08-19T01:02:04.000000+00:00"
     assert [tool.duration_ms for tool in tools] == [987]
     assert [tool.started_at for tool in tools] == ["2026-08-19T01:02:05.000000+00:00"]
-    assert [message.duration_ms for message in agent_messages] == [321, 654]
+    # An agent message tells no time of its own response: the answer tells its turn's, once a marker ends it.
+    assert [message.duration_ms for message in agent_messages] == [None, None]
     assert {message.created_at for message in agent_messages} == {"2026-08-19T01:02:04.000000+00:00"}
 
 
-def test_coalesced_structured_completion_uses_latest_assistant_timing() -> None:
-    """A turn-ending hosted completion belongs to the final tool cycle."""
+def test_coalesced_structured_completion_finished_with_the_final_tool_cycle() -> None:
+    """A turn-ending hosted completion belongs to the final tool cycle: it finished then, and tells its turn's time."""
     hosted_call = Content.from_hosted_tool_call(
         "hosted-1",
         tool_name="server_task",
@@ -220,12 +223,16 @@ def test_coalesced_structured_completion_uses_latest_assistant_timing() -> None:
         _assistant([_fc("local-1")], **{TRAJECTORY_TIMING_KEY: first_timing}),
         _tool([_fr("local-1", "done")]),
         _assistant([hosted_call, hosted_result], **{TRAJECTORY_TIMING_KEY: latest_timing}),
+        _assistant(
+            [_text("")],
+            **{HistoryMarkerKind.KEY: HistoryMarkerKind.TURN, TURN_STARTED_AT_KEY: "2026-08-19T01:01:00+00:00"},
+        ),
     ]
 
     entries = HistoryReplayPlanner().build_plan(messages).entries
 
-    assert [type(entry) for entry in entries] == [ReplayAgentMessage, ReplayStructuredCompletion]
-    assert entries[1] == ReplayStructuredCompletion("2026-08-19T01:02:06.000000+00:00", 999)
+    assert [type(entry) for entry in entries] == [ReplayAgentMessage, ReplayStructuredCompletion, ReplayTurnMarker]
+    assert entries[1] == ReplayStructuredCompletion("2026-08-19T01:02:06.000000+00:00", 66_000)
 
 
 def test_planner_treats_missing_legacy_timing_as_unknown() -> None:

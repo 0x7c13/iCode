@@ -95,6 +95,11 @@ class TurnRuntimeState:
 
     lease: ExecutionLease = field(default_factory=ExecutionLease)
     current_input: CurrentTurnInput = field(default_factory=CurrentTurnInput)
+    pass_started_at: datetime | str | None = None
+    """When the user asked for the running pass: sent its message, or pressed Continue or Retry.
+
+    Its turn marker keeps it.
+    """
 
     paused_sub_agents: set[str] = field(default_factory=set)
     shutdown_used_cancel_fallback: bool = False
@@ -182,6 +187,7 @@ class TurnRuntimeState:
         """Reset Turn-only data after the execution owner has drained and reset."""
         old_scope = self.lease.reset_after_session_shutdown(prompt_admission_owner=prompt_admission_owner)
         self.current_input = CurrentTurnInput()
+        self.pass_started_at = None
         self.history_start_index = 0
         self.cancelled_injection_ids.clear()
         self.inflight_injection_ids.clear()

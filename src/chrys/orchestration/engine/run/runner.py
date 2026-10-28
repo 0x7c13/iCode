@@ -133,6 +133,7 @@ class TurnRunner:
     ) -> None:
         """Execute a fresh agent turn and finalize it."""
         _ = injection_window
+        self._turn_state.pass_started_at = created_at
         self._current.require_loaded().bindings.inputs.begin_invocation()
         if contents is None:
             contents = await self._prepare_user_contents(text)
@@ -245,6 +246,7 @@ class TurnRunner:
     ) -> None:
         """Resume the agent from current state and finalize it."""
         _ = injection_window
+        self._turn_state.pass_started_at = created_at
         # Retry keeps the invocation, not its input: until retry_request binds
         # this pass's message, a recovery checkpoint must not lend the previous
         # input's reminder record to unsent guidance.
@@ -744,5 +746,6 @@ class TurnRunner:
         return dropped_retry_cwd
 
     def _clear_current_input(self) -> None:
-        """Clear current-turn recovery input after run finalization."""
+        """Clear current-turn recovery input, and when its pass began, after run finalization."""
         self._turn_state.clear_current_input()
+        self._turn_state.pass_started_at = None

@@ -10,13 +10,16 @@ Regression: prior to the fix, pre-run setup always incremented
 ``_turn_number`` and called ``start_turn()``, so an interrupt+resume
 sequence created an extra empty turn and the real mutations landed under
 a wrong (incremented) turn_id.
+
+The turn marker each pass ends with keeps when that pass began, for the
+answer's header to tell the turn's time after a restore as it did live.
 """
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import create_autospec
 
 import pytest
@@ -35,8 +38,11 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.workspace import Workspace
+from chrys.foundation.util.time import parse_created_at, utc_iso
 from chrys.kernel import ChatResponseUpdate, FinishReason, FinishReasonLiteral
+from chrys.service.context.providers.history import TURN_STARTED_AT_KEY
 from chrys.service.llm.mock import MockChatClient, MockResponse
+from chrys.service.session.message_metadata import MESSAGE_CREATED_AT_KEY
 from chrys.service.state.store import JsonFileStateStore
 from tests.orchestration.engine.run._engine_run_helpers import _PROFILE, _make_registry
 from tests.support.event_capture import collect_events
@@ -185,6 +191,70 @@ async def test_retry_does_not_increment_turn_number(
     assert state["turn_counter"] == len(turn_markers), (
         f"turn_counter must equal len(turn_markers): counter={state['turn_counter']} markers={marker_indices}"
     )
+
+
+@pytest.mark.asyncio
+@with_wait_deadline(ENGINE_TEST_WAIT_TIMEOUT)
+async def test_turn_marker_keeps_when_its_pass_began(tmp_path: Path, agent_engine, monkeypatch: pytest.MonkeyPatch):
+    """The message's pass, then the Continue's: the saved marker says when the user sent or pressed it.
+
+    The saved answer finished when the final event says it did, so live and replay time the same span.
+    """
+    events: list[object] = []
+    bus = EventBus()
+    await bus.subscribe(InvocationMessage, lambda e: collect_events(events, e))
+    settings, model_registry = make_mock_settings_and_registry(stream=True)
+    settings = replace(settings, workspace_change_notice=False)
+    state_store = JsonFileStateStore(tmp_path)
+    client = _InterruptibleClient([MockResponse(text="interrupted", chunk_delay=0), MockResponse(text="Done.")])
+    monkeypatch.setattr(
+        builder_module, "create_client", create_autospec(builder_module.create_client, return_value=client)
+    )
+    engine = agent_engine(
+        bus,
+        settings=settings,
+        agent_registry=_make_registry(),
+        model_registry=model_registry,
+        state_store=state_store,
+        initial_workspace=Workspace.from_cwd(str(tmp_path)),
+    )
+    await engine.start(_PROFILE)
+
+    async def saved_turn_markers() -> list[dict[str, Any]]:
+        assert engine.session_id is not None
+        saved = await state_store.load_session_raw(engine.session_id)
+        assert saved is not None
+        return [m for m in saved if m["additional_properties"].get(HistoryMarkerKind.KEY) == HistoryMarkerKind.TURN]
+
+    sent = UserMessage(text="Hello")
+    await bus.publish(sent)
+    await wait_for(client.stream_entered.is_set, timeout=ENGINE_TURN_TIMEOUT, description="first stream entered")
+    await bus.publish(UserInterrupt())
+    await wait_for(client.stream_cancelled.is_set, timeout=ENGINE_TURN_TIMEOUT, description="first stream cancelled")
+    await await_run_task_chain(engine, turn_state=engine.turns.turn_state, timeout=ENGINE_TEST_WAIT_TIMEOUT)
+
+    assert [m["additional_properties"].get(TURN_STARTED_AT_KEY) for m in await saved_turn_markers()] == [
+        utc_iso(sent.timestamp)
+    ]
+
+    pressed = UserRetry()
+    await bus.publish(pressed)
+    await await_run_task_chain(engine, turn_state=engine.turns.turn_state, timeout=ENGINE_TEST_WAIT_TIMEOUT)
+
+    # Continue took the stopped pass's marker away: one marker, for the pass it began.
+    assert [m["additional_properties"].get(TURN_STARTED_AT_KEY) for m in await saved_turn_markers()] == [
+        utc_iso(pressed.timestamp)
+    ]
+    assert engine.session_id is not None
+    saved = await state_store.load_session_raw(engine.session_id)
+    assert saved is not None
+    answer = next(
+        m
+        for m in reversed(saved)
+        if m["role"] == "assistant" and HistoryMarkerKind.KEY not in m["additional_properties"]
+    )
+    final = [e for e in events if isinstance(e, InvocationMessage) and e.is_final]
+    assert [e.timestamp for e in final] == [parse_created_at(answer["additional_properties"][MESSAGE_CREATED_AT_KEY])]
 
 
 @pytest.mark.asyncio

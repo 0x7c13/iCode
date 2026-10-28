@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from rich.text import Text
@@ -145,13 +145,18 @@ async def test_chat_panel_replay_uses_created_at_metadata() -> None:
             "role": "assistant",
             "contents": [{"type": "text", "text": "hi"}],
             "additional_properties": {
-                MESSAGE_CREATED_AT_KEY: created_at.isoformat(),
+                MESSAGE_CREATED_AT_KEY: (created_at + timedelta(milliseconds=2345)).isoformat(),
                 TRAJECTORY_TIMING_KEY: {
                     "started_at": created_at.isoformat(),
-                    "finished_at": created_at.isoformat(),
+                    "finished_at": (created_at + timedelta(milliseconds=2345)).isoformat(),
                     "duration_ms": 2345,
                 },
             },
+        },
+        {
+            "role": "assistant",
+            "contents": [{"type": "text", "text": ""}],
+            "additional_properties": {HistoryMarkerKind.KEY: HistoryMarkerKind.TURN},
         },
     ]
 
