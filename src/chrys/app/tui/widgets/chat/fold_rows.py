@@ -70,7 +70,11 @@ def text_tail(text: str, end: int, cells: int) -> str:
 
     Once the start no longer fits, ``…`` stands for what is cut off before it.
     """
-    shown = sanitize_legacy_scalar(" ".join(text[max(end - _PREVIEW_SOURCE_CHARS, 0) : end].split()))
+    return _tail_fit(sanitize_legacy_scalar(" ".join(text[max(end - _PREVIEW_SOURCE_CHARS, 0) : end].split())), cells)
+
+
+def _tail_fit(shown: str, cells: int) -> str:
+    """The last of *shown* that fits *cells*, as written, ``…`` standing for what is cut off before it."""
     if cell_len(shown) <= cells:
         return shown
     if cells <= 0:
@@ -335,6 +339,8 @@ class FoldRow:
     interrupted: str = ""
     kept: str = ""
     """What follows the head and stays in view as it gives way, as the outcomes do: a running sleep's time left."""
+    subject: str = ""
+    """A path in the last count's words that a narrow row cuts in its middle, its file name kept, before its end."""
 
     @property
     def lead(self) -> str:
@@ -369,7 +375,7 @@ def fold_row_styles(widget: Widget, prefix: str) -> FoldRowStyles:
 
 def fit_fold_row(row: FoldRow, width: int, styles: FoldRowStyles) -> Text:
     """*row* cut to *width* cells: what the head keeps in view and the outcomes keep their room, and the head and
-    detail give way first.
+    detail give way first, a path in them from its middle.
 
     A narrow terminal still shows that calls failed, or how long a sleep has left; only a row narrower than those
     themselves cuts them.
@@ -384,8 +390,16 @@ def fit_fold_row(row: FoldRow, width: int, styles: FoldRowStyles) -> Text:
             if row.counts or tail:
                 tail.append(_SEPARATOR, style=separator)
             tail.append(outcome, style=style)
+    counts = row.counts
+    room = max(width - tail.cell_len, 1) if tail else width
+    if width > 0 and row.subject and counts:
+        over = cell_len(row.head) + sum(map(cell_len, counts)) + cell_len(_SEPARATOR) * (len(counts) - 1) - room
+        before, found, after = counts[-1].rpartition(row.subject)
+        # With no room for even ``…``, the path goes as the row's end does.
+        if over > 0 and found and (cut := middle_cut_path(row.subject, cell_len(row.subject) - over)):
+            counts = (*counts[:-1], f"{before}{cut}{after}")
     text = Text(row.head)
-    for index, words in enumerate(row.counts):
+    for index, words in enumerate(counts):
         if index:
             text.append(_SEPARATOR, style=separator)
         text.append(words, style=styles.detail)
@@ -393,7 +407,37 @@ def fit_fold_row(row: FoldRow, width: int, styles: FoldRowStyles) -> Text:
         text.append_text(tail)
         return text
     if tail:
-        text.truncate(max(width - tail.cell_len, 1), overflow="ellipsis")
+        text.truncate(room, overflow="ellipsis")
         text.append_text(tail)
     text.truncate(width, overflow="ellipsis")
     return text
+
+
+def middle_cut_path(path: str, cells: int) -> str:
+    """*path* in at most *cells* cells: its file name, and as many of its folders from either end as fit, ``…``
+    standing for those cut from the middle (``src/chrys/…/tui/app.py``).
+
+    Where the file name alone does not fit, the end of it shows after ``…``, its spaces kept: they tell names apart.
+    Empty where not even ``…`` fits.
+    """
+    if cell_len(path) <= cells:
+        return path
+    separator = "\\" if "\\" in path and "/" not in path else "/"
+    *folders, name = path.split(separator)
+
+    def shown(start: int, end: int) -> str:
+        return separator.join([*folders[:start], "…", *folders[len(folders) - end :], name])
+
+    if not folders or cell_len(shown(0, 0)) > cells:
+        # ``…`` still tells of the folders cut off: a bare file name would read as one in the working folder.
+        return _tail_fit(shown(0, 0) if folders else name, cells)
+    start = end = 0
+    while start + end < len(folders):
+        # Folders join from either end in turn: the root it hangs from, and those nearest the file. Once one end's next
+        # folder no longer fits, the other end's still may.
+        turns = ((start + 1, end), (start, end + 1)) if start <= end else ((start, end + 1), (start + 1, end))
+        grown = next((size for size in turns if cell_len(shown(*size)) <= cells), None)
+        if grown is None:
+            break
+        start, end = grown
+    return shown(start, end)

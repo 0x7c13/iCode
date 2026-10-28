@@ -277,7 +277,8 @@ async def test_sub_agent_inner_activity_updates_parent_header_and_retains_latest
         assert group._tool_records["parent"].nested_activities == {}
 
         await panel.add_tool_result("parent", "Explore", "done")
-        assert _title(group) == "▸ Ran 1 agent"
+        # Its one call succeeded: the row names the agent it ran.
+        assert _title(group) == "▸ Ran agent Explore Agent"
         assert await _running(pilot, group) is False
 
 
@@ -340,14 +341,14 @@ async def test_system_retry_and_interrupt_are_tool_group_presentation_boundaries
         await panel.add_tool_result("system", "read_file", "done")
         assert _title(first) == "Reading system.txt"
         await panel.add_system("Environment changed")
-        assert _title(first) == "▸ Read 1 file"
+        assert _title(first) == "▸ Read system.txt"
 
         await panel.add_tool_start("retry", "read_file", KIND_FILESYSTEM_READ, args={"path": "retry.txt"})
         second = panel._tool_groups_by_call_id["retry"]
         await panel.add_tool_result("retry", "read_file", "done")
         assert _title(second) == "Reading retry.txt"
         await panel.add_retry("Trying again", 1, 2, 0)
-        assert _title(second) == "▸ Read 1 file"
+        assert _title(second) == "▸ Read retry.txt"
 
         await panel.add_tool_start("interrupt", "read_file", KIND_FILESYSTEM_READ, args={"path": "active.txt"})
         third = panel._tool_groups_by_call_id["interrupt"]

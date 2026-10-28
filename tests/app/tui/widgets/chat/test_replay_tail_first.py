@@ -10,6 +10,7 @@ import inspect
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from functools import partial
+from pathlib import Path
 
 import pytest
 from textual import events
@@ -18,16 +19,18 @@ from textual.widget import AwaitMount, Widget
 from chrys.app.tui.widgets.chat.messages import AgentMessage, ErrorMessage, ThinkingMessage, UserMessage
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.replay_mount import REPLAY_MOUNT_BATCH_SIZE
-from chrys.app.tui.widgets.chat.tool_call import ToolGroup
+from chrys.app.tui.widgets.chat.tool_call import ToolGroup, ToolGroupTitle
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from chrys.app.tui.widgets.welcome import WelcomeWidget
 from chrys.foundation.models.history_markers import ANSWER_SEGMENT_KEY
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, TOOL_CALL_KIND_METADATA_KEY
 from chrys.kernel import Content
 from tests.app.tui.widgets._scroll_gc import install_fake_chat_panel_gc
 from tests.support.tui_helpers import (
     ChatPanelApp,
     _simulate_chat_panel_user_scroll_y,
     chat_content_children,
+    title_text,
 )
 from tests.support.waiting import DEFAULT_WAIT_TIMEOUT, wait_for, wait_until, wait_until_quiet
 
@@ -920,6 +923,34 @@ async def test_fold_all_while_the_last_batch_mounts_outlasts_the_choice_before_i
 
         assert folds == [True]
         assert [group.collapsed for group in cp.query(ToolGroup)] == [True] * _TOOL_TURNS
+
+
+async def test_a_folder_change_during_prepend_reaches_tool_groups_mounted_later(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Each turn's group read one file in the chat's folder, so its row names that file relative to the folder.
+    folder = Path(Path(__file__).anchor, "work")
+    messages = _turns(_TOOL_TURNS, with_tools=True)
+    calls = [content for message in messages for content in message["contents"] if content["type"] == "function_call"]
+    for index, call in enumerate(calls):
+        call["arguments"] = {"path": str(folder / f"file_{index}.py")}
+        call["additional_properties"] = {TOOL_CALL_KIND_METADATA_KEY: KIND_FILESYSTEM_READ}
+    async with ChatPanelApp().run_test(size=_SIZE) as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        cp.set_workspace_cwd(str(folder))
+        gate = _PrependGate(cp, monkeypatch)
+        await cp.replay_history(messages)
+        await gate.wait_held(pilot)
+        assert any(isinstance(widget, ToolGroup) for widget in cp.pending_transcript_widgets())
+
+        # The chat moves to another folder while older history waits to mount: the files lie outside it now. Mounted
+        # rows name them anew, and the rows still to mount read the folder as they mount, not as replay planned them.
+        cp.set_workspace_cwd(str(folder.parent / "elsewhere"))
+        gate.release.set()
+        await _wait_complete(cp)
+
+        titles = [title_text(group.query_one(ToolGroupTitle))[2:] for group in cp.query(ToolGroup)]
+        assert titles == [f"Read {folder / f'file_{index}.py'}" for index in range(_TOOL_TURNS)]
 
 
 async def test_a_withdrawal_mid_prepend_waits_for_the_replay_then_removes_each_answer_it_names(
