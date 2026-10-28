@@ -822,10 +822,10 @@ def test_persist_locale_writes_the_settings_document_without_an_env_mirror(fake_
     assert "CHRYS_LOCALE" not in os.environ
 
 
-def test_thinking_shows_by_default_and_only_the_user_settings_change_it_live() -> None:
+def test_thinking_streams_folded_by_default_and_only_the_user_settings_change_it_live() -> None:
     found = specs_by_key(Settings)["ui.chat.show_thinking"]
 
-    assert Settings().chat_show_thinking is True
+    assert Settings().chat_thinking_expanded is False
     assert (found.apply, found.env, found.project_merge) == (Apply.LIVE, None, ProjectMerge.DENY)
 
 

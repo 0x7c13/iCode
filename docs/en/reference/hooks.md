@@ -181,8 +181,8 @@ Only the following events apply decisions that blocking hooks return in the resu
 
 | Event | Effect |
 | --- | --- |
-| `user_prompt_submit` | Reject a message or add a system reminder. A rejected message stays in the input box; if you sent it while the agent was running, the agent keeps working. |
-| `before_tool_call` | Reject a tool call or modify its arguments, but cannot approve a call or bypass approval. |
+| `user_prompt_submit` | Reject a message, [ask you to confirm it](#asking-you-to-confirm), or add a system reminder. A rejected message stays in the input box; if you sent it while the agent was running, the agent keeps working. |
+| `before_tool_call` | Reject a tool call, [ask you to confirm it](#asking-you-to-confirm), or modify its arguments, but cannot approve a call or bypass approval. |
 | `after_tool_call` | Append context to the tool result, but cannot undo a call that has already occurred. |
 | `tool_error` | Append context to the tool error, but cannot undo a call that has already occurred. |
 
@@ -467,6 +467,7 @@ Every input file contains the following fields:
 | `session_id` | The current session's ID. |
 | `profile` | The current agent's name, such as `Code`. For sub-agent events, and for tool, approval, and compaction events inside a sub-agent, this is the sub-agent's profile name. |
 | `cwd` | The current session's working directory. `run.cwd` sets the hook process's working directory and does not change this field. |
+| `confirmation_available` | Only for `user_prompt_submit` and `before_tool_call`. `true` when this hook can [ask you to confirm](#asking-you-to-confirm): it is a blocking hook, and someone can answer (not in `icode run` or a workflow run from the command line). Use it to decide what to do when nobody can be asked. |
 
 For example, input before a tool call includes the following base fields:
 
@@ -518,6 +519,7 @@ The following object shows only the fields added by tool events:
 | `approval_rejected` | Always present; `true` when the call is rejected by the user or a hook, otherwise `false`. |
 | `rejection_source` | Present only when the call is rejected; `user` means rejection by the user and `hook` means rejection by a hook. |
 | `hook_denied` | Present only when the call is rejected; `true` for rejection by a hook and `false` for rejection by the user. |
+| `hook_confirmation` | Present only when a hook [asked you to confirm](#asking-you-to-confirm) the call and it did not go ahead; says why: `declined` (you cancelled), `timed_out` (no answer came in time) or `unavailable` (nobody could be asked). Then `rejection_source` is `hook`. |
 
 When `error: true`, `failed` is also `true`, but `failed: true` does not necessarily mean an exception was raised. `tool_error` is triggered only by exceptions. To check for all types of failure, listen for `after_tool_call` and inspect `result.failed`.
 
@@ -562,8 +564,8 @@ The result file supports the following JSON fields:
 
 | Field | Type | Applicable events and conditions | Description |
 | --- | --- | --- | --- |
-| `action` | `allow`, `block`, or `modify` | `user_prompt_submit`, `before_tool_call` | Defaults to `allow`. Both events accept `block`; only `before_tool_call` accepts `modify`. |
-| `reason` | String | `user_prompt_submit` or `before_tool_call`, with `action: block` | Rejection reason displayed to the user; also provided to the model when a tool call is rejected. |
+| `action` | `allow`, `block`, `modify`, or `ask` | `user_prompt_submit`, `before_tool_call` | Defaults to `allow`. Both events accept `block` and `ask`; only `before_tool_call` accepts `modify`. |
+| `reason` | String | `user_prompt_submit` or `before_tool_call`, with `action: block` or `ask` | With `block`, the rejection reason displayed to the user and, when a tool call is rejected, provided to the model. With `ask`, what iCode shows when it asks you to confirm. |
 | `args_override` | Object | `before_tool_call` with `action: modify` | Adds its top-level fields to the existing `tool.args`. Fields with the same name replace the original values; if a value is an object, that entire object is also replaced. |
 | `system_reminder` | String | `user_prompt_submit` | Added as a system reminder to every model call in the current turn. |
 | `extra_context` | String | `after_tool_call`, `tool_error` | Appended to the tool result text; cannot undo a call that has already occurred. |
@@ -575,6 +577,22 @@ Result files are read according to these rules:
 - Unknown fields are ignored.
 
 For how decisions from multiple hooks are combined, see [Execution order and configuration merging for multiple hooks](#execution-order-and-configuration-merging-for-multiple-hooks).
+
+### Asking you to confirm
+
+A blocking `user_prompt_submit` or `before_tool_call` hook can leave the decision to you instead of allowing or rejecting the operation itself. It writes `action: ask` and a `reason`, then exits:
+
+```json
+{"action": "ask", "reason": "This changes the production configuration. Continue?"}
+```
+
+iCode then pauses the operation and asks you, showing the hook, its reason, and the tool call or your message. An editor connected over ACP shows it as a permission request.
+
+- **Continue**: the remaining hooks run and the operation goes on. A tool call still needs approval where your approval settings require it.
+- **Cancel**: the operation doesn't go ahead. A rejected tool call is reported to the model; a rejected message stays in the input box (an ACP editor shows `Input rejected:` and the reason, and `icode run` exits with an error).
+- **No answer**: by default iCode waits until you answer or the operation ends, and so does the tool call, or the workflow run, that asked. If you set **Human approval timeout (seconds)**, the operation is rejected once that time passes unanswered. It is also rejected at once when nobody can be asked, such as in `icode run`; a hook can check `confirmation_available` to decide differently. If the operation ends first, for example because you interrupted or cancelled the workflow run, the question closes by itself.
+
+The time you take doesn't count toward the hook's `timeout_seconds`. Your answer applies only to this operation; if the tool call's arguments change after you continued (a later hook changes them, or you edit them when approving the call), you may be asked again. To change arguments before asking, put a hook that returns `modify` before the one that returns `ask`.
 
 ## Execution order and configuration merging for multiple hooks
 
@@ -592,6 +610,7 @@ Decisions returned by blocking hooks are combined as follows:
 | `args_override` | Modifies tool arguments immediately. Subsequent hooks use the modified arguments for matching and checks. If multiple hooks modify the same argument, the later hook overrides the earlier one. |
 | `system_reminder`, `extra_context` | Accumulated in hook execution order. |
 | `action: block` | For `user_prompt_submit` and `before_tool_call`, the first rejection stops all remaining hooks for the current event, including non-blocking hooks that have not started. |
+| `action: ask` | iCode asks you before the next hook runs. If you continue, the remaining hooks run; otherwise it is handled like a rejection. If several hooks ask, you are asked once for each. |
 
 For `user_prompt_submit` and `before_tool_call`, a blocking hook that fails with `on_error: block` also rejects the current operation and stops the remaining hooks for that event.
 

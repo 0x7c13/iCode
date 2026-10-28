@@ -2,7 +2,7 @@
 
 iCode uses tool kinds (`tool_kind`) to group tools with similar purposes or sources, and tool names (`tool_name`) to identify individual tools. A kind can contain multiple tools. For example, `filesystem.write` includes `write_file` and `edit_file`.
 
-In the terminal user interface (TUI), enter `/runtime` in the input field, or click the tool count at the right end of the status bar above the input field, to open the "Runtime Details" dialog. The "Tools" tab lists built-in tools grouped by kind, plus sub-agent tools; the "MCP" tab lists MCP tool names grouped by server. Skill and context tools are not listed in the dialog. An agent can only call tools that are currently loaded.
+In the terminal user interface (TUI), enter `/runtime` in the input field, or click the tool count at the right end of the status bar above the input field, to open the "Runtime Details" dialog. The "Tools" tab lists built-in tools grouped by kind, then context management tools and sub-agent tools; the "MCP" tab lists MCP tool names grouped by server. Skill tools are not listed in the dialog. An agent can only call tools that are currently loaded.
 
 ## Overview of kinds and names
 
@@ -17,7 +17,7 @@ In the terminal user interface (TUI), enter `/runtime` in the input field, or cl
 | `web_search` | Yes | Search the web for URLs and summaries | `web_search` |
 | `web_fetch` | Yes | Read a web page by URL | `web_fetch` |
 | `ask_user` | Yes | Ask the user questions during a task | `ask_user` |
-| `sleep` | Yes | Wait | `sleep` |
+| `sleep` | No; every agent has it | Wait | `sleep` |
 | `doc_converter` | Yes | Convert PDF and Office documents | `convert_document` |
 | `todo` | Yes | Maintain to-do items | `todo_write` |
 | `sub_agent` | No | Call sub-agents | Determined by the agent profile |
@@ -26,6 +26,8 @@ In the terminal user interface (TUI), enter `/runtime` in the input field, or cl
 | `context` | No | Compact and query conversation context | `compress_context`, `recall_context`, `list_compressed_contexts` |
 
 Tool availability also depends on the current agent, model capabilities, and how iCode is run. For example, `view_image` is only provided to models that support image input, and the headless CLI mode `icode run` does not provide `ask_user`.
+
+Every agent has `sleep`, whatever its `tools.builtins` lists. A profile that still lists `sleep` loads as before, and iCode leaves it out the next time the profile is saved.
 
 `web_search` and `web_fetch` are not enabled in any agent shipped with iCode. When an agent includes them, either tool is left out while its mode is `off` or if the model's provider runs a web tool of the same name. See [Configure web tools](../guides/configuration/web-tools.md).
 

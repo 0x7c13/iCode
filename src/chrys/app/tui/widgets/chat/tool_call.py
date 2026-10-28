@@ -15,7 +15,7 @@ import re
 import time
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast, runtime_checkable
 
@@ -45,6 +45,19 @@ from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.util.static_update import update_static_in_place
 from chrys.app.tui.util.visibility import is_widget_shown_on_active_screen
 from chrys.app.tui.widgets.chat.file_snapshot import FileSnapshotPayload
+from chrys.app.tui.widgets.chat.fold_gap import FoldGap
+from chrys.app.tui.widgets.chat.fold_rows import (
+    FOLDED_ARROW,
+    OPEN_ARROW,
+    TOOLS_LABEL,
+    FoldRow,
+    FoldRowStyles,
+    ToolOutcome,
+    ToolTally,
+    duration_words,
+    fit_fold_row,
+    tool_category,
+)
 from chrys.app.tui.widgets.chat.process_visibility import ProcessMember
 from chrys.app.tui.widgets.chat.tool_view_builders import (
     TOOL_VIEW_EMPTY,
@@ -54,8 +67,9 @@ from chrys.app.tui.widgets.chat.tool_view_builders import (
     build_output_views,
     build_params_view,
 )
+from chrys.app.tui.widgets.chat.transcript_panel import note_fold
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
-from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
+from chrys.app.tui.widgets.loading import RunningTitle
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_block, sanitize_legacy_scalar
 from chrys.foundation.patches.textual_precompose import precompose_tree
@@ -67,6 +81,7 @@ from chrys.foundation.tool_kinds import (
     KIND_SEARCH,
     KIND_SHELL,
     KIND_SKILL,
+    KIND_SLEEP,
     KIND_SUB_AGENT,
 )
 from chrys.foundation.tool_result_metadata import (
@@ -77,6 +92,7 @@ from chrys.foundation.tool_result_metadata import (
     tool_result_metadata_failure_state,
     tool_result_metadata_is_rejected,
 )
+from chrys.service.tools.builtins.sleep import MAX_SLEEP_SECONDS, normalize_sleep_seconds
 
 # Protocol attributes expected on any tool widget (BaseToolCard or custom renderer):
 #   call_id, tool_name, status, result_text
@@ -124,14 +140,6 @@ _TOOL_CARD_IMAGE_RESOLUTION = msg(
     fallback="Resolution: {width}x{height}",
 )
 _TOOL_CARD_IMAGE_TYPE = msg("tui.tool_card.image.type", fallback="Type: {media_type}")
-_TOOL_CARD_GROUP_TITLE = msg(
-    "tui.tool_card.group.title",
-    fallback="Tools ({done}/{total})",
-)
-_TOOL_CARD_GROUP_TITLE_TIMED = msg(
-    "tui.tool_card.group.title_timed",
-    fallback="Tools ({done}/{total}, {duration})",
-)
 _TOOL_ACTIVITY_RUNNING = msg("tui.tool_card.group.activity.running", fallback="Running {tool}")
 _TOOL_ACTIVITY_SHELL = msg("tui.tool_card.group.activity.shell", fallback="Running shell command")
 _TOOL_ACTIVITY_READING = msg("tui.tool_card.group.activity.reading", fallback="Reading {path}")
@@ -157,6 +165,9 @@ _TOOL_ACTIVITY_AGENT_DETAIL = msg(
     "tui.tool_card.group.activity.agent_detail",
     fallback="Running {agent}: {activity}",
 )
+_TOOL_ACTIVITY_SLEEPING = msg("tui.tool_card.group.activity.sleeping", fallback="Sleeping")
+_TOOL_ACTIVITY_SLEEPING_REASON = msg("tui.tool_card.group.activity.sleeping_reason", fallback="Sleeping: {reason}")
+_TOOL_ACTIVITY_SLEEP_LEFT = msg("tui.tool_card.group.activity.sleep_left", fallback="{duration} left")
 
 
 @runtime_checkable
@@ -169,6 +180,12 @@ class _ToolArgsUpdatable(Protocol):
 class _ToolProgressUpdatable(Protocol):
     def update_progress(self, lines: list[str]) -> None:
         """Refresh the displayed streaming progress for a mounted tool widget."""
+
+
+@runtime_checkable
+class _ToolStartRestorable(Protocol):
+    def restore_started_at(self, started_at: float) -> None:
+        """Count a running call's time from when it started (``time.monotonic()``), not from when the widget was built."""
 
 
 @runtime_checkable
@@ -301,6 +318,8 @@ class _ToolRecord:
     activity_order: int = 0
     nested_activities: dict[str, _NestedToolActivity] = field(default_factory=dict)
     nested_latest_activity: _ToolActivity | None = None
+    started_at: float = field(default_factory=time.monotonic)
+    """When the call started, by ``time.monotonic()``: a running sleep counts down from it."""
 
 
 def _activity_arg(args: dict[str, Any] | None, key: str, *, path: bool = False) -> str:
@@ -369,15 +388,83 @@ def _tool_activity_reference(tool_name: str, tool_kind: str, args: dict[str, Any
                 return _TOOL_ACTIVITY_RUNNING_SKILL.bind(script=script)
     if tool_kind == KIND_ASK_USER:
         return _TOOL_ACTIVITY_WAITING_FOR_ANSWER.bind()
+    if tool_kind == KIND_SLEEP:
+        return _sleep_activity(args)
     if tool_kind == KIND_SUB_AGENT:
         agent = _activity_arg(args, "agent_name") or _activity_arg(args, "agent") or safe_name
         return _TOOL_ACTIVITY_RUNNING_AGENT.bind(agent=agent)
     return _TOOL_ACTIVITY_RUNNING.bind(tool=safe_name)
 
 
+def _sleep_activity(args: dict[str, Any] | None) -> MessageRef:
+    """What a sleep call does: it sleeps, and why when it says."""
+    if reason := _activity_arg(args, "reason"):
+        return _TOOL_ACTIVITY_SLEEPING_REASON.bind(reason=reason)
+    return _TOOL_ACTIVITY_SLEEPING.bind()
+
+
 def tool_activity_reference(tool_name: str, tool_kind: str, args: dict[str, Any] | None) -> _ToolActivity:
     """Return the shared semantic activity used by group and nested-agent summaries."""
     return _tool_activity_reference(tool_name, tool_kind, args)
+
+
+@dataclass(frozen=True)
+class _SleepCountdown:
+    """A running sleep call's time left: the seconds it asked for, counted from when it started."""
+
+    started_at: float
+    seconds: int
+    activity: MessageRef
+    """What it does, as its title's head says it: rendered with the time left, in the same locale."""
+
+    def seconds_left(self) -> int:
+        """The whole seconds it has left now, as its card counts them."""
+        return max(0, self.seconds - int(time.monotonic() - self.started_at))
+
+
+def _sleep_countdown(record: _ToolRecord) -> _SleepCountdown | None:
+    """The time left of *record*, a running sleep call; None for any other call."""
+    if record.tool_kind != KIND_SLEEP or record.provider_hosted or record.status != "running" or not record.args:
+        return None
+    seconds = normalize_sleep_seconds(record.args.get("seconds"))
+    if seconds is None or not 0 <= seconds <= MAX_SLEEP_SECONDS:
+        return None
+    return _SleepCountdown(record.started_at, seconds, _sleep_activity(record.args))
+
+
+def _slept_ms(record: _ToolRecord) -> int:
+    """How long a finished sleep call slept: the time it took, at most what it asked for, or, not known, what it
+    asked for if it answered that it slept it out."""
+    if record.tool_kind != KIND_SLEEP or record.status == "running":
+        return 0
+    seconds = normalize_sleep_seconds((record.args or {}).get("seconds"))
+    asked_ms = seconds * 1000 if seconds is not None and 0 <= seconds <= MAX_SLEEP_SECONDS else None
+    if record.duration_known:
+        # Counted from when the TUI got its start, it can take in an approval it waited for: it slept no longer.
+        return record.duration_ms if asked_ms is None else min(record.duration_ms, asked_ms)
+    metadata = record.metadata or {}
+    if (
+        record.status != "complete"
+        # Replay shows a call no result answered (the session stopped while it slept) as complete, with no result.
+        or not record.result
+        or metadata.get("sleep_skipped") is True
+        or metadata.get("sleep_interrupted") is True
+    ):
+        return 0
+    return asked_ms or 0
+
+
+def _ran_ms(record: _ToolRecord, stopped_at: float | None) -> int:
+    """How long *record* ran until *stopped_at* (``time.monotonic()``), now if not given."""
+    ended = time.monotonic() if stopped_at is None else stopped_at
+    return max(0, int((ended - record.started_at) * 1000))
+
+
+def _record_outcome(record: _ToolRecord) -> ToolOutcome:
+    """How a folded row counts *record*: a rejected call failed, a cancelled one was interrupted."""
+    if record.canonical_status == "interrupted":
+        return "interrupted"
+    return "failed" if record.status in {"error", "rejected"} else ""
 
 
 def _record_activity_reference(record: _ToolRecord, render_reference: Callable[[MessageRef], str]) -> _ToolActivity:
@@ -1450,14 +1537,44 @@ class ToolCall(BaseToolCard):
 # ---------------------------------------------------------------------------
 
 
-class ToolGroupTitle(ToolCopyExcludedMixin, ClickAffordance):
-    """Clickable title for ToolGroup — posts Clicked message on click."""
+class ToolGroupTitle(ToolCopyExcludedMixin, RunningTitle, ClickAffordance):
+    """Clickable title for ToolGroup — posts Clicked message on click.
+
+    While its group runs, a blinking dot takes the fold arrow's place and a band of light sweeps across the title.
+    """
+
+    # Few: restyling the transcript resolves each one for every tool group.
+    COMPONENT_CLASSES: ClassVar[set[str]] = {
+        "toolgrouptitle--detail",
+        "toolgrouptitle--shimmer",
+        "toolgrouptitle--failed",
+        "toolgrouptitle--running",
+    }
 
     DEFAULT_CSS = """
     ToolGroupTitle {
         color: $tui-tool-group-title;
-        text-style: bold;
         height: auto;
+    }
+    /* What the calls did, what the latest running one does once it ends, and the calls interrupted: the colour
+       tool rows have among fold rows. */
+    ToolGroupTitle > .toolgrouptitle--detail {
+        color: $text-warning;
+        text-style: not bold;
+    }
+    /* What the running dot, lit, and the middle of the band sweeping across the running row brighten to. */
+    ToolGroupTitle > .toolgrouptitle--shimmer {
+        color: $text;
+        text-style: not bold;
+    }
+    ToolGroupTitle > .toolgrouptitle--failed {
+        color: $text-error;
+        text-style: not bold;
+    }
+    /* What the latest running call does, dim until it ends and the row takes the detail's colour. */
+    ToolGroupTitle > .toolgrouptitle--running {
+        color: $text-muted;
+        text-style: not bold;
     }
     """
 
@@ -1465,23 +1582,60 @@ class ToolGroupTitle(ToolCopyExcludedMixin, ClickAffordance):
         """Posted when the title is clicked."""
 
     CLICK_MESSAGE = Clicked
+    SHIMMER_COMPONENT = "toolgrouptitle--shimmer"
 
-    def __init__(self, title: str | Text) -> None:
-        self._full_title = title.copy() if isinstance(title, Text) else Text(title)
-        super().__init__(self._full_title)
+    def __init__(self, row: FoldRow, *, running: bool = False, countdown: _SleepCountdown | None = None) -> None:
+        self._row = row
+        self._countdown = countdown
+        super().__init__("")
+        self.set_running(running)
 
-    def set_title(self, title: Text) -> None:
-        """Store the unabridged title and refresh its fitted rendering."""
-        self._full_title = title.copy()
-        self.refresh(layout=False)
+    def show(self, row: FoldRow, *, running: bool = False, countdown: _SleepCountdown | None = None) -> None:
+        """Show *row*, after the running dot while *running*, and the time *countdown* has left after its head.
+
+        The title stays one line, so it repaints without layout.
+        """
+        if self.set_running(running) or row != self._row or countdown != self._countdown:
+            self._row = row
+            self._countdown = countdown
+            self.refresh(layout=False)
+
+    def _shown_row(self) -> FoldRow:
+        """The row with the time left as it paints: a running title repaints every frame while shown, and only then,
+        so the time left needs no timer of its own. Its head is rendered with it, so both read in one locale."""
+        countdown = self._countdown
+        if countdown is None:
+            return self._row
+        localizer = widget_localizer(self)
+        head = render_str(localizer, countdown.activity)
+        left = render_str(
+            localizer, _TOOL_ACTIVITY_SLEEP_LEFT.bind(duration=duration_words(localizer, countdown.seconds_left()))
+        )
+        return replace(self._row, head=head, kept=left)
 
     def render(self) -> Text:
-        """Render a single-line title with a visible narrow-width ellipsis."""
-        title = self._full_title.copy()
-        available = self.content_size.width or self.size.width
-        if available > 0:
-            title.truncate(available, overflow="ellipsis")
-        return title
+        """The row cut to the title's width, its failed and interrupted counts kept in view.
+
+        The fold arrow and the separators keep the title's own colour; what the calls did takes the detail's.
+        """
+        shown = self._shown_row()
+        width = self.content_size.width or self.size.width
+        detail = self.text_style_of("toolgrouptitle--detail")
+        styles = FoldRowStyles(
+            detail=detail,
+            failed=self.text_style_of("toolgrouptitle--failed"),
+            interrupted=detail,
+            separator=Style(),
+        )
+        if not self._work_running:
+            return fit_fold_row(shown, width, styles)
+        row = fit_fold_row(shown, max(width - 2, 0), styles)
+        # The running call's activity is the head, with what it keeps in view; with none yet, the band crosses the
+        # counts.
+        end = min(len(shown.lead) or len(row.plain), len(row.plain))
+        running = self.text_style_of("toolgrouptitle--running")
+        row.stylize(running, 0, end)
+        return self.running_title(row, end, base=running.color)
 
 
 # ---------------------------------------------------------------------------
@@ -1489,18 +1643,19 @@ class ToolGroupTitle(ToolCopyExcludedMixin, ClickAffordance):
 # ---------------------------------------------------------------------------
 
 
-class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
+class ToolGroup(ToolCopyExcludedMixin, FoldGap, ProcessMember):
     """Collapsible group of tool calls within a single agent turn.
 
-    Consecutive tool starts are grouped together. The title shows progress
-    (done/total) and cumulative duration.
+    Consecutive tool starts are grouped together. While they run, the title shows
+    the latest activity; once the group closes, how many calls of each kind it made.
     """
 
     DEFAULT_CSS = """
+    /* As thinking and the text between tool calls: no vertical margin, so their thin guides meet in one line. */
     ToolGroup {
-        margin: 1 0;
+        margin: 0;
         padding: 0 1;
-        border-left: thick $tui-border-warning $border-opacity;
+        border-left: solid $tui-border-neutral-gray $border-opacity;
         height: auto;
     }
     ToolGroup > #tg-header {
@@ -1512,16 +1667,15 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
         width: 1fr;
         overflow: hidden;
     }
-    ToolGroup > #tg-header > ChrysLoadingIndicator {
-        display: none;
-        color: $tui-tool-group-title;
-        height: 1;
-        width: 6;
-        min-width: 6;
-        max-width: 6;
-    }
     ToolGroup > Vertical {
         height: auto;
+    }
+    /* Open: its own guide under the title's fold arrow, its calls under the label, as open thinking text. */
+    ToolGroup > #tg-content {
+        border-left: solid $tui-border-neutral-gray $border-opacity;
+    }
+    ToolGroup > #tg-content > * {
+        padding-left: 1;
     }
     """
 
@@ -1540,7 +1694,7 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
         tool_widget_configurator: Callable[[Widget], None] | None = None,
     ) -> None:
         self._collapse_lock_call_ids: set[str] = set()
-        self._process_status: tuple[int, bool, bool] | None = None
+        self._process_status: tuple[ToolTally, bool, bool] | None = None
         super().__init__()
         self._live = live
         self._tool_widget_configurator = tool_widget_configurator
@@ -1549,11 +1703,7 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
         self._activity_sequence = 0
         self._activity_header_finalized = not live
         self._retained_activity_text = ""
-        self._last_title_plain = ""
         self._done = 0
-        self._start_time = time.monotonic()
-        self._end_time: float | None = None
-        self._timer: Timer | None = None
         self._pending_content_worker: Any | None = None
         self._content_structure_lock = asyncio.Lock()
         self._content_mounted = True
@@ -1563,38 +1713,17 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="tg-header"):
-            if self._live:
-                yield ChrysLoadingIndicator(id="tg-activity-indicator")
-            yield ToolGroupTitle(self._title_text())
+            yield ToolGroupTitle(self._title_row(), running=self.shows_running, countdown=self._title_countdown())
         content = Vertical(id="tg-content")
         content.display = not self.collapsed
         yield content
 
-    def on_mount(self) -> None:
-        # Bulk replay can populate a completed logical group before Textual
-        # attaches it. Do not start an elapsed-time timer that completion has
-        # already conceptually stopped.
-        if not self.all_complete:
-            self._timer = self.set_interval(1.0, self._tick)
-        self._sync_activity_indicator()
-
     def on_unmount(self) -> None:
-        if self._timer is not None:
-            self._timer.stop()
-            self._timer = None
         self._cancel_pending_content_mounts()
 
     def _accepts_tool_mounts(self) -> bool:
         """Whether renderer widgets may still be attached below this group."""
         return self.is_attached and not self._closing and not self._pruning
-
-    def _tick(self) -> None:
-        """Update title with live elapsed time while tools are running."""
-        if self._end_time is None and self._tools:
-            from contextlib import suppress
-
-            with suppress(Exception):
-                self._update_title()
 
     def get_tool(self, call_id: str) -> Widget | None:
         """Return the tool widget for ``call_id``, or ``None`` if not in this group.
@@ -1684,12 +1813,19 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
         provider_status: str = "",
         provider_call_id: str = "",
         canonical_status: str = "running",
+        started_at: float | None = None,
     ) -> None:
-        """Add a running tool call to this group."""
+        """Add a running tool call to this group, started at *started_at* (``time.monotonic()``), or now."""
         from chrys.app.tui.widgets.chat.tool_renderers import create_tool_widget
 
         if not self._accepts_tool_mounts():
             return
+        previous = self._tool_records.get(call_id)
+        if previous is not None and previous.status == "running":
+            # Started again while it runs, the call goes on from when it first started.
+            started_at = previous.started_at
+        elif started_at is None:
+            started_at = time.monotonic()
         self._tool_records[call_id] = _ToolRecord(
             call_id=call_id,
             tool_name=tool_name,
@@ -1704,10 +1840,9 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
             provider_call_id=provider_call_id,
             canonical_status=canonical_status,
             activity_order=self._next_activity_order(),
+            started_at=started_at,
         )
         self.set_content_visible(True)
-        self._end_time = None
-        self._ensure_timer()
         async with self._content_structure_lock:
             # The structure lock may have yielded behind a collapse restore or
             # prune. Revalidate before constructing a renderer: Textual keeps
@@ -1715,7 +1850,6 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
             # can no longer accept mounts.
             if not self._accepts_tool_mounts():
                 self._tool_records.pop(call_id, None)
-                self._finish_if_all_complete()
                 return
             if existing := self._tools.get(call_id):
                 running = isinstance(existing, BaseToolCard) and existing.status == "running"
@@ -1754,6 +1888,7 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
             else:
                 tc = create_tool_widget(call_id, tool_name, tool_kind, args_summary, args=args)
             self._configure_tool_widget(tc)
+            self._restore_start(self._tool_records.get(call_id), tc)
             self._tools[call_id] = tc
             # EventBus delivery normally leaves a scheduler turn between start
             # and result. Nested transcript journals can replay both back to
@@ -1832,9 +1967,6 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
             self.set_content_visible(True)
             self._content_mounted = False
             self._reconcile_done_count()
-            if self.all_complete:
-                self._end_time = self._start_time
-                self._stop_timer()
             if not self.collapsed:
                 self.collapsed = True
             else:
@@ -2010,21 +2142,9 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
             if not was_terminal:
                 self._done += 1
             self.unlock_collapse_for(call_id)
-            self._finish_if_all_complete()
             self._update_title()
             if self.all_complete and self.collapsed:
                 self.call_later(self._release_completed_tool_widgets)
-
-    def _ensure_timer(self) -> None:
-        """Ensure elapsed-time title updates are active while the group is running."""
-        if self._timer is None:
-            self._timer = self.set_interval(1.0, self._tick)
-
-    def _stop_timer(self) -> None:
-        """Stop elapsed-time title updates."""
-        if self._timer is not None:
-            self._timer.stop()
-            self._timer = None
 
     def _terminal_record_count(self) -> int:
         """Return how many logical tool records are already terminal."""
@@ -2035,34 +2155,35 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
         if self._tool_records:
             self._done = self._terminal_record_count()
 
-    def _finish_if_all_complete(self) -> None:
-        """Stop the group timer once every logical tool record is terminal."""
-        if self.all_complete:
-            self._end_time = time.monotonic()
-            self._stop_timer()
-
-    def _mark_record_error(self, call_id: str, error: str) -> None:
-        """Mark one logical tool record as errored."""
+    def _mark_record_error(self, call_id: str, error: str, stopped_at: float | None = None) -> None:
+        """Mark one logical tool record as errored, stopped at *stopped_at* (``time.monotonic()``), now if not given."""
         if record := self._tool_records.get(call_id):
+            if record.status == "running" and not record.duration_known:
+                # It ran until it stopped, as the timing a replay reads from the interrupted call says: a sleep's
+                # summary counts it.
+                record.duration_ms = _ran_ms(record, stopped_at)
+                record.duration_known = True
             record.status = "error"
             record.result = error
             record.canonical_status = "interrupted" if error == "cancelled" else "failed"
             record.completed_via_result = False
             record.nested_activities.clear()
 
-    def cancel_running(self) -> None:
-        """Mark all still-running tool calls as cancelled."""
+    def cancel_running(self, *, stopped_at: float | None = None) -> None:
+        """Mark all still-running tool calls as cancelled, at *stopped_at* (``time.monotonic()``), now if not given.
+
+        A view built later from what a transcript recorded gives the time the interrupt or error was recorded.
+        """
         for call_id, tc in self._tools.items():
             renderer = _completion_renderer(tc)
             if renderer.status == "running":
                 renderer.set_error("cancelled")
-                self._mark_record_error(call_id, "cancelled")
+                self._mark_record_error(call_id, "cancelled", stopped_at)
         for call_id, record in self._tool_records.items():
             if record.status == "running":
-                self._mark_record_error(call_id, "cancelled")
+                self._mark_record_error(call_id, "cancelled", stopped_at)
         self._collapse_lock_call_ids.clear()
         self._reconcile_done_count()
-        self._finish_if_all_complete()
         self._update_title()
 
     @property
@@ -2071,85 +2192,80 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
         total = len(self._tool_records) if self._tool_records else len(self._tools)
         return self._done == total and total > 0
 
-    @property
-    def process_tool_count(self) -> int:
-        """Calls in this group, excluding the inner activity of sub-agents."""
-        return len(self._tool_records)
-
     def _notify_process_state(self) -> None:
-        status = (self.process_tool_count, self.all_complete, self.collapse_locked)
+        if not self.is_attached:
+            # Replay fills a group before it mounts it: the process header reads the group as it is planned.
+            return
+        status = (self.tool_tally, self.all_complete, self.collapse_locked)
         if status != self._process_status:
             self._process_status = status
-            if self.is_attached:
-                self.post_message(self.ProcessStateChanged(self))
+            self.post_message(self.ProcessStateChanged(self))
 
-    def _elapsed_ms(self) -> int:
-        end = self._end_time if self._end_time is not None else time.monotonic()
-        return int((end - self._start_time) * 1000)
+    @property
+    def tool_tally(self) -> ToolTally:
+        """How many calls of each kind this group made, not counting its sub-agents' own, and how they ended."""
+        records = [record for record in self._tool_records.values() if record is not None]
+        return ToolTally.of(
+            ((tool_category(record.tool_kind, record.hosted_family), _record_outcome(record)) for record in records),
+            slept_ms=sum(map(_slept_ms, records)),
+        )
 
-    def _title_text(self) -> Text:
-        arrow = "▶" if self.collapsed else "▼"
+    @property
+    def shows_running(self) -> bool:
+        """Whether the title shows the running dot: through the open tool phase and while any call still runs."""
+        return not self._activity_header_finalized or any(
+            record is not None and record.status == "running" for record in self._tool_records.values()
+        )
+
+    def _latest_running(self) -> _ToolRecord | None:
+        """The call that started last of those still running."""
         running = [
             record for record in self._tool_records.values() if record is not None and record.status == "running"
         ]
-        if running:
-            record = max(running, key=lambda candidate: candidate.activity_order)
-            localizer = widget_localizer(self)
+        return max(running, key=lambda candidate: candidate.activity_order) if running else None
+
+    def _title_countdown(self) -> _SleepCountdown | None:
+        """The time left the title shows after the latest running call's activity: a sleep's."""
+        record = self._latest_running()
+        return None if record is None else _sleep_countdown(record)
+
+    def _title_row(self) -> FoldRow:
+        """The title's row: what the latest running call does, or what the calls did; the fold arrow once it stops."""
+        localizer = widget_localizer(self)
+        record = self._latest_running()
+        if record is not None:
             activity = _record_activity_reference(record, lambda reference: render_str(localizer, reference))
             title = activity if isinstance(activity, str) else render_str(localizer, activity)
             self._retained_activity_text = title
-            return Text(title, no_wrap=True, overflow="ellipsis")
+            return FoldRow(title)
         if not self._activity_header_finalized and self._retained_activity_text:
-            return Text(
-                self._retained_activity_text,
-                no_wrap=True,
-                overflow="ellipsis",
-            )
-        n = len(self._tool_records) if self._tool_records else len(self._tools)
-        elapsed = self._elapsed_ms()
-        if elapsed >= 1000:
-            reference = _TOOL_CARD_GROUP_TITLE_TIMED.bind(done=self._done, total=n, duration=fmt_duration(elapsed))
-        else:
-            reference = _TOOL_CARD_GROUP_TITLE.bind(done=self._done, total=n)
-        title = render_str(widget_localizer(self), reference)
-        return Text(f"{arrow} {title}", no_wrap=True, overflow="ellipsis")
+            return FoldRow(self._retained_activity_text)
+        tally = self.tool_tally
+        actions = tally.action_words(localizer)
+        failed, interrupted = tally.outcomes(localizer)
+        if self.shows_running:
+            return FoldRow("" if actions else render_str(localizer, TOOLS_LABEL.bind()), actions, failed, interrupted)
+        arrow = FOLDED_ARROW if self.collapsed else OPEN_ARROW
+        return FoldRow(f"{arrow} ", actions, failed, interrupted)
 
     def _update_title(self) -> None:
         self._notify_process_state()
-        title = self._title_text()
-        self._sync_activity_indicator()
-        if title.plain == self._last_title_plain:
-            return
         try:
-            title_widget = self.query_one(ToolGroupTitle)
+            title = self.query_one(ToolGroupTitle)
         except NoMatches:
+            # Not composed yet, as replay builds its groups: compose works the row out from the calls it then has.
             return
-        title_widget.set_title(title)
-        self._last_title_plain = title.plain
+        title.show(self._title_row(), running=self.shows_running, countdown=self._title_countdown())
 
-    def _sync_activity_indicator(self) -> None:
-        """Animate through the open tool phase and any detached running work."""
-        if not self._live:
-            return
-        with suppress(NoMatches):
-            indicator = self.query_one("#tg-activity-indicator", ChrysLoadingIndicator)
-            has_running_tool = any(
-                record is not None and record.status == "running" for record in self._tool_records.values()
-            )
-            active = not self._activity_header_finalized or has_running_tool
-            indicator.display = active
-            if active:
-                indicator.resume_animation()
-            else:
-                indicator.pause_animation()
+    def takes_fold_gap(self) -> bool:
+        return True
 
-    def rows_folding_gives_up(self) -> int:
-        """The rows of tool calls below the header, which folding the laid-out group gives up."""
-        try:
-            content = self.query_one("#tg-content")
-        except NoMatches:
-            return 0
-        return content.outer_size.height if content.display else 0
+    def ends_folded(self) -> bool:
+        return self.collapsed
+
+    def render(self) -> RenderResult:
+        # Its header and calls cover the rest: only its gap shows its own content.
+        return self.gap_text() if self.gap_above else super().render()
 
     def watch_collapsed(self, collapsed: bool) -> None:
         try:
@@ -2159,10 +2275,14 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
         content.display = not collapsed
         self._update_title()
         if collapsed:
+            note_fold(self)
             self._cancel_pending_content_mounts()
             self._release_expensive_tool_content()
             self.call_later(self._release_completed_tool_widgets)
         else:
+            # Folded, a running card did not count: it shows its time as it is now in the frame that opens it.
+            for call_id, tc in self._tools.items():
+                self._restore_start(self._tool_records.get(call_id), tc)
             if self._content_mounted:
                 # On first expand, trigger lazy diff mounting for any tool
                 # widgets that deferred their diff construction during replay.
@@ -2297,6 +2417,7 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
                     args=record.args,
                 )
             self._configure_tool_widget(tc)
+            self._restore_start(record, tc)
             rebuilt[record.call_id] = tc
             widgets.append(tc)
         if widgets:
@@ -2324,10 +2445,17 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
         if self._tool_widget_configurator is not None:
             self._tool_widget_configurator(widget)
 
+    @staticmethod
+    def _restore_start(record: _ToolRecord | None, tc: Widget) -> None:
+        """Count a running call's card from when the call started: given before it composes, its first frame does."""
+        if record is not None and record.status == "running" and isinstance(tc, _ToolStartRestorable):
+            tc.restore_started_at(record.started_at)
+
     def _apply_tool_record_state(self, record: _ToolRecord, tc: Widget) -> None:
         """Apply authoritative logical state to a newly mounted renderer."""
         if isinstance(tc, BaseToolCard):
             tc.metadata = dict(record.metadata or {})
+        self._restore_start(record, tc)
         if record.display_state is not None and isinstance(tc, _ToolDisplayStateRestorable):
             tc.restore_compact_display_state(record.display_state)
         renderer = _completion_renderer(tc)
@@ -2469,8 +2597,13 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
         *,
         provider_status: str = "",
         metadata: dict[str, Any] | None = None,
+        stopped_at: float | None = None,
     ) -> None:
-        """Apply one monotonic canonical lifecycle transition."""
+        """Apply one monotonic canonical lifecycle transition; one that ends the call ends it at *stopped_at*.
+
+        *stopped_at* is ``time.monotonic()`` as the status was recorded, now if not given: a view built later from
+        what a transcript recorded gives it.
+        """
         record = self._tool_records.get(call_id)
         if record is None:
             return
@@ -2496,10 +2629,15 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
                 tc.refresh()
             return
         result_text = str((metadata or {}).get("result_text", ""))
+        # What ran until the status ended it counts, as a stop's does: a sleep's summary counts it.
+        ran_ms = _ran_ms(record, stopped_at) if record.status == "running" and not record.duration_known else None
         if status == "completed":
             self.complete_tool(
                 call_id,
                 result_text,
+                # A function call a status completes is one whose result lost the race with its parent's (a
+                # sub-agent's settling its calls as it ends): it ran until then. A hosted call shows no time.
+                ran_ms if ran_ms is not None and not record.provider_hosted else 0,
                 image_contents=record.image_contents,
                 metadata=record.metadata,
                 artifacts=record.artifacts,
@@ -2509,6 +2647,9 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
             record.completed_via_result = False
         else:
             error = result_text or ("interrupted" if status == "interrupted" else "Error: Provider tool failed")
+            if ran_ms is not None:
+                record.duration_ms = ran_ms
+                record.duration_known = True
             record.canonical_status = status
             record.status = "error"
             record.result = error
@@ -2521,10 +2662,12 @@ class ToolGroup(ToolCopyExcludedMixin, ProcessMember):
                     tc.update_hosted_status(status, record.provider_status)
                 _completion_renderer(tc).set_error(error)
             self._done += 1
-            self._finish_if_all_complete()
             self._update_title()
 
     def on_tool_group_title_clicked(self) -> None:
         if self.collapse_locked:
             return
+        if not self.collapsed:
+            # Folded by hand, it shows as made; opened, it fills the rows a running turn holds below as it grows.
+            note_fold(self, by_user=True)
         self.collapsed = not self.collapsed

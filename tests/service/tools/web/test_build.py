@@ -184,7 +184,7 @@ def test_a_hosted_tool_yields_its_local_category_and_says_so():
     web = assemble(["web_search", "web_fetch"], chat_options={"tools": [{"type": "web_search"}]})
     registry = ToolRegistry()
     tools = registry.load_builtins(["web_search", "web_fetch"], settings=Settings(), web=web)
-    assert [tool.name for tool in tools] == ["web_fetch"]
+    assert [tool.name for tool in tools] == ["web_fetch", "sleep"]
     assert registry.get("web_search") is None
     assert web.provider_origins() == {}
     [warning] = web.warnings
@@ -222,6 +222,6 @@ def test_a_repeated_web_category_loads_once():
     web = assemble(["web_search", "web_search"])
     registry = ToolRegistry()
     loaded = registry.load_builtins(["web_search", "web_search"], settings=Settings(), web=web)
-    assert [tool.name for tool in loaded] == ["web_search"]
+    assert [tool.name for tool in loaded] == ["web_search", "sleep"]
     assert web.warnings == ()
     assert web.provider_origins() == {"exa": "https://mcp.exa.ai"}

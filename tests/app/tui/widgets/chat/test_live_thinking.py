@@ -2,16 +2,21 @@
 
 """The main chat shows the model's thinking as it streams, above what it led to.
 
-Thinking is not part of the answer: an answer above it stays the answer,
-copying leaves it out, and a retry that gives up its response takes it away.
-A transcript whose thinking is not shown is as it would be without it.
+It streams open or as one folded row, as the user's choice reads when it
+starts, and folds once the turn goes on past it. Thinking is not part of the
+answer: an answer above it stays the answer, copying leaves it out, and a
+retry that gives up its response takes it away. A transcript that shows no
+thinking is as it would be without it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import gc
+import weakref
 
 import pytest
+from textual.widget import AwaitMount, Widget
 
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
@@ -23,6 +28,7 @@ from chrys.app.tui.widgets.chat.messages import (
     _AgentHeader,
 )
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.renderers.read_file import ReadFileToolCall
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from tests.support.tui_helpers import ChatPanelApp, chat_content_children, click_when_settled
@@ -62,23 +68,33 @@ def _shape(cp: ChatPanel) -> list[tuple[str, str]]:
     return shape
 
 
-async def _a_turn_with_thinking(cp: ChatPanel) -> None:
-    await cp.add_user_message("prompt")
-    await _think(cp, "r1", "Let me ", "look first.")
-    await cp.add_answer_delta("a1", "Checking.")
-    cp.finish_answer_segment("a1", completed=True)
-    await _tool(cp, "read-1")
-    await _think(cp, "r2", "The file says yes.")
-    await cp.add_answer_delta("a2", "Yes.")
-    cp.finish_answer_segment("a2", completed=True)
-    await cp.add_agent_message("Yes.")
-
-
-@pytest.mark.parametrize("show", [True, False], ids=["shown", "not-shown"])
-async def test_thinking_streams_above_what_it_led_to_or_leaves_the_transcript_as_without_it(show: bool) -> None:
-    async with ChatPanelApp(show_thinking=lambda: show).run_test() as pilot:
+@pytest.mark.parametrize("expanded", [True, False, None], ids=["expanded", "folded", "not-shown"])
+async def test_thinking_streams_above_what_it_led_to_and_folds_once_the_turn_goes_on_past_it(
+    expanded: bool | None,
+) -> None:
+    async with ChatPanelApp(thinking_expanded=None if expanded is None else lambda: expanded).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
-        await _a_turn_with_thinking(cp)
+        await cp.add_user_message("prompt")
+        await _think(cp, "r1", "Let me ", "look first.", finish=False)
+        if expanded is not None:
+            streaming = cp.query_one(ThinkingMessage)
+            assert streaming.collapsed is not expanded, "it streams as the choice reads"
+            if expanded:
+                await wait_for(
+                    lambda: streaming.query_one(VirtualizedMarkdown).shown_source == "Let me look first.",
+                    pilot=pilot,
+                    description="the open thinking shows its text as it streams",
+                )
+            else:
+                assert not streaming.query(VirtualizedMarkdown), "folded, it builds no body"
+        cp.finish_thinking_segment("r1")
+        await cp.add_answer_delta("a1", "Checking.")
+        cp.finish_answer_segment("a1", completed=True)
+        await _tool(cp, "read-1")
+        await _think(cp, "r2", "The file says yes.")
+        await cp.add_answer_delta("a2", "Yes.")
+        cp.finish_answer_segment("a2", completed=True)
+        await cp.add_agent_message("Yes.")
         await pilot.pause()
 
         without_thinking = [
@@ -87,7 +103,7 @@ async def test_thinking_streams_above_what_it_led_to_or_leaves_the_transcript_as
             ("tools", "1"),
             ("answer", "Yes."),
         ]
-        if not show:
+        if expanded is None:
             assert _shape(cp) == without_thinking
             return
         assert _shape(cp) == [
@@ -100,22 +116,23 @@ async def test_thinking_streams_above_what_it_led_to_or_leaves_the_transcript_as
         ]
         thinking = list(cp.query(ThinkingMessage))
         assert [message._is_final for message in thinking] == [True, True]
-        assert [message.collapsed for message in thinking] == [False, False], "it stays open once complete"
+        assert [message.collapsed for message in thinking] == [True, True], "each folds once what it led to starts"
         await wait_for(
             lambda: (
-                [message.query_one(VirtualizedMarkdown).shown_source for message in thinking]
-                == ["Let me look first.", "The file says yes."]
+                [message.query_one(_AgentHeader).render().plain for message in thinking]
+                == ["▸ Thought: Let me look first.", "▸ Thought: The file says yes."]
             ),
             pilot=pilot,
-            description="each thinking body shows its text",
+            description="each folded row runs the opening of its text",
         )
         # Copying the agent's replies, or the whole conversation, leaves the thinking out.
         assert cp.get_agent_responses() == [("Agent", "Checking."), ("Agent", "Yes.")]
         assert cp.get_all_messages() == [("You", "prompt"), ("Agent", "Checking."), ("Agent", "Yes.")]
 
 
-async def test_thinking_ends_the_tool_group_above_it_once_its_text_is_not_blank() -> None:
-    async with ChatPanelApp(show_thinking=_shown).run_test() as pilot:
+@pytest.mark.parametrize("expanded", [True, False], ids=["expanded", "folded"])
+async def test_thinking_ends_the_tool_group_above_it_once_its_text_is_not_blank(expanded: bool) -> None:
+    async with ChatPanelApp(thinking_expanded=lambda: expanded).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await _tool(cp, "read-1")
@@ -124,14 +141,9 @@ async def test_thinking_ends_the_tool_group_above_it_once_its_text_is_not_blank(
         group = cp.query_one(ToolGroup)
         assert _shape(cp) == [("user", "prompt"), ("tools", "2")], "blank thinking mounts nothing, the group stays open"
 
-        await pilot.pause()
         assert not group.collapsed
-        folded = group.rows_folding_gives_up()
-        assert folded > 0
         await _think(cp, "r1", "Two reads were enough.", finish=False)
-        thinking = cp.query_one(ThinkingMessage)
-        # Measured before the fold hid the group's calls.
-        assert thinking._folded_above == (folded, group.styles.margin.bottom)
+        assert cp.query_one(ThinkingMessage).collapsed is not expanded
         assert group.collapsed
 
         cp.finish_thinking_segment("r1")
@@ -145,7 +157,7 @@ async def test_thinking_ends_the_tool_group_above_it_once_its_text_is_not_blank(
 
 
 async def test_thinking_not_shown_leaves_the_tool_group_as_it_was_for_the_calls_after_it() -> None:
-    async with ChatPanelApp(show_thinking=lambda: False).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=None).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await _tool(cp, "read-1")
@@ -164,7 +176,7 @@ async def test_thinking_not_shown_leaves_the_tool_group_as_it_was_for_the_calls_
 async def test_thinking_after_an_answer_leaves_it_the_answer_until_another_answer_follows(
     answer_follows: bool,
 ) -> None:
-    async with ChatPanelApp(show_thinking=_shown).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await cp.add_answer_delta("a1", "First.")
@@ -194,7 +206,7 @@ async def test_thinking_after_an_answer_leaves_it_the_answer_until_another_answe
 
 @pytest.mark.parametrize("ending", ["segment-failed", "error", "interrupted", "retry", "new-prompt"])
 async def test_thinking_cut_off_keeps_the_text_it_showed(ending: str) -> None:
-    async with ChatPanelApp(show_thinking=_shown).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await _think(cp, "r1", "Half a ", "thought", finish=False)
@@ -220,7 +232,7 @@ async def test_thinking_cut_off_keeps_the_text_it_showed(ending: str) -> None:
 
 
 async def test_a_retry_removes_the_thinking_of_the_response_it_gave_up() -> None:
-    async with ChatPanelApp(show_thinking=_shown).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await _think(cp, "r-kept", "From a landed response.")
@@ -241,9 +253,33 @@ async def test_a_retry_removes_the_thinking_of_the_response_it_gave_up() -> None
         ]
 
 
+async def test_thinking_a_retry_removes_is_not_kept_to_fold_once_the_turn_goes_on() -> None:
+    """The retry fails before anything else shows: the given-up thinking, body and all, is gone with its message."""
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await cp.add_user_message("prompt")
+        await _think(cp, "r-done", "# Given up\n\n" + "\n\n".join(f"Paragraph {index}." for index in range(50)))
+
+        def parsed() -> bool:
+            # Queried each time: a reference held here would keep the message alive.
+            message = cp.query_one(ThinkingMessage)
+            return message.query_one(VirtualizedMarkdown).shown_source == message.text
+
+        await wait_for(parsed, pilot=pilot, description="the thinking's body parsed")
+        removed = weakref.ref(cp.query_one(ThinkingMessage))
+
+        await cp.abandon_thinking(("r-done",))
+        assert _shape(cp) == [("user", "prompt")]
+        await wait_for(
+            lambda: gc.collect() >= 0 and removed() is None,
+            pilot=pilot,
+            description="the removed thinking is collected",
+        )
+
+
 async def test_an_interrupt_while_a_retry_removes_its_thinking_still_removes_all_of_it() -> None:
     """The removal runs in the engine task an interrupt cancels; the open block must not stay, never final."""
-    async with ChatPanelApp(show_thinking=_shown).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await _think(cp, "r-done", "Given up, though complete.")
@@ -260,24 +296,27 @@ async def test_an_interrupt_while_a_retry_removes_its_thinking_still_removes_all
         assert _shape(cp) == [("user", "prompt")]
 
 
-async def test_whether_thinking_shows_is_read_as_its_segment_opens() -> None:
-    show = [False]
-    async with ChatPanelApp(show_thinking=lambda: show[0]).run_test() as pilot:
+async def test_whether_thinking_opens_is_read_as_its_segment_opens() -> None:
+    expanded = [False]
+    async with ChatPanelApp(thinking_expanded=lambda: expanded[0]).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
-        await _think(cp, "r1", "Hidden ", finish=False)
-        show[0] = True
-        await _think(cp, "r1", "to its end.")
-        await _think(cp, "r2", "Shown ", finish=False)
-        show[0] = False
-        await _think(cp, "r2", "to its end.")
-        await _think(cp, "r3", "Hidden again.")
+        await _think(cp, "r1", "Folded ", finish=False)
+        expanded[0] = True
+        await _think(cp, "r1", "to its end.", finish=False)
+        first = cp.query_one(ThinkingMessage)
+        assert first.collapsed is True
+        await _think(cp, "r2", "Open ", finish=False)
+        expanded[0] = False
+        await _think(cp, "r2", "to its end.", finish=False)
 
-        assert _shape(cp) == [("user", "prompt"), ("thinking", "Shown to its end.")]
+        assert _shape(cp) == [("user", "prompt"), ("thinking", "Folded to its end."), ("thinking", "Open to its end.")]
+        # The second opened as it streams; the first had folded as it streamed.
+        assert [message.collapsed for message in cp.query(ThinkingMessage)] == [True, False]
 
 
 async def test_a_new_prompt_drops_a_failed_prompt_with_the_thinking_it_alone_got() -> None:
-    async with ChatPanelApp(show_thinking=_shown).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("failed prompt")
         await _think(cp, "r1", "Weighing it ", finish=False)
@@ -292,7 +331,7 @@ async def test_a_new_prompt_drops_a_failed_prompt_with_the_thinking_it_alone_got
 
 @pytest.mark.parametrize("status_type", [ErrorMessage, InterruptedMessage])
 async def test_a_new_prompt_keeps_a_failed_prompt_whose_turn_got_more_than_thinking(status_type: type) -> None:
-    async with ChatPanelApp(show_thinking=_shown).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("failed prompt")
         await _think(cp, "r1", "First look.")
@@ -315,40 +354,55 @@ async def test_a_new_prompt_keeps_a_failed_prompt_whose_turn_got_more_than_think
 
 
 async def test_thinking_names_what_it_shows_and_folds_from_its_header_once_complete() -> None:
-    async with ChatPanelApp(show_thinking=_shown).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
-        await _think(cp, "r1", "Step one.")
-        await cp.add_thinking_delta("s1", "reasoning_summary", "In short, ")
-        thinking, summary = cp.query(ThinkingMessage)
+        await _think(cp, "r1", "Step one.", finish=False)
+        thinking = cp.query_one(ThinkingMessage)
+        header = thinking.query_one(_AgentHeader)
+        assert header.render().plain == "▾ Thinking"
+        # Streaming, it folds and opens from its header too: folded, its row runs the newest of its text.
+        await click_when_settled(pilot, header)
+        await wait_for(
+            lambda: thinking.collapsed and not thinking.query(VirtualizedMarkdown),
+            pilot=pilot,
+            description="streaming thinking folded, its body gone",
+        )
+        assert header.render().plain.startswith("▸ Thinking: ")
+        await click_when_settled(pilot, header)
+        await wait_for(
+            lambda: not thinking.collapsed and bool(thinking.query(VirtualizedMarkdown)),
+            pilot=pilot,
+            description="streaming thinking open again",
+        )
 
-        assert [message.query_one(_AgentHeader).render().plain for message in (thinking, summary)] == [
-            "◇ Thinking",
-            "◇ Thinking summary",
-        ]
+        cp.finish_thinking_segment("r1")
+        await wait_for(lambda: header.render().plain == "▾ Thought", pilot=pilot, description="complete thinking")
         assert not thinking.query(MessageCopyButton)
         # A selection over the header copies its label, as an answer's does.
-        assert thinking.query_one(_AgentHeader).get_selection(None) == ("[Thinking]", "\n")  # type: ignore[arg-type]
+        assert header.get_selection(None) == ("[Thought]", "\n")  # type: ignore[arg-type]
 
-        # A streaming message does not fold.
-        await click_when_settled(pilot, summary.query_one(_AgentHeader))
-        await pilot.pause()
-        assert summary.collapsed is False
-
-        await click_when_settled(pilot, thinking.query_one(_AgentHeader))
-        await wait_for(lambda: thinking.collapsed, pilot=pilot, description="complete thinking folded")
+        await cp.add_thinking_delta("s1", "reasoning_summary", "In short, ")
+        summary = cp.query(ThinkingMessage).last()
+        assert summary.query_one(_AgentHeader).render().plain == "▾ Thinking summary"
+        # What it led to started: the complete thinking folds, and its body goes.
+        assert thinking.collapsed is True
         await wait_for(lambda: not thinking.query(VirtualizedMarkdown), pilot=pilot, description="folded body removed")
-        assert thinking.query_one(_AgentHeader).render().plain == "▶ Thinking"
-        await click_when_settled(pilot, thinking.query_one(_AgentHeader))
+        # Folded, the opening of its text follows the label.
+        assert header.render().plain == "▸ Thought: Step one."
+
+        await click_when_settled(pilot, header)
         await wait_for(
             lambda: not thinking.collapsed and bool(thinking.query(VirtualizedMarkdown)),
             pilot=pilot,
             description="unfolded body rebuilt",
         )
+        await click_when_settled(pilot, header)
+        await wait_for(lambda: thinking.collapsed, pilot=pilot, description="complete thinking folded again")
 
 
 async def test_fold_all_folds_complete_thinking_with_the_tool_groups_but_leaves_thinking_that_streams_open() -> None:
-    async with ChatPanelApp(show_thinking=_shown).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=_shown).run_test() as pilot:
         cp = pilot.app.query_one(ChatPanel)
         await cp.add_user_message("prompt")
         await _tool(cp, "read-1")
@@ -356,17 +410,47 @@ async def test_fold_all_folds_complete_thinking_with_the_tool_groups_but_leaves_
         await cp.add_thinking_delta("s1", "reasoning_summary", "In short, ")
         (group,) = cp.query(ToolGroup)
         thinking, streaming = cp.query(ThinkingMessage)
-        group.collapsed = True
-
-        # The open thinking is what is expanded, so fold-all folds.
-        assert cp.toggle_fold_all() is True
+        # The turn went on past the group and the complete thinking: both folded.
         assert (group.collapsed, thinking.collapsed, streaming.collapsed) == (True, True, False)
-        assert thinking.query_one(VirtualizedMarkdown).display is False
 
+        # Nothing that folds is open, so fold-all unfolds; the streaming thinking keeps its state.
         assert cp.toggle_fold_all() is False
         assert (group.collapsed, thinking.collapsed, streaming.collapsed) == (False, False, False)
-        assert thinking.query_one(VirtualizedMarkdown).display is True
+        await wait_for(lambda: bool(thinking.query(VirtualizedMarkdown)), pilot=pilot, description="body rebuilt")
+        await wait_for(lambda: bool(group.query(ReadFileToolCall)), pilot=pilot, description="calls rebuilt")
 
+        assert cp.toggle_fold_all() is True
+        assert (group.collapsed, thinking.collapsed, streaming.collapsed) == (True, True, False)
+        await wait_for(lambda: not thinking.query(VirtualizedMarkdown), pilot=pilot, description="body removed")
+
+        # Complete, the open summary folds with them.
         cp.finish_thinking_segment("s1")
         assert cp.toggle_fold_all() is True
         assert (group.collapsed, thinking.collapsed, streaming.collapsed) == (True, True, True)
+
+
+async def test_thinking_opened_as_its_last_text_arrives_shows_that_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    async with ChatPanelApp(thinking_expanded=lambda: False).run_test() as pilot:
+        cp = pilot.app.query_one(ChatPanel)
+        await cp.add_user_message("prompt")
+        cp.agent_running = True
+        await cp.add_thinking_delta("r1", "reasoning", "First.")
+        thinking = cp.query_one(ThinkingMessage)
+        assert (thinking.collapsed, list(thinking.query(VirtualizedMarkdown))) == (True, [])
+        mount = thinking.mount
+
+        def mount_as_the_stream_ends(*widgets: Widget) -> AwaitMount:
+            mounting = mount(*widgets)
+            # The stream ends as the body it built mounts.
+            thinking.append_text("\n\nLast.")
+            cp.finish_thinking_segment("r1")
+            return mounting
+
+        monkeypatch.setattr(thinking, "mount", mount_as_the_stream_ends)
+        thinking.collapsed = False
+        await wait_for(
+            lambda: [body.shown_source for body in thinking.query(VirtualizedMarkdown)] == ["First.\n\nLast."],
+            pilot=pilot,
+            description="opened, the body shows the text the stream ended with",
+        )
+        assert thinking.query_one(VirtualizedMarkdown).display

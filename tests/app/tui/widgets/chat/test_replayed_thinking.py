@@ -2,8 +2,9 @@
 
 """A resumed session shows the thinking it saved, folded, where it showed live.
 
-Thinking a replay does not show leaves the transcript as it would be without
-it; a replayed block builds its body only once it is opened.
+A transcript that shows no thinking (``thinking_expanded`` None) replays as it
+would without it; a replayed block, as replayed text between tool calls, builds
+its body only once it is opened.
 """
 
 from __future__ import annotations
@@ -14,8 +15,11 @@ import pytest
 from textual.widget import AwaitMount, Widget
 
 from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcAbsorbRequested
+from chrys.app.tui.widgets.chat import messages as messages_module
+from chrys.app.tui.widgets.chat.fold_rows import text_preview
 from chrys.app.tui.widgets.chat.messages import AgentMessage, ThinkingMessage, UserMessage, _AgentHeader
 from chrys.app.tui.widgets.chat.panel import ChatPanel
+from chrys.app.tui.widgets.chat.process_block import ProcessBlock
 from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.markdown.widget import VirtualizedMarkdown
 from chrys.foundation.events.bus import EventBus
@@ -100,7 +104,8 @@ def _shape(panel: ChatPanel) -> list[tuple[str, str]]:
 
 
 async def _replayed_shape(messages: list[dict[str, Any]], *, shown: bool = True) -> list[tuple[str, str]]:
-    async with ChatPanelApp(show_thinking=lambda: shown).run_test() as pilot:
+    """The replayed transcript's shape; not *shown*, the panel shows no thinking at all."""
+    async with ChatPanelApp(thinking_expanded=(lambda: True) if shown else None).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history(messages)
         await panel.wait_replay_complete()
@@ -116,7 +121,7 @@ _A_TURN_WITH_THINKING = [
 
 
 async def test_replayed_thinking_shows_folded_where_it_showed_live() -> None:
-    async with ChatPanelApp(show_thinking=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history(_A_TURN_WITH_THINKING)
         await panel.wait_replay_complete()
@@ -131,8 +136,36 @@ async def test_replayed_thinking_shows_folded_where_it_showed_live() -> None:
         ]
         thinking = list(panel.query(ThinkingMessage))
         assert [message.collapsed for message in thinking] == [True, True]
-        assert [str(message.query_one(_AgentHeader).render()) for message in thinking] == ["▶ Thinking"] * 2
+        assert [str(message.query_one(_AgentHeader).render()) for message in thinking] == [
+            "▸ Thought: Let me look first.",
+            "▸ Thought: The file says yes.",
+        ]
         assert not any(message.query(VirtualizedMarkdown) for message in thinking)
+
+
+async def test_thinking_and_text_folded_inside_a_hidden_activity_section_read_no_preview_until_shown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads: list[str] = []
+
+    def counting_preview(text: str) -> str:
+        reads.append(text)
+        return text_preview(text)
+
+    monkeypatch.setattr(messages_module, "text_preview", counting_preview)
+    async with ChatPanelApp(thinking_expanded=lambda: True, fold_finished_turns=lambda: True).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.replay_history(_A_TURN_WITH_THINKING)
+        await panel.wait_replay_complete()
+        (block,) = panel.query(ProcessBlock)
+        await wait_for(lambda: block.collapsed and block.region.height == 1, pilot=pilot, description="folded section")
+        assert not any(message.display for message in panel.query(ThinkingMessage))
+        assert reads == []
+
+        await click_when_settled(pilot, block)
+        await wait_for(lambda: len(reads) == 3, pilot=pilot, description="previews read once the rows paint")
+        # The text between tool calls folds to its row too.
+        assert sorted(reads) == ["Checking.", "Let me look first.", "The file says yes."]
 
 
 async def test_thinking_a_replay_does_not_show_leaves_the_transcript_as_without_it() -> None:
@@ -201,7 +234,7 @@ async def test_the_final_answer_after_replayed_thinking_keeps_its_timestamp() ->
     message = _assistant(_text("First look.", "a1"), _think("Hmm."), _text("The answer.", "a2"))
     message["additional_properties"] = {MESSAGE_CREATED_AT_KEY: created_at}
 
-    async with ChatPanelApp(show_thinking=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history([_user("prompt"), message])
         await panel.wait_replay_complete()
@@ -213,7 +246,7 @@ async def test_the_final_answer_after_replayed_thinking_keeps_its_timestamp() ->
 
 
 async def test_replayed_thinking_and_its_summary_show_as_blocks_of_their_own() -> None:
-    async with ChatPanelApp(show_thinking=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history(
             [
@@ -229,7 +262,7 @@ async def test_replayed_thinking_and_its_summary_show_as_blocks_of_their_own() -
             ("answer", "A."),
         ]
         headers = [str(message.query_one(_AgentHeader).render()) for message in panel.query(ThinkingMessage)]
-        assert headers == ["▶ Thinking", "▶ Thinking summary"]
+        assert headers == ["▸ Thought: Step one. Step two.", "▸ Thinking summary: In short."]
 
 
 async def test_a_tool_result_between_thinking_replays_it_as_two_blocks() -> None:
@@ -313,7 +346,7 @@ async def test_replayed_thinking_in_a_compressed_part_shows_as_compressed() -> N
         ],
     )
 
-    async with ChatPanelApp(show_thinking=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history([fold], compressed_blocks={"ctx-1": block})
         await panel.wait_replay_complete()
@@ -324,7 +357,7 @@ async def test_replayed_thinking_in_a_compressed_part_shows_as_compressed() -> N
 
 
 async def test_a_replayed_block_builds_its_body_when_first_opened_and_hands_it_to_the_gc_freeze() -> None:
-    app = GcMessageChatPanelApp(show_thinking=lambda: True)
+    app = GcMessageChatPanelApp(thinking_expanded=lambda: True)
     async with app.run_test() as pilot:
         panel = app.query_one(ChatPanel)
         await panel.replay_history([_user("prompt"), _assistant(_think("# Plan\n\nLook first."), _text("Done."))])
@@ -358,8 +391,39 @@ async def test_a_replayed_block_builds_its_body_when_first_opened_and_hands_it_t
         assert thinking.query_one(VirtualizedMarkdown).display is True
 
 
+async def test_replayed_text_between_tool_calls_builds_its_body_only_once_opened() -> None:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.replay_history(
+            [
+                _user("prompt"),
+                _assistant(_text("Let me look."), _call("c1")),
+                _tool(_result("c1")),
+                _assistant(_text("Done.")),
+            ]
+        )
+        await panel.wait_replay_complete()
+        between, answer = panel.query(AgentMessage)
+        assert (between.foldable, between.collapsed) == (True, True)
+        assert not between.query(VirtualizedMarkdown)
+        assert [body.shown_source for body in answer.query(VirtualizedMarkdown)] == ["Done."]
+
+        await click_when_settled(pilot, between.query_one(_AgentHeader))
+        await wait_for(
+            lambda: [body.shown_source for body in between.query(VirtualizedMarkdown)] == ["Let me look."],
+            pilot=pilot,
+            description="opened, the text builds its body",
+        )
+        body = between.query_one(VirtualizedMarkdown)
+        await click_when_settled(pilot, between.query_one(_AgentHeader))
+        assert between.collapsed
+        await click_when_settled(pilot, between.query_one(_AgentHeader))
+        # Folded again, it kept the body it built.
+        assert (between.collapsed, list(between.query(VirtualizedMarkdown)), body.display) == (False, [body], True)
+
+
 async def test_fold_all_opens_and_folds_replayed_thinking_with_the_tool_groups() -> None:
-    async with ChatPanelApp(show_thinking=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         await panel.replay_history(_A_TURN_WITH_THINKING)
         await panel.wait_replay_complete()
@@ -389,7 +453,7 @@ async def test_fold_all_opens_and_folds_replayed_thinking_with_the_tool_groups()
 async def test_fold_all_between_a_batch_registering_and_mounting_still_opens_its_thinking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async with ChatPanelApp(show_thinking=lambda: True).run_test() as pilot:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
         panel = pilot.app.query_one(ChatPanel)
         real_mount = panel.mount
         mounted_when_folded: list[bool] = []

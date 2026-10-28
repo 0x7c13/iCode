@@ -26,6 +26,7 @@ from chrys.app.tui.widgets.chat.messages import AgentMessage
 from chrys.app.tui.widgets.chat.messages import UserMessage as UserMessageWidget
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
+from chrys.app.tui.widgets.chat.waiting_row import WaitingRow
 from chrys.app.tui.widgets.chrome import hook_indicator as hook_indicator_module
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
 from chrys.app.tui.widgets.chrome.hook_indicator import HOOK_INDICATOR_WIDTH, HookIndicator
@@ -785,7 +786,12 @@ async def test_indicator_updates_on_a_long_transcript_do_not_restyle_relayout_or
         main = await _ready(pilot)
         await _populated(pilot, main)
         await _start_turn(pilot, bus, main)
-        await wait_for(lambda: screen_is_settled(app, main), pilot=pilot, description="settled underlay")
+        # The turn's waiting row shows a moment after it starts; it is the transcript's, not the indicator's.
+        await wait_for(
+            lambda: main.query_one(WaitingRow).display and screen_is_settled(app, main),
+            pilot=pilot,
+            description="settled underlay",
+        )
         seen: dict[str, list[object]] = {"styles": [], "layout": [], "footer": []}
         monkeypatch.setattr(main, "update_node_styles", lambda animate=True: seen["styles"].append(animate))
         monkeypatch.setattr(main, "_refresh_layout", lambda *_a, **_k: seen["layout"].append(None))

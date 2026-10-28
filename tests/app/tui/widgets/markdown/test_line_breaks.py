@@ -69,6 +69,53 @@ def test_br_stays_as_typed_in_user_text() -> None:
     assert _paragraph_text(create_user_text_markdown_parser(), "one<br>two") == "one<br>two"
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        r"open D:\project\.code",
+        r"C:\Users\me\_cache\file.txt",
+        r"a \* b \\ c \` d",
+        r"line ends with \\",
+    ],
+)
+def test_backslashes_stay_as_typed_in_user_text(source: str) -> None:
+    assert _paragraph_text(create_user_text_markdown_parser(), source) == source
+
+
+def test_a_typed_backslash_still_keeps_the_next_character_plain() -> None:
+    parser = create_user_text_markdown_parser()
+
+    assert _paragraph_text(parser, r"\*not emphasis\*") == r"\*not emphasis\*"
+    assert _paragraph_text(parser, r"\[dir\]\#x \`no code\`") == r"\[dir\]\#x \`no code\`"
+    tokens = parser.parse(r"\*not emphasis\* and \`no code\`")
+    assert not [
+        child.type for token in tokens for child in token.children or [] if child.type in {"em_open", "code_inline"}
+    ]
+
+
+def test_a_backslash_before_a_newline_stays_as_typed_and_the_line_still_breaks() -> None:
+    assert _paragraph_text(create_user_text_markdown_parser(), "one\\\ntwo") == "one\\\ntwo"
+
+
+def _table_cell_text(parser: MarkdownIt, cell: str) -> str:
+    *_, body_cell = [token for token in parser.parse(f"| head |\n|---|\n| {cell} |\n") if token.type == "inline"]
+    return "".join(child.content for child in body_cell.children or [] if child.type == "text")
+
+
+def test_a_path_in_a_typed_table_cell_stays_as_typed() -> None:
+    assert _table_cell_text(create_user_text_markdown_parser(), r"C:\Users\me\.code") == r"C:\Users\me\.code"
+
+
+def test_a_typed_table_cell_still_reads_a_backslashed_pipe_as_a_literal_pipe() -> None:
+    # Standard table syntax, kept on purpose: \| is the only way to put a pipe in a cell.
+    assert _table_cell_text(create_user_text_markdown_parser(), r"x\|y") == "x|y"
+
+
+@pytest.mark.parametrize("factory", [_create_markdown_parser, create_line_break_markdown_parser])
+def test_backslash_escapes_still_apply_outside_user_text(factory: Callable[[], MarkdownIt]) -> None:
+    assert _paragraph_text(factory(), r"D:\project\.code \*not italic\*") == r"D:\project.code *not italic*"
+
+
 async def test_line_break_parser_renders_each_source_line_on_its_own_row() -> None:
     app = App()
     async with app.run_test(size=(80, 20)) as pilot:

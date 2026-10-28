@@ -3,7 +3,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Chrys 0.32.0\n"
+"Project-Id-Version: Chrys 0.32.1\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
 "POT-Creation-Date: 2026-01-01 00:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -1330,8 +1330,8 @@ msgstr ""
 msgid "settings.ui.chat.fold_finished_turns.label"
 msgstr ""
 
-#. English: Show model thinking
-#. chrys-meta={"fingerprint":"009db1db6b24ef8953ec841eb4ac172e471351f342f9207b47e638425f480839","multiline":false,"placeholders":[]}
+#. English: Expand thinking by default
+#. chrys-meta={"fingerprint":"3d187e34709e9b4d6156cc40d0b44cb6e74930750947e596a8c9d11dc9f5a349","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
 msgid "settings.ui.chat.show_thinking.label"
 msgstr ""
@@ -2686,18 +2686,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"6b66f1fa51d3eff2c80bf48e291e1d66e250e01a71c468150862d555a47dafc8","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/agents/panels/tools.py
 msgid "tui.agent_config.tools.shell_description"
-msgstr ""
-
-#. English: Sleep
-#. chrys-meta={"fingerprint":"4cae6523c944b9ccefa35ae1aeba98f6760ca82d07445743db1ee0d55c57508e","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
-msgid "tui.agent_config.tools.sleep"
-msgstr ""
-
-#. English: Pause with a skippable countdown, up to 3600 seconds
-#. chrys-meta={"fingerprint":"e71c3d99e9b9d1c4e4dc28f7a266105de71e3234eb9112b0fc0e41d523d8fdaf","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/agents/panels/tools.py
-msgid "tui.agent_config.tools.sleep_description"
 msgstr ""
 
 #. English: Todo List
@@ -4761,7 +4749,7 @@ msgstr ""
 
 #. English: Agent
 #. chrys-meta={"fingerprint":"776d9c6caf787f533a3dc88dd3977c72f4d683a010e52a6787a377fe58bc5f51","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/chat/messages.py
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
 msgid "tui.chat.agent_fallback_label"
 msgstr ""
 
@@ -4783,15 +4771,21 @@ msgstr ""
 msgid "tui.chat.copy_user_message_tooltip"
 msgstr ""
 
+#. English: {label}:
+#. chrys-meta={"fingerprint":"45b0fd64a2b1e4ce07a86a0fc833d395e495a6a0b495c55e927d109a12b0ba0a","multiline":false,"placeholders":["label"]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.chat.fold_row.folded_label"
+msgstr ""
+
 #. English: Activity
 #. chrys-meta={"fingerprint":"adc05a800b4e9d0dfccd9a893e52c89939fe10aab58b7d973b7b2897b27291b2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/process_block.py
 msgid "tui.chat.process.activity"
 msgstr ""
 
-#. English: Made {count} tool call
-#. English-plural: Made {count} tool calls
-#. chrys-meta={"fingerprint":"41af2a8a84334c679a6c341d4c0db0ddef12a52423d2958f299e45e6806afcb0","multiline":false,"placeholders":[]}
+#. English: {count} tool call
+#. English-plural: {count} tool calls
+#. chrys-meta={"fingerprint":"ec082f1fa6316a686791fa505626ee8709d5c2ae44119621fafdeda352a0f456","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/process_block.py
 msgid "tui.chat.process.tool_calls"
 msgid_plural "tui.chat.process.tool_calls#plural"
@@ -4861,7 +4855,7 @@ msgstr ""
 
 #. English: Thinking
 #. chrys-meta={"fingerprint":"035935186d9026b49ead3077c1b3018b71e54f9bbee3e2a1276b907b14516ca3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/chat/messages.py
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
 msgid "tui.chat.thinking_label"
 msgstr ""
 
@@ -4869,6 +4863,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"3320160e453e56c223cebb0e8aff29fd57844ebf3f13b67b4213cfc28bbdec55","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/messages.py
 msgid "tui.chat.thinking_summary_label"
+msgstr ""
+
+#. English: Thought
+#. chrys-meta={"fingerprint":"d2f59611e2915dccd579c93088ade4ba918f4fb8dcdb61ff640e518552520a47","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.chat.thought_label"
 msgstr ""
 
 #. English: New version found: {version} Run: {command} to upgrade
@@ -6288,6 +6288,90 @@ msgstr ""
 msgid "tui.guides.title"
 msgstr ""
 
+#. English: (none)
+#. chrys-meta={"fingerprint":"4d78877441b22277abed2738d3fc73346d1ea68c4222f97c88114191429fd144","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.absent"
+msgstr ""
+
+#. English: Asked again: the arguments changed after you continued.
+#. chrys-meta={"fingerprint":"d7a0bdd9e063f6d4e85ab0c6a8b1211bb36ff303470f5af75f7bcb324f656738","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.asked_again"
+msgstr ""
+
+#. English: Hook {hook} asks you to confirm:
+#. chrys-meta={"fingerprint":"6ed27a4d82c3dc7aabbb174f9e84953bc332803e0599375617fc2f69745b5b7e","multiline":false,"placeholders":["hook"]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.asks"
+msgstr ""
+
+#. English: Hook {hook} ({source}) asks you to confirm:
+#. chrys-meta={"fingerprint":"e0fc97e02fb21b817a53eb7bf903802439eb7ba11db0c80e2e3db8b44bafa442","multiline":false,"placeholders":["hook","source"]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.asks_from"
+msgstr ""
+
+#. English: Cancel
+#. chrys-meta={"fingerprint":"ee3eb6e02cd8772be8786b7d714f54bf90abe5d0f0523aebf9c292a1e48c7d3d","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.cancel"
+msgstr ""
+
+#. English: Changed:
+#. chrys-meta={"fingerprint":"d034956c5c90484519e90a20e00d7911a97ccc6792754cf50398d3c745e320ad","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.changed"
+msgstr ""
+
+#. English: Continue
+#. chrys-meta={"fingerprint":"167e575361c5e16ba03f613cc29c5da6ba716b02f2d070a5e8a84325e46e1e26","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.continue"
+msgstr ""
+
+#. English: Your message
+#. chrys-meta={"fingerprint":"b4848f14626e6e42d474d79b691c2bba83c17e90a63115cfa188951e6b9400a4","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.message"
+msgstr ""
+
+#. English: (no reason given)
+#. chrys-meta={"fingerprint":"d7f10f87d9f54eb1b341ef9da6b86698d5a49f6093c1f6064e4c36ec325731b3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.no_reason"
+msgstr ""
+
+#. English: global
+#. chrys-meta={"fingerprint":"c477ba92dd6e4e1569eaaad77b0cb8810d43d0a5f8114a41ac6b41779c6b5ec5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.source.global"
+msgstr ""
+
+#. English: project
+#. chrys-meta={"fingerprint":"bd23bc14344c23c37663fa3d2cbed77723dbdeb192c21123926d683137832e39","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.source.project"
+msgstr ""
+
+#. English: Tool: {tool} (sub-agent {agent})
+#. chrys-meta={"fingerprint":"86948b92913fdfa4875b45da70be1d1ee03c7d8c838a1e47fc8eaee14019ec2f","multiline":false,"placeholders":["agent","tool"]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.sub_agent_tool"
+msgstr ""
+
+#. English: Hook confirmation
+#. chrys-meta={"fingerprint":"d7355a4c7cdd79ed097af0a1c804abf8164c25653605ac61fe65126da44de285","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.title"
+msgstr ""
+
+#. English: Tool: {tool}
+#. chrys-meta={"fingerprint":"996df4f9033ea89e9b4017867411970afe577c459941c6392cdc4acde90ebec1","multiline":false,"placeholders":["tool"]}
+#: src/chrys/app/tui/screens/main/hook_confirmation_dialog.py
+msgid "tui.hook_confirmation.tool"
+msgstr ""
+
 #. English: Hooks
 #. chrys-meta={"fingerprint":"bc590033958e925397df73037927d0966b3d6b872ec389277b25224deed0ebd3","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/hook_activity.py
@@ -6300,10 +6384,59 @@ msgstr ""
 msgid "tui.hook_run.applied.args"
 msgstr ""
 
+#. English: Asked the user to confirm; the user continued.
+#. chrys-meta={"fingerprint":"2a23d0d1e1eb7652a885b0f63e333b2e1098aff6f42c1bbd72c7afdf52031852","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.approved"
+msgstr ""
+
+#. English: Asked the user to confirm; the user cancelled.
+#. chrys-meta={"fingerprint":"8993e5ee8ece1424fac9dd5bf75c70cb1203a7a9340a240337c48ebdde05b0ca","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.declined"
+msgstr ""
+
+#. English: Asked the user to confirm; the run was interrupted first.
+#. chrys-meta={"fingerprint":"6da1c645d2c15c06120f120aa4a74cdb5f17a1a5fdafe20a0cbe8ca5f8936f14","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.interrupted"
+msgstr ""
+
+#. English: Asked the user to confirm; the action was dropped first.
+#. chrys-meta={"fingerprint":"4a77ff4c1c911a707e2d919cc6c53f302db9a74d073ed7cad9783fad63fc05f2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.invalidated"
+msgstr ""
+
+#. English: Asked the user to confirm; waiting for an answer.
+#. chrys-meta={"fingerprint":"245dc9ef872c982ab36ec5a8574eaa4500b098c7b004883d0d2263d68cff4fcb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.pending"
+msgstr ""
+
+#. English: Asked the user to confirm; no answer came in time.
+#. chrys-meta={"fingerprint":"020d8ff223dfa7f22e078066ef518a274d32901bee3dbcb4faf2d674f6d81572","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.timed_out"
+msgstr ""
+
+#. English: Asked the user to confirm, but the question could not be shown.
+#. chrys-meta={"fingerprint":"e88feada1e7949c238db4ccbce36f540ec0ed76ccb9d72cd051bc71731c19fc9","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.asked.unavailable"
+msgstr ""
+
 #. English: Blocked the action:
 #. chrys-meta={"fingerprint":"2cf87c65acf4bb5aef37e1913778060a63348c11288763c253eda0a13875ff92","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/hook_run.py
 msgid "tui.hook_run.applied.blocked"
+msgstr ""
+
+#. English: Hooks kept changing the arguments after the user continued, so the
+#. tool call was rejected.
+#. chrys-meta={"fingerprint":"4005ab2c29782db6b6a3f31e57a7478f3c5dc1669c58291d321d6d4eaadee1f5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/hook_run.py
+msgid "tui.hook_run.applied.call_rejected"
 msgstr ""
 
 #. English: Added to the tool result:
@@ -9421,6 +9554,12 @@ msgstr ""
 msgid "tui.runtime_details.section.auto_loaded_files"
 msgstr ""
 
+#. English: Context management tools
+#. chrys-meta={"fingerprint":"0d362845d669bf5e9c8c11578f0c37fde33cae1e03542791599b9775db0f7ae3","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/dialogs/runtime_details.py
+msgid "tui.runtime_details.section.context_tools"
+msgstr ""
+
 #. English: Failed MCP servers
 #. chrys-meta={"fingerprint":"e9bf7914ce0a4543af189788c2decd9d5f2d72a1c51230db1f2b2e5228d2b665","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
@@ -10375,10 +10514,10 @@ msgstr ""
 msgid "tui.settings.hint.ui.chat.fold_finished_turns"
 msgstr ""
 
-#. English: Show the model's thinking in the chat as it arrives, when the model
-#. service returns it as readable text. Applies to new replies and to sessions
-#. opened afterwards.
-#. chrys-meta={"fingerprint":"391e08f5e1bb84088e4f7704b2ae10abc823bd841874dfd85ea49ef5c1bde5f7","multiline":false,"placeholders":[]}
+#. English: Show new thinking expanded while the model writes it. When off, it
+#. stays on one line, its newest words running along it. Either way it folds to
+#. one line once the turn moves on; click it at any time to read it in full.
+#. chrys-meta={"fingerprint":"fe88fd32f261c70edfb174380743699800ee033edff5218b58c029896eceed0a","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.show_thinking"
 msgstr ""
@@ -10576,8 +10715,8 @@ msgstr ""
 msgid "tui.settings.section.diagnostics"
 msgstr ""
 
-#. English: Display
-#. chrys-meta={"fingerprint":"2be26a44aadcd50744fb560585919ca70671419a02ae4ef5d509f247bbb6c75b","multiline":false,"placeholders":[]}
+#. English: Display preferences
+#. chrys-meta={"fingerprint":"cc17193d9634850b0ae42904d52f02871c73db6f3c56892e38e10218158bee1b","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.section.display"
 msgstr ""
@@ -11001,10 +11140,58 @@ msgstr ""
 msgid "tui.sidebar.hooks.outcome.added_reminder"
 msgstr ""
 
+#. English: user continued
+#. chrys-meta={"fingerprint":"b5b6d90141af8dc0cf4e99b7ae039d38a71e046690755c18e7b1eadac337c803","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.approved"
+msgstr ""
+
+#. English: user cancelled
+#. chrys-meta={"fingerprint":"0e0cbcc1a95c7e695c508479def643d351dc6beb2845ae1226307c4a4c3fd50c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.declined"
+msgstr ""
+
+#. English: interrupted
+#. chrys-meta={"fingerprint":"9566bb81390b49dbd8aa355c817de177cf28c1c9bedd62a5ca1799d53b602ab7","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.interrupted"
+msgstr ""
+
+#. English: dropped
+#. chrys-meta={"fingerprint":"f3d00baab239847b990697b70304460a63fbdc29239bbfe10bbc6a3e8b0c686c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.invalidated"
+msgstr ""
+
+#. English: waiting for user
+#. chrys-meta={"fingerprint":"6848e1c4501cb90cc5f238957f4a7eccdf888898005eed82e617ac08a098cf7e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.pending"
+msgstr ""
+
+#. English: no answer in time
+#. chrys-meta={"fingerprint":"695c75fda6732f4cac4e8ff6ded7792c9a386c44cd274e09de6e34447c536faf","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.timed_out"
+msgstr ""
+
+#. English: couldn't ask user
+#. chrys-meta={"fingerprint":"2a5e08eac22f83eb4402982c2191176ea0faf02864a850096acd2f0c28b9aa93","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.asked.unavailable"
+msgstr ""
+
 #. English: blocked
 #. chrys-meta={"fingerprint":"23bcab7ae9ef97e9666043447f5b6968da692cbfffdf79d3a1fb059da04e7d7e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/sidebar/hooks.py
 msgid "tui.sidebar.hooks.outcome.blocked"
+msgstr ""
+
+#. English: call rejected
+#. chrys-meta={"fingerprint":"768f046ff9cde1855cc6a3f0c3b08f25b14ad494024fe9d457efbf2b0986a91a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/sidebar/hooks.py
+msgid "tui.sidebar.hooks.outcome.call_rejected"
 msgstr ""
 
 #. English: cancelled
@@ -12001,6 +12188,120 @@ msgstr ""
 msgid "tui.tool_card.file_edit.writing"
 msgstr ""
 
+#. English: ran {count} agent
+#. English-plural: ran {count} agents
+#. chrys-meta={"fingerprint":"5671e5a3034f22f89bcfc477d4f737ea3a99a2d62978f5e5e9cd3f9c9cc35ee1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.agents"
+msgid_plural "tui.tool_card.group.action.agents#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: ran {count} command
+#. English-plural: ran {count} commands
+#. chrys-meta={"fingerprint":"46e899116a15d6ad00cc52d2daa46d5c7406f83a930771227c33c970bdcc0b90","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.commands"
+msgid_plural "tui.tool_card.group.action.commands#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: edited {count} file
+#. English-plural: edited {count} files
+#. chrys-meta={"fingerprint":"f1576baeb747f15519a9d5120f4811fa8c1d1886465d3b2cdd5a8b994ecedbee","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.edits"
+msgid_plural "tui.tool_card.group.action.edits#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: fetched {count} page
+#. English-plural: fetched {count} pages
+#. chrys-meta={"fingerprint":"f3c53426849ee80f2775b0239bcf9012af8dae9590c19ac71da479be73b3c169","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.fetches"
+msgid_plural "tui.tool_card.group.action.fetches#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: made {count} MCP call
+#. English-plural: made {count} MCP calls
+#. chrys-meta={"fingerprint":"fa3ff82c552b9baf572504d015834a731854b54cafa36cb93770f22834cc2858","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.mcp_calls"
+msgid_plural "tui.tool_card.group.action.mcp_calls#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: made {count} other call
+#. English-plural: made {count} other calls
+#. chrys-meta={"fingerprint":"ea5001abcc8d33c06dfb39002d9a8927a9a1392a6958808ebc11a54630c385fb","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.other_calls"
+msgid_plural "tui.tool_card.group.action.other_calls#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: asked {count} question
+#. English-plural: asked {count} questions
+#. chrys-meta={"fingerprint":"129b2a061ba3a8176e522384e8cb410a22047ae9eb73686c0b8abe59a7859c04","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.questions"
+msgid_plural "tui.tool_card.group.action.questions#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: read {count} file
+#. English-plural: read {count} files
+#. chrys-meta={"fingerprint":"cbeafb2094c9731c7d064c9963b56d9d9b2706a40e3b73b522c574970c28bee8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.reads"
+msgid_plural "tui.tool_card.group.action.reads#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: searched for {count} pattern
+#. English-plural: searched for {count} patterns
+#. chrys-meta={"fingerprint":"55ca5fc410a8316f0636f89db912b8e5274b90651b20ead67edb3fcca3d91549","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.searches"
+msgid_plural "tui.tool_card.group.action.searches#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: used {count} skill
+#. English-plural: used {count} skills
+#. chrys-meta={"fingerprint":"78b444a2b4b2f6e5fe88159742047d6e3ab7b14696621d0d1f6c766080ca8e95","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.skill_calls"
+msgid_plural "tui.tool_card.group.action.skill_calls#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: slept {duration}
+#. chrys-meta={"fingerprint":"0aefa6bf60b8a8dca23784e66febed3485bb590e2946f13f7ba802abee89962e","multiline":false,"placeholders":["duration"]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.sleeps"
+msgstr ""
+
+#. English: made {count} todo update
+#. English-plural: made {count} todo updates
+#. chrys-meta={"fingerprint":"35f15b9ee620e175a50e7424ff45e52041cf1613cbd2117dcd05470d696ff646","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.todo_updates"
+msgid_plural "tui.tool_card.group.action.todo_updates#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: ran {count} web search
+#. English-plural: ran {count} web searches
+#. chrys-meta={"fingerprint":"ef4d356de7c4fc875a298f10ed3a8e16ecec1cc6efcae9a3f7be8742720ab338","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.action.web_searches"
+msgid_plural "tui.tool_card.group.action.web_searches#plural"
+msgstr[0] ""
+msgstr[1] ""
+
 #. English: Running {agent}: {activity}
 #. chrys-meta={"fingerprint":"4cc574b3a99715cdeb108521d27e698d6c78f36938342ce63d5a53596f3ef5fd","multiline":false,"placeholders":["activity","agent"]}
 #: src/chrys/app/tui/widgets/chat/tool_call.py
@@ -12067,6 +12368,24 @@ msgstr ""
 msgid "tui.tool_card.group.activity.shell"
 msgstr ""
 
+#. English: {duration} left
+#. chrys-meta={"fingerprint":"d3893cd696e579eb1dcc3464eb66bfa3ede99f9441e788aa48050d4f8fa63f73","multiline":false,"placeholders":["duration"]}
+#: src/chrys/app/tui/widgets/chat/tool_call.py
+msgid "tui.tool_card.group.activity.sleep_left"
+msgstr ""
+
+#. English: Sleeping
+#. chrys-meta={"fingerprint":"fe9ed97f5a87430230f7a179c5fa46aa10a5921aed1e51da643091f663c35b81","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/tool_call.py
+msgid "tui.tool_card.group.activity.sleeping"
+msgstr ""
+
+#. English: Sleeping: {reason}
+#. chrys-meta={"fingerprint":"8ca5f2049cbcd61d6a39f9aefb0da60956e4efbdb4c7ef2809d7a1f5c45516a9","multiline":false,"placeholders":["reason"]}
+#: src/chrys/app/tui/widgets/chat/tool_call.py
+msgid "tui.tool_card.group.activity.sleeping_reason"
+msgstr ""
+
 #. English: Waiting for your answer
 #. chrys-meta={"fingerprint":"919a56e40b1e09a7a581f578cac1a8009d845c49e5487b1cadb93c350ab5babc","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chat/tool_call.py
@@ -12079,17 +12398,176 @@ msgstr ""
 msgid "tui.tool_card.group.activity.writing"
 msgstr ""
 
-#. English: Tools ({done}/{total})
-#. chrys-meta={"fingerprint":"aa23e7a601aaf3836295d74e099a76a197c547cf5bc562d7ffefa80da56859d6","multiline":false,"placeholders":["done","total"]}
-#: src/chrys/app/tui/widgets/chat/tool_call.py
-msgid "tui.tool_card.group.title"
+#. English: {hours}h
+#. chrys-meta={"fingerprint":"cba879a6807c8ad4b5c035053c53e18c3751e2c2cf92b183d30c97d86bb29efa","multiline":false,"placeholders":["hours"]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.duration.hours"
 msgstr ""
 
-#. English: Tools ({done}/{total}, {duration})
-#. chrys-meta={"fingerprint":"31fd10cf57b5970f6c85771cb237afb178d4778c56d7fdf712caf7e5dc3073da","multiline":false,"placeholders":["done","duration","total"]}
-#: src/chrys/app/tui/widgets/chat/tool_call.py
-msgid "tui.tool_card.group.title_timed"
+#. English: {hours}h {minutes}m
+#. chrys-meta={"fingerprint":"2ff789ce17b798dc8b1c7083ecde1df846f1ccfe82a5573755ff065a1b5400af","multiline":false,"placeholders":["hours","minutes"]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.duration.hours_minutes"
 msgstr ""
+
+#. English: {minutes}m
+#. chrys-meta={"fingerprint":"be10353dfa6f42af64af3c65a33010d4061c61c4b5629c68ab362b2b04e3c6ce","multiline":false,"placeholders":["minutes"]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.duration.minutes"
+msgstr ""
+
+#. English: {minutes}m {seconds}s
+#. chrys-meta={"fingerprint":"c977f24045f39b1d2849aaa22d3aa31fee418015371e4ac4f259b42fc91c5891","multiline":false,"placeholders":["minutes","seconds"]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.duration.minutes_seconds"
+msgstr ""
+
+#. English: {seconds}s
+#. chrys-meta={"fingerprint":"0bfa61e4eb8c0afaec63f7ab2cb0c32145b2546fded952700164934b96db4e05","multiline":false,"placeholders":["seconds"]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.duration.seconds"
+msgstr ""
+
+#. English: Tools
+#. chrys-meta={"fingerprint":"93cfa3e62475f15acb208706bd4be6a926b4de404c9082d596ba4ec073be6db6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.label"
+msgstr ""
+
+#. English: {count} agent
+#. English-plural: {count} agents
+#. chrys-meta={"fingerprint":"e347789a4968a77e329f7d646eaa0e05b30a08d013998c6cd83c699600a8768b","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.agents"
+msgid_plural "tui.tool_card.group.summary.agents#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} command
+#. English-plural: {count} commands
+#. chrys-meta={"fingerprint":"5b839c86cb408cf15c8f116e103f8076dbda1ad990e35a94c7b8820b101c5378","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.commands"
+msgid_plural "tui.tool_card.group.summary.commands#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} edit
+#. English-plural: {count} edits
+#. chrys-meta={"fingerprint":"1cca3f5d5c57157519e612f71c933e4e9ede531c844366ddf5af873c1cd207bd","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.edits"
+msgid_plural "tui.tool_card.group.summary.edits#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} failed
+#. English-plural: {count} failed
+#. chrys-meta={"fingerprint":"bb738ceddc5ba56f3aae80b8f3df7c91156c6789678d92ec0bec206daa873e1c","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.failed"
+msgid_plural "tui.tool_card.group.summary.failed#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} fetch
+#. English-plural: {count} fetches
+#. chrys-meta={"fingerprint":"c4667a4a9970cf51fac3fcab44da8975fac9525bdc1d516aa2846a68b930afe0","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.fetches"
+msgid_plural "tui.tool_card.group.summary.fetches#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} interrupted
+#. English-plural: {count} interrupted
+#. chrys-meta={"fingerprint":"e91dfac0a58871d03f2e15d64380d333e237fca74d89da999d32548fa6ea856a","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.interrupted"
+msgid_plural "tui.tool_card.group.summary.interrupted#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} MCP call
+#. English-plural: {count} MCP calls
+#. chrys-meta={"fingerprint":"b8f871abd66f5534f43d08e83d15d801234c3018f6099bb887220b08cad45afe","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.mcp_calls"
+msgid_plural "tui.tool_card.group.summary.mcp_calls#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} other call
+#. English-plural: {count} other calls
+#. chrys-meta={"fingerprint":"306bfb04b2767197048bde8a910fcdc5714e80f886fc06ff9b32256b005aafed","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.other_calls"
+msgid_plural "tui.tool_card.group.summary.other_calls#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} question
+#. English-plural: {count} questions
+#. chrys-meta={"fingerprint":"e626d8c4406b7a99bb7316b7c8aba0fd3036db1df744c3f1fbd122a45e292713","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.questions"
+msgid_plural "tui.tool_card.group.summary.questions#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} read
+#. English-plural: {count} reads
+#. chrys-meta={"fingerprint":"e3b31f7d8406307a50a3c0fdc566bd244f0b236d2fb81e79e16c5e7cf4b66ae5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.reads"
+msgid_plural "tui.tool_card.group.summary.reads#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} search
+#. English-plural: {count} searches
+#. chrys-meta={"fingerprint":"7d44214c2314afca63f4a21c8198be2e50aedd969cfa0a59180c9bf46b279b67","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.searches"
+msgid_plural "tui.tool_card.group.summary.searches#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} skill call
+#. English-plural: {count} skill calls
+#. chrys-meta={"fingerprint":"4d351537926be8c75581b91a3e5aca78ad5fa9cf35fa3f33d63b11859abfe5cc","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.skill_calls"
+msgid_plural "tui.tool_card.group.summary.skill_calls#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} sleep
+#. English-plural: {count} sleeps
+#. chrys-meta={"fingerprint":"7763204c04c789bc98a0114c7d039fd5538255e3bf2386683c1bbfda0deaa5c5","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.sleeps"
+msgid_plural "tui.tool_card.group.summary.sleeps#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} todo update
+#. English-plural: {count} todo updates
+#. chrys-meta={"fingerprint":"2a819b99cda9ebc3f3e20e6d37954123cfa2e1c8fb472aa5b63e576f63bc3678","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.todo_updates"
+msgid_plural "tui.tool_card.group.summary.todo_updates#plural"
+msgstr[0] ""
+msgstr[1] ""
+
+#. English: {count} web search
+#. English-plural: {count} web searches
+#. chrys-meta={"fingerprint":"5a606b5268597105d58d7d0af1b58d6794cc9418fa0682e2f399dfd695c71db2","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/chat/fold_rows.py
+msgid "tui.tool_card.group.summary.web_searches"
+msgid_plural "tui.tool_card.group.summary.web_searches#plural"
+msgstr[0] ""
+msgstr[1] ""
 
 #. English: Resolution: {width}x{height}
 #. chrys-meta={"fingerprint":"c7c5be20c0aa8b78b943ebaa034bb17635218ab92801a3274b136ca63f259c39","multiline":false,"placeholders":["height","width"]}

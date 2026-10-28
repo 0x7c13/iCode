@@ -26,6 +26,13 @@ _REJECTION_MESSAGE_KEY = "_rejection_message"
 _APPROVAL_MODIFIED_ARGS_KEY = "_approval_modified_args"
 """Metadata key carrying approval-edited tool arguments."""
 
+_HOOK_OPERATION_KEY = "_chrys_hook_operation"
+"""Metadata key carrying the call's ``HookOperation``: the version ``before_tool_call`` hooks
+checked, which the innermost commit middleware takes before the tool runs. Never persisted."""
+
+_HOOK_CONFIRMATION_KEY = "_hook_confirmation"
+"""Metadata key set when a hook's ``ask`` stopped the call (the user did not approve, or nobody could be asked)."""
+
 _SLEEP_SKIPPED_KEY = "_sleep_skipped"
 """Metadata key set by ``SleepMiddleware`` when the user skips a sleep."""
 

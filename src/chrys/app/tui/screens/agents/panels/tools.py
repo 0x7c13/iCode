@@ -49,11 +49,6 @@ _ASK_USER_DESCRIPTION = msg(
     "tui.agent_config.tools.ask_user_description",
     fallback="Prompt the user with one or more questions for input or clarification",
 )
-_SLEEP = msg("tui.agent_config.tools.sleep", fallback="Sleep")
-_SLEEP_DESCRIPTION = msg(
-    "tui.agent_config.tools.sleep_description",
-    fallback="Pause with a skippable countdown, up to 3600 seconds",
-)
 _DOCUMENT_CONVERTER = msg(
     "tui.agent_config.tools.document_converter",
     fallback="Document Converter (PDF, Office)",
@@ -82,7 +77,8 @@ _WEB_FETCH_DESCRIPTION = msg(
     fallback="Read a page's text by URL",
 )
 
-# All available builtin tool categories (from service/tools/registry.py).
+# Builtin tool categories a profile can switch (from service/tools/registry.py); every agent
+# loads the ``ALWAYS_LOADED_TOOL_CATEGORIES`` ones, so they have no switch.
 # (category_key, display_label, description, enabled)
 _ALL_CATEGORIES: list[tuple[str, MessageDef, MessageDef, bool]] = [
     ("filesystem.read", _FILESYSTEM_READ, _FILESYSTEM_READ_DESCRIPTION, True),
@@ -92,7 +88,6 @@ _ALL_CATEGORIES: list[tuple[str, MessageDef, MessageDef, bool]] = [
     ("web_fetch", _WEB_FETCH, _WEB_FETCH_DESCRIPTION, True),
     ("shell", _SHELL, _SHELL_DESCRIPTION, True),
     ("ask_user", _ASK_USER, _ASK_USER_DESCRIPTION, True),
-    ("sleep", _SLEEP, _SLEEP_DESCRIPTION, True),
     ("doc_converter", _DOCUMENT_CONVERTER, _DOCUMENT_CONVERTER_DESCRIPTION, True),
     ("todo", _TODO_LIST, _TODO_LIST_DESCRIPTION, True),
 ]

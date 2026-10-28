@@ -82,6 +82,7 @@ from chrys.service.context.compaction.spill import COMPACTIONS_DIR_NAME
 from chrys.service.context.memory_loader import load_memory_content, memory_truncated_warning
 from chrys.service.llm.clients import create_client, effective_model_base_url
 from chrys.service.llm.route_sessions import derive_llm_route_session_id
+from chrys.service.profiles.agents.schema import ALWAYS_LOADED_TOOL_CATEGORIES
 from chrys.service.profiles.models.options import (
     effective_chat_options,
     protected_chat_option_keys_warning_structured,
@@ -526,7 +527,7 @@ async def build_agent(
         if not allow_user_interaction:
             tools = [tool for tool in tools if get_tool_kind(tool) != KIND_ASK_USER]
         builtin_tools: dict[str, list[str]] = {}
-        for category in dict.fromkeys(builtin_categories):
+        for category in dict.fromkeys([*builtin_categories, *ALWAYS_LOADED_TOOL_CATEGORIES]):
             names = [
                 tool.name
                 for tool in filter_image_tools(
@@ -775,6 +776,7 @@ async def build_agent(
             ),
             builtin_tools=builtin_tools,
             web_search_providers=web_tools.provider_origins(),
+            context_tools=context_tool_names,
             sub_agent_tools=sub_agent_tool_names,
             mcp_tools=mcp_tools_by_server,
             mcp_failures=mcp_failures,

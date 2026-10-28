@@ -585,6 +585,23 @@ async def test_build_agent_does_not_expose_displaced_local_web_tool_to_model() -
     assert "web_search" not in result.tool_names
 
 
+async def test_build_agent_loads_sleep_though_the_profile_omits_it() -> None:
+    """Every agent has sleep, headless runs included; the runtime details list it like any builtin."""
+    profile = AgentProfile(name="test", tools=ToolsConfig(builtins=["todo"]))
+
+    with (
+        _build_agent_env(mcp_mock=None, agent_mock=_agent_mock(), tool_registry=ToolRegistry()),
+        patch.object(ab, "TurnBindings", return_value=MagicMock()),
+        patch.object(runtime_factory_module, "ApprovalMiddleware", return_value=MagicMock(close=AsyncMock())),
+        patch.object(runtime_factory_module, "AskUserMiddleware", return_value=MagicMock()),
+        patch.object(ab, "ApprovalPolicy", return_value=MagicMock()),
+    ):
+        result = await _invoke_build_agent(profile, session_id="session-1", allow_user_interaction=False)
+
+    assert "sleep" in result.tool_names
+    assert result.runtime_details.builtin_tools == {"todo": ["todo_write"], "sleep": ["sleep"]}
+
+
 async def test_build_agent_omits_hosted_web_notice_when_no_local_category_yields() -> None:
     """A declaration that displaces nothing local must not claim it disabled a tool."""
     profile = AgentProfile(name="test", tools=ToolsConfig(builtins=[]))

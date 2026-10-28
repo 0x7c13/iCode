@@ -14,6 +14,14 @@ from chrys.foundation.models.approval_reuse import ApprovalReuseOffer, ReuseChoi
 from chrys.foundation.models.ask_user import AskUserAnswer, AskUserQuestion
 from chrys.foundation.models.background_tasks import BackgroundTaskView
 from chrys.foundation.models.execution import ExecutionSnapshot
+from chrys.foundation.models.hook_confirmations import (
+    HookArgumentChange,
+    HookConfirmationAnswer,
+    HookConfirmationClaim,
+    HookConfirmationOutcome,
+    HookConfirmationSubjectKind,
+    RefusedInput,
+)
 from chrys.foundation.models.hook_executions import HookExecutionView
 from chrys.foundation.models.invocations import ContentChannel, ContentStatus, InvocationOrigin
 from chrys.foundation.models.todos import TodoItem
@@ -992,6 +1000,74 @@ class HookRunsChanged(Event):
     """The engine's hook run log changed; reread it (no data; every session's runs; for the TUI only)."""
 
 
+@dataclass(kw_only=True)
+class HookConfirmationRequest(Event):
+    """A blocking hook asked the user to confirm an operation before it goes on.
+
+    Delivered by session-level ``subscribe`` only, never through the headless
+    turn stream: a new input's hooks run while that input is still being
+    published. A handler records the request, ``claim.try_claim()``, and starts
+    showing it on a task of its own; it never waits for the user. The one
+    frontend whose claim succeeds publishes the one ``HookConfirmationResponse``.
+
+    The contract a frontend relies on, and keeps:
+
+    - A claimed request ends exactly one way: the frontend's answer, or a
+      ``HookConfirmationWithdrawn`` from the backend (invalidated, timed out,
+      interrupted, closed). Nothing else ends it, so a frontend needs no
+      clean-up of its own for a session switch, a rebuild or an interrupt:
+      the withdrawal comes.
+    - The answer is published as soon as the user decides, before anything
+      the frontend does to put the question away (closing a dialog, settling
+      a card): how long that takes never makes an answer given in time late.
+    - Requests are routed by ``session_id`` alone. A frontend that serves one
+      session takes only that session's: a workflow node's requests carry the
+      workflow session's id, and reach only a frontend serving it.
+    """
+
+    request_id: str
+    operation_id: str
+    revision: int
+    run_id: str
+    """The hook run that asked (its ``hook.operation.*`` id and its run log entry)."""
+    origin: InvocationOrigin | None = None
+    """The sub-agent or workflow node the operation belongs to; None for the main agent's own."""
+    caller_name: str = ""
+    """The agent profile that wants the operation."""
+    hook_id: str
+    hook_source: str = ""
+    """``project`` or ``global``; empty when unknown."""
+    reason: str = ""
+    """What the hook wrote: plain text, never markup."""
+    subject: HookConfirmationSubjectKind
+    tool_name: str = ""
+    tool_kind: str = ""
+    arguments: dict[str, Any] = field(default_factory=dict)
+    """A copy of the tool arguments the hook saw; the request never changes the call's own."""
+    asked_again: bool = False
+    """The user continued an earlier version of this tool call, whose arguments changed since."""
+    changed_arguments: tuple[HookArgumentChange, ...] = ()
+    """When asked again: each argument that differs from the version the user continued."""
+    input_text: str = ""
+    claim: HookConfirmationClaim = field(default_factory=HookConfirmationClaim)
+
+
+@dataclass(kw_only=True)
+class HookConfirmationResponse(Event):
+    """The frontend that claimed a ``HookConfirmationRequest`` answers it."""
+
+    request_id: str
+    answer: HookConfirmationAnswer
+
+
+@dataclass(kw_only=True)
+class HookConfirmationWithdrawn(Event):
+    """A ``HookConfirmationRequest`` ended without the claiming frontend's answer; stop showing it."""
+
+    request_id: str
+    outcome: HookConfirmationOutcome
+
+
 @dataclass
 class UserInjectResult(Event):
     """Reports whether a mid-run user message was delivered to the model.
@@ -1024,6 +1100,13 @@ class Error(Event):
     display_message: MessageRef | None = None
     display_hint: MessageRef | None = None
     """Shown after ``display_message``; never without it."""
+    refused_input: RefusedInput | None = None
+    """Set when a gate refused a user input before it ran: which input.
+
+    ``prompt`` (a new turn's message) and ``retry_note`` (the note a retry adds) end the
+    request that brought them; ``injection`` (a message sent into a running turn) refuses
+    only itself, and the turn it was sent into goes on.
+    """
 
 
 @dataclass
@@ -1090,6 +1173,8 @@ class AgentRuntimeDetails:
     model: RuntimeModelDetails = field(default_factory=RuntimeModelDetails)
     builtin_tools: dict[str, list[str]] = field(default_factory=dict)
     web_search_providers: dict[str, str] = field(default_factory=dict)
+    context_tools: list[str] = field(default_factory=list)
+    """The context management tools the agent has besides its built-in ones: compressing and recalling context."""
     sub_agent_tools: list[str] = field(default_factory=list)
     mcp_tools: dict[str, list[str]] = field(default_factory=dict)
     mcp_failures: dict[str, str] = field(default_factory=dict)

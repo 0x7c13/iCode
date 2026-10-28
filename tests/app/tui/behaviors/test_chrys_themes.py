@@ -46,6 +46,7 @@ class _SelectedMessageKindsApp(TuiVariableDefaultsMixin, App[None]):
     def compose(self) -> ComposeResult:
         for message_id, compressed, is_injection, selected in (
             ("turn", False, False, True),
+            ("unselected-turn", False, False, False),
             ("compressed-turn", True, False, True),
             ("note", False, True, True),
             ("unselected-note", False, True, False),
@@ -58,24 +59,71 @@ class _SelectedMessageKindsApp(TuiVariableDefaultsMixin, App[None]):
 
 
 @pytest.mark.parametrize("theme_name", ["chrys", "chrys-ansi"])
-async def test_selection_wins_over_compression_but_never_borders_an_injected_note(theme_name: str) -> None:
+async def test_selection_wins_over_compression_and_styles_an_injected_note_as_any_turn(theme_name: str) -> None:
     app = _SelectedMessageKindsApp()
     app.register_theme(CHRYS_THEME)
     app.register_theme(CHRYS_ANSI_THEME)
     app.theme = theme_name
     async with app.run_test() as pilot:
         await pilot.pause()
-        turn, compressed_turn, note, unselected_note = (
+        turn, unselected_turn, compressed_turn, note, unselected_note = (
             app.query_one(f"#{message_id}", UserMessage)
-            for message_id in ("turn", "compressed-turn", "note", "unselected-note")
+            for message_id in ("turn", "unselected-turn", "compressed-turn", "note", "unselected-note")
         )
 
         assert compressed_turn.styles.border_left == turn.styles.border_left
         assert compressed_turn.styles.background == turn.styles.background
-        # Selecting a note must not give it a border, which would also shift its text.
-        assert note.styles.border_left == unselected_note.styles.border_left
+        # A note's bar is any user message's: selecting it recolours the bar, never moves its text.
+        assert note.styles.border_left == turn.styles.border_left
+        assert unselected_note.styles.border_left == unselected_turn.styles.border_left
         assert note.content_region.x == unselected_note.content_region.x
         assert note.styles.background == turn.styles.background
+
+
+class _UserMessageApp(TuiVariableDefaultsMixin, App[None]):
+    def compose(self) -> ComposeResult:
+        yield UserMessage("A prompt")
+
+
+@pytest.mark.parametrize(
+    "theme_name",
+    ["chrys", "chrys-legacy", "textual-dark", "textual-light", "nord", "catppuccin-latte", "chrys-ansi", "ansi-light"],
+)
+async def test_a_user_message_stands_apart_on_a_faint_gray_in_dark_and_light_themes(theme_name: str) -> None:
+    app = _UserMessageApp()
+    for theme in (CHRYS_THEME, CHRYS_LEGACY_THEME, CHRYS_ANSI_THEME):
+        app.register_theme(theme)
+    app.theme = theme_name
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        theme = app.current_theme
+        variables = app.get_css_variables()
+        background = app.query_one(UserMessage).styles.background
+        if theme.ansi:
+            # The terminal owns the background: no tint is worked out over it.
+            assert background == TextualColor.parse(variables["boost"])
+            return
+        screen = TextualColor.parse(variables["background"])
+        foreground = TextualColor.parse(variables["foreground"])
+        expected = "#262626" if theme.name.startswith("chrys") else screen.blend(foreground, 0.06, 1).hex
+        assert background == TextualColor.parse(expected)
+        # A gray just off the transcript's background: lighter in a dark theme, darker in a light one.
+        assert background.a == 1 and background != screen
+        assert (background.brightness > screen.brightness) is theme.dark
+        assert abs(background.brightness - screen.brightness) < 0.1
+
+
+async def test_a_theme_sets_the_user_message_background() -> None:
+    app = _UserMessageApp()
+    source = app.get_theme("textual-light")
+    assert source is not None
+    custom = copy_theme(source, name="user-copy")
+    custom.variables["user-message-background"] = "#5F5F87"
+    app.register_theme(custom)
+    app.theme = "user-copy"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.query_one(UserMessage).styles.background == TextualColor.parse("#5F5F87")
 
 
 @pytest.mark.parametrize("theme_name", ["chrys-ansi", "ansi-dark", "ansi-light", "textual-light", "nord"])

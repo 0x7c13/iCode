@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from acp.schema import AgentMessageChunk, TextContentBlock, ToolCallProgress, ToolCallStart
@@ -15,6 +16,7 @@ from textual.widgets import Button, Static
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.main.state import MainScreenState, RunState
 from chrys.app.tui.util.context_pressure import context_pressure_message
+from chrys.app.tui.widgets.chat import tool_call as tool_call_module
 from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     AgentTranscriptJournal,
     AgentTranscriptSurface,
@@ -24,10 +26,12 @@ from chrys.app.tui.widgets.chat.agent_transcript_surface import (
     TranscriptCompactionStartOp,
     TranscriptErrorOp,
     TranscriptInterruptedOp,
+    TranscriptPausedOp,
     TranscriptResumedOp,
     TranscriptRetryOp,
     TranscriptToolResultOp,
     TranscriptToolStartOp,
+    TranscriptToolStatusOp,
     TranscriptUserOp,
     TranscriptWarningOp,
 )
@@ -41,7 +45,9 @@ from chrys.app.tui.widgets.chat.messages import (
     SystemMessage,
     UserMessage,
 )
-from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolGroup
+from chrys.app.tui.widgets.chat.renderers import sleep as sleep_module
+from chrys.app.tui.widgets.chat.renderers.sleep import SleepToolCall
+from chrys.app.tui.widgets.chat.tool_call import BaseToolCard, ToolGroup, ToolGroupTitle
 from chrys.app.tui.widgets.workflow.projector import INVOCATION_EVENTS, journal_operation
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
@@ -54,11 +60,11 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import DisplayBlock
 from chrys.foundation.models.history_markers import HistoryMarkerKind
 from chrys.foundation.models.invocations import ContentChannel, ContentStatus, InvocationOrigin
-from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE
+from chrys.foundation.tool_kinds import KIND_FILESYSTEM_READ, KIND_FILESYSTEM_WRITE, KIND_SLEEP
 from chrys.orchestration.invoker.acp_protocol import AcpUpdateTranslator
 from chrys.service.session.sub_agent_transcript import project_agent_transcript
 from tests.orchestration.sub_agents._acp_fakes import session_notification
-from tests.support.tui_helpers import LocalizedWidgetApp, make_backend_handler
+from tests.support.tui_helpers import LocalizedWidgetApp, make_backend_handler, title_text
 from tests.support.waiting import wait_for
 
 _TURN = InvocationOrigin("turn", "s1", "main", None)
@@ -486,3 +492,74 @@ async def test_interruption_header_uses_mount_locale(locale: str, header: str, a
         body = surface.query_one(InterruptedMessage).query_one(".status-body", Static).content
         assert isinstance(body, Text)
         assert body.plain == f"{header}\n{reason}"
+
+
+def test_a_tool_start_records_when_it_started() -> None:
+    before = time.monotonic()
+    start = TranscriptToolStartOp("s1", "sleep", KIND_SLEEP, {"seconds": 60})
+
+    assert before <= start.started_at <= time.monotonic()
+
+
+def test_a_tool_status_records_when_it_came() -> None:
+    before = time.monotonic()
+    status = TranscriptToolStatusOp("s1", "interrupted")
+
+    assert before <= status.stopped_at <= time.monotonic()
+
+
+async def test_a_view_opened_during_a_sleep_counts_down_from_when_it_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A view built later, as a sub-agent's details or a workflow node's transcript, counts from the recorded start."""
+    clock = ModuleType("time")
+    clock.monotonic = lambda: 1040.0  # type: ignore[attr-defined]
+    monkeypatch.setattr(tool_call_module, "time", clock)
+    monkeypatch.setattr(sleep_module, "time", clock)
+    journal = AgentTranscriptJournal()
+    journal.record(TranscriptToolStartOp("s1", "sleep", KIND_SLEEP, {"seconds": 60, "reason": "CI"}, started_at=1000.0))
+    surface = AgentTranscriptSurface(journal, profile_name="Explore")
+
+    async with LocalizedWidgetApp(lambda: surface).run_test(size=(100, 30)) as pilot:
+        await wait_for(lambda: bool(surface.query(SleepToolCall)), pilot=pilot, description="the sleep's card")
+        assert title_text(surface.query_one(ToolGroupTitle)) == "Sleeping: CI · 20s left"
+        assert surface.query_one(SleepToolCall)._start_time == 1000.0
+
+
+@pytest.mark.parametrize(
+    ("stop", "title"),
+    [
+        ("interrupted", "▸ Slept 10s · 1 interrupted"),
+        ("error", "▸ Slept 10s · 1 interrupted"),
+        ("resumed", "▸ Slept 10s · 1 interrupted"),
+        # A sub-agent cancelled, or ended before its calls' results came, settles them by status.
+        ("status_interrupted", "▸ Slept 10s · 1 interrupted"),
+        ("status_completed", "▸ Slept 10s"),
+    ],
+)
+async def test_a_view_opened_later_counts_a_stopped_sleep_up_to_when_it_stopped(
+    monkeypatch: pytest.MonkeyPatch, stop: str, title: str
+) -> None:
+    """A view built later from what the journal recorded counts how long a sleep ran up to its recorded stop."""
+    clock = ModuleType("time")
+    clock.monotonic = lambda: 1300.0  # type: ignore[attr-defined]
+    monkeypatch.setattr(tool_call_module, "time", clock)
+    monkeypatch.setattr(sleep_module, "time", clock)
+    journal = AgentTranscriptJournal()
+    journal.record(TranscriptToolStartOp("s1", "sleep", KIND_SLEEP, {"seconds": 600}, started_at=1000.0))
+    if stop == "interrupted":
+        reason = INTERRUPTED_REASON_PLAIN_MESSAGE.bind(reason=DisplayBlock("Cancelled"))
+        journal.record(TranscriptInterruptedOp(reason, stopped_at=1010.0))
+    elif stop == "error":
+        journal.record(TranscriptErrorOp("Failed", stopped_at=1010.0))
+    elif stop.startswith("status_"):
+        # As a sub-agent's card ends: it settles the calls still running by status, then records the answer.
+        journal.record(TranscriptToolStatusOp("s1", stop.removeprefix("status_"), stopped_at=1010.0))
+        journal.record(TranscriptAssistantOp(text="Done.", final=True, streamed=False))
+    else:
+        # A paused attempt resumed: the retry stops the calls its failed attempt left running.
+        journal.record(TranscriptPausedOp())
+        journal.record(TranscriptResumedOp(stopped_at=1010.0))
+    surface = AgentTranscriptSurface(journal, profile_name="Explore")
+
+    async with LocalizedWidgetApp(lambda: surface).run_test(size=(100, 30)) as pilot:
+        await wait_for(lambda: not surface._pending and not surface._draining, pilot=pilot)
+        assert title_text(surface.query_one(ToolGroupTitle)) == title

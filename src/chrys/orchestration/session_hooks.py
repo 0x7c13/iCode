@@ -12,6 +12,7 @@ from chrys.foundation.platform import get_platform
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
+    from chrys.service.hooks.confirmation import HookConfirmationService
     from chrys.service.hooks.manager import HookManager
 
 _CONSTRUCTION_GLOBAL_HOOKS_INVALID = msg(
@@ -34,8 +35,15 @@ _CONSTRUCTION_HOOK_SKIPPED = msg(
 
 
 class SessionHookFactory:
-    def __init__(self, bus: EventBus) -> None:
+    """Builds every hook manager of an engine: a chat session's and each workflow run's.
+
+    Each manager it builds asks the user through *confirmations*, the
+    engine's one confirmation service, so every entry asks the same way.
+    """
+
+    def __init__(self, bus: EventBus, *, confirmations: HookConfirmationService | None = None) -> None:
         self._bus = bus
+        self._confirmations = confirmations
 
     async def __call__(
         self, *, project_root: str, project_hooks_enabled: bool, session_id: str | None, request_id: str = ""
@@ -111,7 +119,9 @@ class SessionHookFactory:
                 )
         if not merged.sources:
             return None
-        return HookManager(
+        manager = HookManager(
             file=merged,
             hooks_dir=config_dir / "hooks",
         )
+        manager.confirmations = self._confirmations
+        return manager

@@ -65,6 +65,7 @@ _NO_MODEL_PROFILE = msg(
     "tui.runtime_details.empty.model_profile",
     fallback="No active model profile details are available.",
 )
+_CONTEXT_TOOLS = msg("tui.runtime_details.section.context_tools", fallback="Context management tools")
 _SUB_AGENT_TOOLS = msg("tui.runtime_details.section.sub_agent_tools", fallback="Sub-agent tools")
 _NO_TOOLS = msg(
     "tui.runtime_details.empty.tools",
@@ -269,6 +270,8 @@ class RuntimeDetailsDialog(BaseDialog[None]):
             sections.append(self._section(category, _unique(lines)))
         if web_providers and "web_search" not in self._details.builtin_tools:
             sections.append(self._section("web_search", web_providers))
+        if self._details.context_tools:
+            sections.append(self._section(_CONTEXT_TOOLS.bind(), _unique(self._details.context_tools)))
         if self._details.sub_agent_tools:
             sections.append(self._section(_SUB_AGENT_TOOLS.bind(), _unique(self._details.sub_agent_tools)))
         if not sections:

@@ -12,6 +12,7 @@ from chrys.foundation.events.types import (
     ApprovalResponse,
     AskUserResponse,
     BackgroundTaskStop,
+    HookConfirmationResponse,
     InvocationAbortRequested,
     InvocationRetryRequested,
     ShellToBackground,
@@ -19,6 +20,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
+from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
 
 
 class ToolActionBridge:
@@ -57,6 +59,15 @@ class ToolActionBridge:
         """Publish an inline ask-user response."""
         await self._publisher.publish(AskUserResponse(request_id=request_id, answers=answers))
         self._log("AskUserResponse", f"{len(answers)} answers")
+
+    async def publish_hook_confirmation_answer(
+        self, session_id: str | None, request_id: str, answer: HookConfirmationAnswer
+    ) -> None:
+        """Answer the hook confirmation this screen claimed and showed."""
+        await self._publisher.publish(
+            HookConfirmationResponse(session_id=session_id, request_id=request_id, answer=answer)
+        )
+        self._log(f"HookConfirmationResponse req={request_id} answer={answer}")
 
     async def publish_approval_response(
         self,

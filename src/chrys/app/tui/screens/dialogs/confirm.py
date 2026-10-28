@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from rich.cells import cell_len
 from rich.text import Text
@@ -73,6 +73,7 @@ class ConfirmDialog(BaseDialog[bool]):
         bold_message_prefix: bool = False,
         tasks: tuple[TaskSummaryData, ...] = (),
         impact: tuple[ConfirmLabel, ...] = (),
+        message_align: Literal["center", "left"] = "center",
     ) -> None:
         self._locale_controller = locale_controller
         self._title_message = title
@@ -87,7 +88,8 @@ class ConfirmDialog(BaseDialog[bool]):
         self._confirm_label = self._render_message(confirm_label)
         self._cancel_label = self._render_message(cancel_label) if cancel_label is not None else None
         self._confirm_variant = confirm_variant
-        super().__init__()
+        # A message with structured details (arguments, quoted text) reads as a left-aligned block.
+        super().__init__(classes="-left-message" if message_align == "left" else None)
 
     def compose(self) -> ComposeResult:
         self._title = self._render_message(self._title_message)

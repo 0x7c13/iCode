@@ -167,7 +167,7 @@ async def test_chat_panel_replay_uses_created_at_metadata() -> None:
         assert "(0ms)" not in str(user.query_one(_UserHeader).content)
         assert agent._ts == expected
         assert agent._duration_ms == 2345
-        assert agent._header_text().plain == f"\u25c7 Code Agent {expected} (2s)"
+        assert agent._header_text().plain == f"▾ Code Agent {expected} (2s)"
 
 
 async def test_chat_panel_replay_adds_action_only_for_trailing_interruption() -> None:

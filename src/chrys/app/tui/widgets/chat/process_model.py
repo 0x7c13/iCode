@@ -7,13 +7,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-type EntryKind = Literal["user", "injection", "answer", "thinking", "intermediate", "tool", "failure", "retry", "other"]
+type EntryKind = Literal[
+    "user", "injection", "compaction", "answer", "thinking", "intermediate", "tool", "failure", "retry", "other"
+]
 
 
 @dataclass(frozen=True)
 class ProcessEntry:
     kind: EntryKind
-    tools: int = 0
     compressed: bool = False
     failure_after: bool = False
     """An omitted replay status follows this entry, without becoming process content."""
@@ -25,18 +26,24 @@ class ProcessSegment:
     anchor: int
     index: int
     members: tuple[int, ...]
-    tool_count: int
     fold: bool
     compressed: bool
 
 
 def plan_process_segments(entries: list[ProcessEntry], *, protect_last_turn: bool = False) -> list[ProcessSegment]:
-    """Only persisted user boundaries number segments; notices never become members."""
+    """Only persisted user boundaries number segments; notices never become members.
+
+    A message sent mid-turn and a compaction summary each start a new segment
+    of their turn: what came before them folds above them, what came after below.
+    """
     openers = [index for index, entry in enumerate(entries) if entry.kind == "user"]
     result: list[ProcessSegment] = []
     for turn, opener in enumerate(openers):
         end = openers[turn + 1] if turn + 1 < len(openers) else len(entries)
-        anchors = [opener, *(index for index in range(opener + 1, end) if entries[index].kind == "injection")]
+        anchors = [
+            opener,
+            *(index for index in range(opener + 1, end) if entries[index].kind in {"injection", "compaction"}),
+        ]
         terminals = [
             index
             for index in range(opener + 1, end)
@@ -63,7 +70,6 @@ def plan_process_segments(entries: list[ProcessEntry], *, protect_last_turn: boo
                     anchor,
                     segment,
                     members,
-                    sum(entries[index].tools for index in members),
                     success and not protected,
                     entries[opener].compressed,
                 )

@@ -116,7 +116,7 @@ class _Harness:
         self.verify_commands: list[str] = []
         self.tool_groups_expanded: list[bool] = []
         self.defer_while_judging: list[bool] = []
-        self.show_thinking: list[bool] = []
+        self.thinking_expanded: list[bool] = []
         self.fold_finished_turns: list[bool] = []
         self.saved_notifications: list[NotificationSettings] = []
         self.notification_service = _NotificationService()
@@ -144,7 +144,7 @@ class _Harness:
                 apply_trajectory_verify_commands=self.verify_commands.append,
                 apply_tool_groups_expanded=self.tool_groups_expanded.append,
                 apply_approval_defer_while_judging=self.defer_while_judging.append,
-                apply_show_thinking=self.show_thinking.append,
+                apply_thinking_expanded=self.thinking_expanded.append,
                 apply_fold_finished_turns=self.fold_finished_turns.append,
                 list_themes=lambda: ["textual-dark", "chrys", "chrys-legacy"],
                 save_notifications=self.saved_notifications.append,
@@ -230,20 +230,20 @@ async def test_the_approval_deferral_choice_applies_at_once_and_saves_without_a_
     assert h.coordinator.reload_dirty() is False
 
 
-async def test_the_show_thinking_choice_applies_at_once_and_saves_without_a_reload(
+async def test_the_expand_thinking_choice_applies_at_once_and_saves_without_a_reload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     h = _Harness(monkeypatch)
     await h.install_engine()
 
-    h.coordinator.apply_live("ui.chat.show_thinking", False)
+    h.coordinator.apply_live("ui.chat.show_thinking", True)
 
-    assert h.show_thinking == [False]
+    assert h.thinking_expanded == [True]
     assert h.recorder.calls == []
 
     await h.close_and_settle()
 
-    assert h.recorder.calls == [({"ui.chat.show_thinking": False}, ())]
+    assert h.recorder.calls == [({"ui.chat.show_thinking": True}, ())]
     assert h.reloads == 0
     assert h.coordinator.reload_dirty() is False
 

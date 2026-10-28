@@ -235,6 +235,8 @@ class WaitCategory:
     RATE_LIMIT = "rate_limit"
     INPUT_ADMISSION = "input_admission"
     TOOL_ADMISSION = "tool_admission"
+    HOOK_CONFIRMATION = "hook_confirmation"
+    """A hook's ``ask`` waiting for the user (codes only; the hook's reason stays out)."""
 
 
 class ProfileKind:

@@ -140,7 +140,17 @@ async def test_idle_host_end_hooks_do_not_acquire_writer_during_another_hosts_ad
         managers.append(manager)
         return manager
 
-    async def fire(manager, event, payload, *, scope="turn", target_operation_id=None, trajectory_context=None):
+    async def fire(
+        manager,
+        event,
+        payload,
+        *,
+        scope="turn",
+        target_operation_id=None,
+        trajectory_context=None,
+        origin=None,
+        operation=None,
+    ):
         if event is HookEvent.SESSION_END and manager is managers[0]:
             end_contexts.append(current_trajectory())
             end_entered.set()
@@ -152,6 +162,8 @@ async def test_idle_host_end_hooks_do_not_acquire_writer_during_another_hosts_ad
             scope=scope,
             target_operation_id=target_operation_id,
             trajectory_context=trajectory_context,
+            origin=origin,
+            operation=operation,
         )
 
     monkeypatch.setattr(SessionHookFactory, "__call__", create_autospec(SessionHookFactory.__call__, side_effect=build))

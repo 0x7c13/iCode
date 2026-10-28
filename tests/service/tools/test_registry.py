@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
 
 from chrys.foundation.models.session_env import SessionEnvironment
+from chrys.service.tools.builtins.sleep import sleep
 from chrys.service.tools.registry import ToolRegistry
 
 
@@ -50,8 +52,8 @@ def test_get_by_category() -> None:
 def test_load_builtins_filesystem_write() -> None:
     reg = ToolRegistry()
     tools = reg.load_builtins(["filesystem.write"])
-    assert len(tools) == 2  # write_file, edit_file
-    assert len(reg.get_all()) == 2
+    assert [tool.name for tool in tools] == ["write_file", "edit_file", "sleep"]
+    assert len(reg.get_all()) == 3
 
 
 def test_load_builtins_all_categories() -> None:
@@ -61,10 +63,10 @@ def test_load_builtins_all_categories() -> None:
     reg = ToolRegistry()
     tools = reg.load_builtins(["filesystem.write", "filesystem.read", "shell"], runtime=runtime)
     # filesystem.write: 2 (write_file, edit_file) + filesystem.read: 2 + shell: 1 detected shell tool
-    # On Windows with Git Bash installed, shell adds an extra git_bash tool
+    # + the always-loaded sleep. On Windows with Git Bash installed, shell adds an extra git_bash tool
     extra_shells = len(runtime.platform.extra_shells)
-    assert len(tools) == 5 + extra_shells
-    assert len(reg.get_all()) == 5 + extra_shells
+    assert len(tools) == 6 + extra_shells
+    assert len(reg.get_all()) == 6 + extra_shells
 
 
 def test_reserved_chrys_names_cover_every_builtin_tool() -> None:
@@ -93,7 +95,7 @@ def test_reserved_chrys_names_cover_every_builtin_tool() -> None:
 def test_load_builtins_unknown_category() -> None:
     reg = ToolRegistry()
     tools = reg.load_builtins(["nonexistent"])
-    assert tools == []
+    assert [tool.name for tool in tools] == ["sleep"]
 
 
 def test_clear() -> None:
@@ -113,7 +115,8 @@ def test_register_auto_name() -> None:
 def test_load_builtins_search() -> None:
     reg = ToolRegistry()
     tools = reg.load_builtins(["search"])
-    assert len(tools) == 2  # grep, glob
+    assert len(reg.get_by_category("search")) == 2  # grep, glob
+    assert len(tools) == 3  # and the always-loaded sleep
 
 
 def test_runtime_bound_filesystem_and_search_tools_preserve_tool_schema() -> None:
@@ -147,27 +150,35 @@ def test_runtime_bound_filesystem_and_search_tools_preserve_tool_schema() -> Non
 def test_load_builtins_ask_user() -> None:
     reg = ToolRegistry()
     tools = reg.load_builtins(["ask_user"])
-    assert len(tools) == 1
+    assert [tool.name for tool in tools] == ["ask_user", "sleep"]
 
 
-def test_load_builtins_sleep() -> None:
+@pytest.mark.parametrize(
+    "categories",
+    [[], ["todo"], ["sleep"], ["sleep", "todo", "sleep"]],
+    ids=["none", "omitted", "listed", "listed-twice"],
+)
+def test_sleep_always_loads_once_and_last(categories: list[str], caplog: pytest.LogCaptureFixture) -> None:
+    """Every agent gets sleep whatever its categories say; a listed one (older profiles) changes nothing."""
     reg = ToolRegistry()
-    tools = reg.load_builtins(["sleep"])
-    assert len(tools) == 1
-    assert getattr(tools[0], "name", "") == "sleep"
+    with caplog.at_level(logging.WARNING):
+        tools = reg.load_builtins(categories)
+    expected = ["todo_write", "sleep"] if "todo" in categories else ["sleep"]
+    assert [tool.name for tool in tools] == expected
+    assert reg.get_by_category("sleep") == [sleep]
+    assert caplog.records == []
 
 
 def test_load_builtins_todo() -> None:
     reg = ToolRegistry()
     tools = reg.load_builtins(["todo"])
-    assert len(tools) == 1
-    assert getattr(tools[0], "name", "") == "todo_write"
+    assert [tool.name for tool in tools] == ["todo_write", "sleep"]
 
 
 def test_load_builtins_filesystem_read() -> None:
     reg = ToolRegistry()
     tools = reg.load_builtins(["filesystem.read"])
-    assert len(tools) == 2  # read_file, view_image
+    assert [tool.name for tool in tools] == ["read_file", "view_image", "sleep"]
 
 
 def test_load_builtins_shell_auto_captures_runtime() -> None:
@@ -180,7 +191,7 @@ def test_load_builtins_shell_auto_captures_runtime() -> None:
 def test_load_multiple_categories() -> None:
     reg = ToolRegistry()
     tools = reg.load_builtins(["filesystem.read", "search", "ask_user"])
-    assert len(tools) == 5  # 2 + 2 + 1
+    assert len(tools) == 6  # 2 + 2 + 1 + the always-loaded sleep
 
 
 def test_unregister_nonexistent() -> None:

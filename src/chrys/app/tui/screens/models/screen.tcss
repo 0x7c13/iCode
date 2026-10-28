@@ -54,6 +54,15 @@ ModelConfigScreen {
     height: 1;
 }
 
+/* Labels carrying a live count hint span the column and wrap, so a narrow
+   modal never clips the hint; a keystroke lays out only when the wrapped
+   line count changes (update_static_in_place). */
+#mc-max-tokens-label,
+#mc-max-output-label {
+    width: 1fr;
+    height: auto;
+}
+
 .mc-label:first-of-type {
     margin-top: 0;
 }

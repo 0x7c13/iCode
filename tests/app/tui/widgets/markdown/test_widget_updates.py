@@ -67,6 +67,25 @@ def _installed_text(widget: VirtualizedMarkdown) -> str:
     return "\n".join(block.content.plain for block in widget._blocks)
 
 
+async def test_an_update_before_mount_is_the_text_mount_installs() -> None:
+    app = App()
+    async with app.run_test():
+        widget = VirtualizedMarkdown("Built with this.")
+        widget.update("Updated before mount.")
+        await app.mount(widget)
+        assert (widget.source, widget.shown_source) == ("Updated before mount.", "Updated before mount.")
+
+
+async def test_an_append_before_mount_adds_to_the_text_the_widget_was_built_with() -> None:
+    app = App()
+    async with app.run_test():
+        widget = VirtualizedMarkdown("Built with this.")
+        widget.append(" Appended before mount.")
+        await app.mount(widget)
+        shown = "Built with this. Appended before mount."
+        assert (widget.source, widget.shown_source) == (shown, shown)
+
+
 async def test_overlapping_updates_resolve_anchors_in_the_newest_document() -> None:
     app = App()
     async with app.run_test():

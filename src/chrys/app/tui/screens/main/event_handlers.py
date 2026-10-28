@@ -19,6 +19,7 @@ from chrys.app.tui.screens.main.dialog_controllers import (
     ApprovalDialogHandle,
     ApprovalQueueController,
     ApprovalResponseWorker,
+    HookConfirmationQueueController,
     ImageCompressionDialogController,
     QuestionDialogHandle,
     QuestionQueueController,
@@ -76,6 +77,8 @@ from chrys.foundation.events.types import (
     CompactionStarted,
     ContextCompressed,
     Error,
+    HookConfirmationRequest,
+    HookConfirmationWithdrawn,
     HookExecutionsChanged,
     HookRunsChanged,
     ImageAttachmentCompressionFinished,
@@ -115,6 +118,7 @@ from chrys.foundation.i18n import DisplayBlock, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
+from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
 from chrys.foundation.tool_result_metadata import canonical_tool_result_status
 from chrys.orchestration.engine.run.attachments import replace_image_mentions_with_paths
 from chrys.service.approval.policy import ApprovalMode
@@ -214,6 +218,7 @@ class BackendEventCallbacks:
         [str, bool, str, dict[str, object] | None, ReuseChoice], ApprovalResponseWorker | None
     ]
     handle_ask_user_response: Callable[[str, tuple[AskUserAnswer, ...]], object]
+    publish_hook_confirmation_answer: Callable[[str | None, str, HookConfirmationAnswer], object]
     question_inline_preferred: Callable[[], bool]
     approval_defer_while_judging: Callable[[], bool]
     approval_timeout_seconds: Callable[[], float]
@@ -301,6 +306,7 @@ class BackendEventHandler:
                 handle_approval_response=callbacks.handle_approval_response,
                 publish_auto_fulfill_blocked=self._publish_auto_fulfill_blocked,
                 handle_ask_user_response=callbacks.handle_ask_user_response,
+                publish_hook_confirmation_answer=callbacks.publish_hook_confirmation_answer,
                 question_inline_preferred=callbacks.question_inline_preferred,
                 approval_defer_while_judging=callbacks.approval_defer_while_judging,
                 set_agent_loading=self.set_agent_loading,
@@ -312,6 +318,7 @@ class BackendEventHandler:
             timeout_seconds=callbacks.approval_timeout_seconds,
         )
         self._question_controller = QuestionQueueController(self._dialog_gateway)
+        self._hook_confirmations = HookConfirmationQueueController(self._dialog_gateway)
         self._agent_load_controller = AgentLoadDialogController(self._dialog_gateway)
         self._image_compression_controller = ImageCompressionDialogController(self._dialog_gateway)
         self._presenter = MainScreenPresenter(view, state)
@@ -328,7 +335,11 @@ class BackendEventHandler:
         # past its chat run, a pause no longer waits.
         if self._paused_sub_agents and self.agent_running:
             return RETRY_MARK
-        if self._approval_controller.awaiting_user or self._question_controller.awaiting_user:
+        if (
+            self._approval_controller.awaiting_user
+            or self._question_controller.awaiting_user
+            or self._hook_confirmations.awaiting_user
+        ):
             return QUESTION_MARK
         return ""
 
@@ -1639,6 +1650,14 @@ class BackendEventHandler:
             mode_label = self._render_display(APPROVAL_MODE_MESSAGES[mode].bind())
             s.notify(_APPROVAL_MODE_CHANGED.bind(mode=mode_label), title=_APPROVAL_TITLE.bind(), timeout=2)
         s.debug("ApprovalMode", label)
+
+    async def on_hook_confirmation_request(self, event: HookConfirmationRequest) -> None:
+        """Claim a hook's question and show it (or queue it behind the one open); never wait for the answer."""
+        self._hook_confirmations.on_request(event)
+
+    async def on_hook_confirmation_withdrawn(self, event: HookConfirmationWithdrawn) -> None:
+        """A shown or queued hook question ended without the user: drop it, answering nothing."""
+        self._hook_confirmations.on_withdrawn(event)
 
     async def on_question_to_user(self, event: QuestionToUser) -> None:
         await self._questions().on_question(event)

@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
+from rich.text import Text
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.message import Message
@@ -17,20 +18,21 @@ from textual.widgets import Static
 from chrys.app.tui.clipboard import OSC52_COPY_MAX_BYTES, copy_text_to_clipboards
 from chrys.app.tui.copy_messages import COPIED_TITLE
 from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.util.static_update import update_static_in_place
+from chrys.app.tui.widgets.chat.fold_rows import FOLDED_ARROW, OPEN_ARROW
 from chrys.app.tui.widgets.chat.tool_call import (
     TOOL_COPY_EXCLUDED_CLASS,
     ToolCopyButton,
     ToolCopyExcludedMixin,
     fmt_duration,
 )
+from chrys.app.tui.widgets.chat.transcript_panel import note_fold
 from chrys.app.tui.widgets.click_affordance import ClickAffordance
-from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
+from chrys.app.tui.widgets.loading import RunningTitle
 from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.i18n import DisplayBlock, msg
 
 if TYPE_CHECKING:
-    from textual.app import ComposeResult
+    from textual.app import ComposeResult, RenderResult
     from textual.timer import Timer
 
 
@@ -63,20 +65,61 @@ _COMPACTION_RETRY_NOTICE = msg(
 )
 
 
-class CompactionCardTitle(ToolCopyExcludedMixin, ClickAffordance):
-    """Clickable compaction card header — posts Clicked message on click."""
+class CompactionCardTitle(ToolCopyExcludedMixin, RunningTitle, ClickAffordance):
+    """Clickable compaction card header — posts Clicked message on click.
+
+    While the pass runs, the running dot comes before the label and a band of light sweeps across it.
+    """
+
+    COMPONENT_CLASSES: ClassVar[set[str]] = {"compactioncardtitle--shimmer"}
+
+    DEFAULT_CSS = """
+    /* What the running dot, lit, and the middle of the band sweeping across the label brighten to. */
+    CompactionCardTitle > .compactioncardtitle--shimmer {
+        color: $text;
+        text-style: not bold;
+    }
+    """
 
     class Clicked(Message):
         """Posted when the header is clicked."""
 
     CLICK_MESSAGE = Clicked
+    SHIMMER_COMPONENT = "compactioncardtitle--shimmer"
+
+    _running_text = Text()
+    _label_length = 0
+
+    def show_running(self, label: str, elapsed: str) -> None:
+        """Show *label* in bold, and *elapsed* dim after it, after the running dot; the band crosses the label.
+
+        The title is as wide as the dot and the text, so it lays the transcript out only when that width changes.
+        """
+        started = self.set_running(True)
+        text = Text(label, style="bold")
+        if elapsed:
+            text.append(f" ({elapsed})", style="dim")
+        resized = started or text.cell_len != self._running_text.cell_len
+        self._running_text = text
+        self._label_length = len(label)
+        self.update(text, layout=resized)
+
+    def show_final(self, content: Content) -> None:
+        """Show *content*, the finished pass's label, without the running dot."""
+        self.set_running(False)
+        self.update(content)
+
+    def render(self) -> RenderResult:
+        if self._work_running:
+            return self.running_title(self._running_text.copy(), self._label_length)
+        return super().render()
 
 
 class CompactionCard(Vertical):
     """Live status card for one Phase-4 "compact the conversation" pass.
 
     Mounted inline in the transcript's tool flow when the backend publishes
-    ``CompactionStarted``: a loading indicator plus a "Compacting
+    ``CompactionStarted``: a blinking dot plus a "Compacting
     conversation..." label with a live elapsed timer.  On
     ``CompactionFinished`` the header flips to "Conversation summarized"
     (or a failed/interrupted variant) and, when the LAST_WORDS note text is
@@ -90,16 +133,11 @@ class CompactionCard(Vertical):
     CompactionCard {
         height: auto;
         padding: 0 0 0 2;
-        margin: 0 0 1 0;
+        /* Its own top margin: thinking and tool rows above it have none. */
+        margin: 1 0;
     }
     CompactionCard > #compaction-header {
         height: 1;
-    }
-    CompactionCard > #compaction-header > ChrysLoadingIndicator {
-        width: 6;
-        height: 1;
-        margin: 0 1 0 0;
-        color: $accent;
     }
     CompactionCard > #compaction-header > #compaction-label {
         width: auto;
@@ -177,8 +215,9 @@ class CompactionCard(Vertical):
         header = Horizontal(id="compaction-header")
         header.add_class(TOOL_COPY_EXCLUDED_CLASS)
         with header:
-            yield ChrysLoadingIndicator()
-            yield CompactionCardTitle(self._running_label_text(), id="compaction-label")
+            title = CompactionCardTitle(id="compaction-label")
+            title.show_running(*self._running_label_parts())
+            yield title
             yield ToolCopyButton(tooltip_message=_COMPACTION_COPY_SUMMARY_TOOLTIP.bind())
         yield Static("", id="compaction-retry-notice")
         with Vertical(id="compaction-note-panel") as panel:
@@ -200,24 +239,18 @@ class CompactionCard(Vertical):
         if self.status != "running":
             return
         with suppress(Exception):
-            update_static_in_place(self.query_one("#compaction-label", Static), self._running_label_text())
+            self.query_one("#compaction-label", CompactionCardTitle).show_running(*self._running_label_parts())
 
-    def _running_label_text(self) -> Content:
-        # Accent title (widget CSS) with a dim elapsed trail — matching the
-        # terminal labels below and the StatusBar trail's visual tone.
-        # ``$text-muted`` ("auto 60%") resolves against the card surface and
-        # renders visibly brighter than the StatusBar's CSS-colored trail.
-        # Localized text enters only via ``$``-substitution, which keeps it
-        # literal — the markup skeletons stay prose-free.
+    def _running_label_parts(self) -> tuple[str, str]:
+        """The running label and, from the first second, the elapsed time.
+
+        The title shows them in its accent colour, the elapsed time dim, matching the terminal labels below and the
+        StatusBar trail's visual tone. ``$text-muted`` ("auto 60%") resolves against the card surface and renders
+        visibly brighter than the StatusBar's CSS-colored trail.
+        """
         label = render_str(widget_localizer(self), _COMPACTION_LABEL_RUNNING.bind())
         elapsed_ms = int((time.monotonic() - self._start_time) * 1000)
-        if elapsed_ms >= 1000:
-            return Content.from_markup(
-                "[b]$label[/b] [dim]($elapsed)[/]",
-                label=label,
-                elapsed=fmt_duration(elapsed_ms),
-            )
-        return Content.from_markup("[b]$label[/b]", label=label)
+        return label, fmt_duration(elapsed_ms) if elapsed_ms >= 1000 else ""
 
     def _final_label_text(self) -> Content:
         # Terminal tones come from the theme ($warning/$error), not literal
@@ -226,7 +259,7 @@ class CompactionCard(Vertical):
         localizer = widget_localizer(self)
         elapsed = f" [dim]({fmt_duration(self._duration_ms)})[/]" if self._duration_ms else ""
         if self.status == "ok":
-            prefix = ("▶ " if self.collapsed else "▼ ") if self._has_note else "• "
+            prefix = f"{FOLDED_ARROW if self.collapsed else OPEN_ARROW} " if self._has_note else "• "
             label = render_str(localizer, _COMPACTION_LABEL_SUMMARIZED.bind())
             return Content.from_markup(f"[b]{prefix}$label[/b] [$success]✓[/]{elapsed}", label=label)
         if self.status == "canceled":
@@ -246,9 +279,11 @@ class CompactionCard(Vertical):
 
     def _refresh_final_label(self) -> None:
         with suppress(Exception):
-            self.query_one("#compaction-label", Static).update(self._final_label_text())
+            self.query_one("#compaction-label", CompactionCardTitle).show_final(self._final_label_text())
 
     def watch_collapsed(self, collapsed: bool) -> None:
+        if collapsed:
+            note_fold(self)
         self.set_class(collapsed, "-collapsed")
         if self.status != "running":
             self._refresh_final_label()
@@ -257,6 +292,9 @@ class CompactionCard(Vertical):
         """Toggle the summary panel, mirroring the ToolGroup header."""
         if not self._has_note:
             return
+        if not self.collapsed:
+            # Folded by hand, it shows as made; opened, it fills the rows a running turn holds below as it grows.
+            note_fold(self, by_user=True)
         self.collapsed = not self.collapsed
 
     def on_tool_copy_button_clicked(self, event: ToolCopyButton.Clicked) -> None:
@@ -348,6 +386,4 @@ class CompactionCard(Vertical):
             # header click, so a mid-run compaction doesn't flood the
             # transcript with a page of markdown.
             self.collapsed = True
-        with suppress(Exception):
-            self.query_one(ChrysLoadingIndicator).display = False
         self._refresh_final_label()

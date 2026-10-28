@@ -112,6 +112,40 @@ _NO_RESULT_FILE = msg("tui.hook_run.no_result_file", fallback="No result file")
 _INVALID_RESULT_FILE = msg("tui.hook_run.invalid_result_file", fallback="The result file was invalid and was ignored")
 _APPLIED_NOTHING = msg("tui.hook_run.applied.nothing", fallback="Nothing")
 _APPLIED_BLOCKED = msg("tui.hook_run.applied.blocked", fallback="Blocked the action:")
+_APPLIED_ASKED_PENDING = msg(
+    "tui.hook_run.applied.asked.pending", fallback="Asked the user to confirm; waiting for an answer."
+)
+_APPLIED_ASKED_APPROVED = msg(
+    "tui.hook_run.applied.asked.approved", fallback="Asked the user to confirm; the user continued."
+)
+_APPLIED_ASKED_DECLINED = msg(
+    "tui.hook_run.applied.asked.declined", fallback="Asked the user to confirm; the user cancelled."
+)
+_APPLIED_ASKED_TIMED_OUT = msg(
+    "tui.hook_run.applied.asked.timed_out", fallback="Asked the user to confirm; no answer came in time."
+)
+_APPLIED_ASKED_UNAVAILABLE = msg(
+    "tui.hook_run.applied.asked.unavailable", fallback="Asked the user to confirm, but the question could not be shown."
+)
+_APPLIED_ASKED_INVALIDATED = msg(
+    "tui.hook_run.applied.asked.invalidated", fallback="Asked the user to confirm; the action was dropped first."
+)
+_APPLIED_ASKED_INTERRUPTED = msg(
+    "tui.hook_run.applied.asked.interrupted", fallback="Asked the user to confirm; the run was interrupted first."
+)
+_APPLIED_CALL_REJECTED = msg(
+    "tui.hook_run.applied.call_rejected",
+    fallback="Hooks kept changing the arguments after the user continued, so the tool call was rejected.",
+)
+_APPLIED_ASKED = {
+    "pending": _APPLIED_ASKED_PENDING,
+    "approved": _APPLIED_ASKED_APPROVED,
+    "declined": _APPLIED_ASKED_DECLINED,
+    "timed_out": _APPLIED_ASKED_TIMED_OUT,
+    "unavailable": _APPLIED_ASKED_UNAVAILABLE,
+    "invalidated": _APPLIED_ASKED_INVALIDATED,
+    "interrupted": _APPLIED_ASKED_INTERRUPTED,
+}
 _APPLIED_ARGS = msg("tui.hook_run.applied.args", fallback="Changed the tool arguments to:")
 _APPLIED_REMINDER = msg("tui.hook_run.applied.reminder", fallback="Added a reminder for the model:")
 _APPLIED_CONTEXT = msg("tui.hook_run.applied.context", fallback="Added to the tool result:")
@@ -596,6 +630,8 @@ class HookRunModal(BaseDialog[None]):
             # Kept when the other details go: a run that blocked an action still says why.
             widgets.append(self._note(_APPLIED_BLOCKED.bind()))
             widgets.append(_Code("text", applied.block_reason))
+        elif effect == "asked":
+            widgets.append(self._note(_APPLIED_ASKED[detail.record.confirmation or "pending"].bind()))
         elif effect == "modified_args":
             widgets.append(self._note(_APPLIED_ARGS.bind()))
             if gone:
@@ -611,6 +647,8 @@ class HookRunModal(BaseDialog[None]):
                 widgets.append(self._note(_DETAILS_GONE.bind(), copied=False))
             else:
                 widgets.append(_Code("text", applied.reminder if effect == "added_reminder" else applied.extra_context))
+        if detail.record.call_rejected:
+            widgets.append(self._note(_APPLIED_CALL_REJECTED.bind()))
         reason = {
             "nonblocking": _NOT_APPLIED_NONBLOCKING.bind(),
             "unsupported": _NOT_APPLIED_UNSUPPORTED.bind(event=detail.record.hook_event),

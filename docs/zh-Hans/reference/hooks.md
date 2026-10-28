@@ -181,8 +181,8 @@ iCode 可以分别从全局配置目录和当前工作目录加载一个钩子�
 
 | 事件 | 影响 |
 | --- | --- |
-| `user_prompt_submit` | 拒绝消息或添加系统提醒。被拒绝的消息会留在输入框中；如果是在智能体运行期间提交的，智能体会继续工作。 |
-| `before_tool_call` | 拒绝工具调用或修改参数，但不能批准调用或绕过审批。 |
+| `user_prompt_submit` | 拒绝消息、[请你确认](#请你确认)或添加系统提醒。被拒绝的消息会留在输入框中；如果是在智能体运行期间提交的，智能体会继续工作。 |
+| `before_tool_call` | 拒绝工具调用、[请你确认](#请你确认)或修改参数，但不能批准调用或绕过审批。 |
 | `after_tool_call` | 向工具结果追加上下文，但不能撤销已经发生的调用。 |
 | `tool_error` | 向工具错误追加上下文，但不能撤销已经发生的调用。 |
 
@@ -467,6 +467,7 @@ execution:
 | `session_id` | 当前会话的 ID。 |
 | `profile` | 当前智能体的名称，例如 `Code`。对于子智能体事件，以及子智能体内部的工具、审批和上下文压缩事件，此字段是子智能体的配置名称。 |
 | `cwd` | 当前会话的工作目录。`run.cwd` 设置的是钩子进程的工作目录，不会改变此字段。 |
+| `confirmation_available` | 仅用于 `user_prompt_submit` 和 `before_tool_call`。此钩子能[请你确认](#请你确认)时为 `true`：它是阻塞式钩子，并且有人能回答（`icode run` 和从命令行运行的工作流中没有）。可据此决定无人可问时怎么处理。 |
 
 例如，一次工具调用前的输入包含以下基础字段：
 
@@ -518,6 +519,7 @@ execution:
 | `approval_rejected` | 始终存在；调用被用户或钩子拒绝时为 `true`，否则为 `false`。 |
 | `rejection_source` | 仅在调用被拒绝时出现；`user` 表示用户拒绝，`hook` 表示钩子拒绝。 |
 | `hook_denied` | 仅在调用被拒绝时出现；钩子拒绝时为 `true`，用户拒绝时为 `false`。 |
+| `hook_confirmation` | 仅当钩子[请你确认](#请你确认)后调用没有继续时出现，说明原因：`declined`（你选择了取消）、`timed_out`（未及时回答）或 `unavailable`（无人可问）。此时 `rejection_source` 为 `hook`。 |
 
 `error: true` 时，`failed` 也为 `true`，但 `failed: true` 不一定表示抛出了异常。`tool_error` 只在抛出异常时触发；需要检查各类失败时，应监听 `after_tool_call` 并检查 `result.failed`。
 
@@ -562,8 +564,8 @@ execution:
 
 | 字段 | 类型 | 生效事件与条件 | 说明 |
 | --- | --- | --- | --- |
-| `action` | `allow`、`block` 或 `modify` | `user_prompt_submit`、`before_tool_call` | 默认为 `allow`。两种事件都接受 `block`；只有 `before_tool_call` 接受 `modify`。 |
-| `reason` | 字符串 | `user_prompt_submit`、`before_tool_call`，且 `action: block` | 向用户显示的拒绝原因；工具调用被拒绝时，也会提供给模型。 |
+| `action` | `allow`、`block`、`modify` 或 `ask` | `user_prompt_submit`、`before_tool_call` | 默认为 `allow`。两种事件都接受 `block` 和 `ask`；只有 `before_tool_call` 接受 `modify`。 |
+| `reason` | 字符串 | `user_prompt_submit`、`before_tool_call`，且 `action: block` 或 `ask` | 用于 `block` 时，是向用户显示的拒绝原因，工具调用被拒绝时也会提供给模型；用于 `ask` 时，是 iCode 请你确认时显示的内容。 |
 | `args_override` | 对象 | `before_tool_call` 且 `action: modify` | 将其中的顶层字段加入现有 `tool.args`。同名字段会替换原值；如果值是对象，该对象也会被整体替换。 |
 | `system_reminder` | 字符串 | `user_prompt_submit` | 作为系统提醒加入当前轮的每一次模型调用。 |
 | `extra_context` | 字符串 | `after_tool_call`、`tool_error` | 追加到工具结果文本，不能撤销已经发生的调用。 |
@@ -575,6 +577,22 @@ execution:
 - 未知字段会被忽略。
 
 多个钩子的决定如何组合，见[多个钩子的执行顺序与配置合并](#多个钩子的执行顺序与配置合并)。
+
+### 请你确认
+
+阻塞式的 `user_prompt_submit` 或 `before_tool_call` 钩子可以不自己放行或拒绝，而是把决定交给你。它写入 `action: ask` 和 `reason` 后退出：
+
+```json
+{"action": "ask", "reason": "本次操作将修改生产环境配置，是否继续？"}
+```
+
+iCode 随即暂停这次操作并询问你，显示钩子、原因，以及工具调用或你的消息。通过 ACP 连接的编辑器会把它显示为权限请求。
+
+- **继续**：其余钩子接着运行，操作照常进行。审批设置要求审批的工具调用仍然需要审批。
+- **取消**：操作不会进行。工具调用被拒绝的原因会告知模型；被拒绝的消息会留在输入框中（ACP 编辑器会显示 `Input rejected:` 和原因，`icode run` 会以错误退出）。
+- **没有回答**：默认情况下，iCode 会一直等到你回答或操作结束，发起询问的工具调用或工作流运行也会一直等待。如果设置了**人工审批超时（秒）**，超过这段时间仍未回答时，操作会被拒绝。无人可问（例如 `icode run`）时，操作会立即被拒绝；钩子可以检查 `confirmation_available` 自行决定其他处理方式。如果操作先结束了（例如你中断了，或取消了工作流运行），询问会自动关闭。
+
+你考虑的时间不计入钩子的 `timeout_seconds`。你的回答只对这一次操作有效；如果你继续后，工具调用的参数又发生了变化（后面的钩子修改了参数，或你在审批时编辑了参数），可能会再次询问你。想先修改参数再询问，请把返回 `modify` 的钩子排在返回 `ask` 的钩子前面。
 
 ## 多个钩子的执行顺序与配置合并
 
@@ -592,6 +610,7 @@ execution:
 | `args_override` | 立即修改工具参数。后续钩子使用修改后的参数进行匹配和检查；多个钩子修改同一参数时，后运行的钩子覆盖先运行的钩子。 |
 | `system_reminder`、`extra_context` | 按钩子的执行顺序累积。 |
 | `action: block` | 对 `user_prompt_submit` 和 `before_tool_call`，第一个拒绝决定会停止当前事件的剩余钩子，包括尚未启动的非阻塞钩子。 |
+| `action: ask` | iCode 在下一个钩子运行前询问你。你选择继续时，其余钩子接着运行；否则按拒绝处理。多个钩子都询问时，会逐个询问。 |
 
 对于 `user_prompt_submit` 和 `before_tool_call`，阻塞式钩子失败且配置了 `on_error: block` 时，同样会拒绝当前操作并停止当前事件的剩余钩子。
 

@@ -637,6 +637,34 @@ async def test_narration_of_a_failed_pass_precedes_its_pause(
 
 
 @pytest.mark.asyncio
+async def test_sub_agent_has_sleep_though_its_profile_omits_it(
+    tmp_path: Path, fast_sub_agent_controller: None, agent_engine
+) -> None:
+    """Every agent has sleep: a child whose profile lists no builtin category still runs it."""
+    ctx = await _make_ctx(
+        tmp_path,
+        main_outcomes=[_sub_tool_call("pause"), MockResponse(text="Parent done.")],
+        sub_outcomes=[
+            MockResponse(tool_calls=[("sleep", "sleep-1", {"seconds": 0, "reason": "pause"})]),
+            MockResponse(text="back from the pause"),
+        ],
+        agent_engine=agent_engine,
+    )
+    try:
+        await ctx.bus.publish(UserMessage(text="go"))
+        await ctx.wait_for_idle()
+
+        sent = ctx.sub_client.call_history[1][0]
+        results = [
+            content.result for message in sent for content in message.contents if content.type == "function_result"
+        ]
+        assert results == ["Slept for 0 seconds."]
+        assert _explore_result(ctx).result == "back from the pause"
+    finally:
+        await ctx.cleanup()
+
+
+@pytest.mark.asyncio
 async def test_declared_final_segment_reaches_the_parent_result_metadata(
     tmp_path: Path, fast_sub_agent_controller: None, agent_engine
 ) -> None:

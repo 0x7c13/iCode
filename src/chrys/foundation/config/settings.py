@@ -682,7 +682,7 @@ _LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
     "settings.ui.chat.tool_groups_expanded.label",
     fallback="Expand tool details by default",
 )
-_LABEL_UI_CHAT_SHOW_THINKING = msg("settings.ui.chat.show_thinking.label", fallback="Show model thinking")
+_LABEL_UI_CHAT_THINKING_EXPANDED = msg("settings.ui.chat.show_thinking.label", fallback="Expand thinking by default")
 _LABEL_UI_CHAT_FOLD_FINISHED_TURNS = msg(
     "settings.ui.chat.fold_finished_turns.label", fallback="Automatically fold completed turns"
 )
@@ -1491,13 +1491,14 @@ class Settings:
         ),
     )
 
-    # TUI presentation only: the main chat shows the model's readable thinking
-    # above its answer. The backend sends it either way; ACP shows it always.
-    chat_show_thinking: bool = field(
-        default=True,
+    # TUI presentation only: whether the model's readable thinking opens in the
+    # main chat as it arrives, or stays folded to its one-line row. The key keeps
+    # the name it shipped under, when turning it off left thinking out.
+    chat_thinking_expanded: bool = field(
+        default=False,
         metadata=spec(
             key="ui.chat.show_thinking",
-            label=_LABEL_UI_CHAT_SHOW_THINKING,
+            label=_LABEL_UI_CHAT_THINKING_EXPANDED,
             coerce=bool_coercer(),
             apply=Apply.LIVE,
             group="ui",

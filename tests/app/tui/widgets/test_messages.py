@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from io import StringIO
+from unittest.mock import patch
 
 import pytest
 from PIL import Image
@@ -23,6 +24,7 @@ from textual.widgets import Button, Static
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.theme import CHRYS_THEME, TuiVariableDefaultsMixin
 from chrys.app.tui.widgets.chat import image_preview as image_preview_module
+from chrys.app.tui.widgets.chat.fold_rows import AGENT_LABEL, OPEN_ARROW, THOUGHT_LABEL
 from chrys.app.tui.widgets.chat.image_preview import ImagePreviewGrid, extract_image_previews
 from chrys.app.tui.widgets.chat.messages import (
     AgentMessage,
@@ -30,9 +32,15 @@ from chrys.app.tui.widgets.chat.messages import (
     ErrorMessage,
     InterruptedMessage,
     MessageCopyButton,
+    MessageHeaderRow,
     RetryMessage,
+    StreamedMarkdownMessage,
     SystemMessage,
+    ThinkingMessage,
     UserMessage,
+    _AgentHeader,
+    _AgentReplyHeader,
+    _FoldRowHeader,
     _user_header_text,
     _UserHeader,
     _UserImagePreview,
@@ -47,9 +55,11 @@ from chrys.app.tui.widgets.markdown import VirtualizedMarkdown
 from chrys.foundation.config.settings import Settings
 from chrys.kernel import Content
 from tests.support.images import image_bytes
+from tests.support.pilot_barrier import screen_is_settled
 from tests.support.tui_helpers import (
     ChatPanelApp,
     WidgetApp,
+    click_when_settled,
     png_bytes,
 )
 from tests.support.waiting import wait_for
@@ -82,6 +92,15 @@ async def test_user_message_renders_markdown_below_its_header() -> None:
         assert "```" not in body
 
 
+async def test_user_message_shows_backslashes_in_a_path_as_typed() -> None:
+    text = "open D:\\project\\.code and C:\\Users\\me\\_cache"
+
+    async with WidgetApp(lambda: UserMessage(text)).run_test(size=(80, 20)) as pilot:
+        msg = pilot.app.query_one(UserMessage)
+
+        assert await _rendered_body(pilot, msg) == text
+
+
 async def test_user_message_body_shows_control_characters_as_text() -> None:
     text = "red \x1b[31malert\x1b[0m\r\nnext"
 
@@ -102,7 +121,7 @@ def test_user_message_renders_embedded_image_preview() -> None:
     msg = UserMessage("look at @shot.png", contents=contents)
 
     console = Console(width=80, record=True, force_terminal=True, color_system="truecolor")
-    console.print(_UserImagePreview(msg._image_previews, is_injection=False).render())
+    console.print(_UserImagePreview(msg._image_previews).render())
     rendered = console.export_text(styles=False)
 
     assert "\u2580" in rendered
@@ -154,15 +173,40 @@ async def test_user_message_copies_through_its_header_and_body() -> None:
         assert pilot.app.screen.get_selected_text() == "[You]\nselected text"
 
 
-async def test_injected_user_message_indents_its_body_under_the_header() -> None:
-    async with WidgetApp(lambda: UserMessage("note", is_injection=True)).run_test() as pilot:
-        msg = pilot.app.query_one(UserMessage)
-        await _rendered_body(pilot, msg)
-        header = msg.query_one(_UserHeader)
-        body = msg.query_one(VirtualizedMarkdown)
+async def test_an_injected_note_looks_like_a_user_message_indented_to_the_calls_around_it() -> None:
+    """Between thinking or tool rows, which have no vertical margin, it keeps a blank row above and below."""
+    typed = UserMessage("typed")
+    above = ThinkingMessage("before", collapsed=True)
+    note = UserMessage("note", is_injection=True)
+    below = ThinkingMessage("after", collapsed=True)
+    async with WidgetApp(lambda: [typed, above, note, below]).run_test() as pilot:
+        await _rendered_body(pilot, note)
+        typed_body = typed.query_one(VirtualizedMarkdown)
+        note_body = note.query_one(VirtualizedMarkdown)
 
-        assert str(header.content) == "\u2514 \u276f You"
-        assert body.content_region.x == header.region.x + 2
+        assert str(note.query_one(_UserHeader).content) == "\u276f You"
+        assert note.styles.border_left == typed.styles.border_left
+        assert note_body.content_region.x - note.region.x == typed_body.content_region.x - typed.region.x
+        assert note.region.x == above.query_one(MessageHeaderRow).content_region.x
+        assert note.region.y == above.region.bottom + 1
+        assert below.region.y == note.region.bottom + 1
+
+
+async def test_a_user_message_ends_a_column_short_of_the_scrollbar() -> None:
+    async with ChatPanelApp().run_test(size=(60, 20)) as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        await panel.add_user_message("\n\n".join(f"Line {number}." for number in range(20)))
+        await panel.add_user_message("A note.", is_injection=True)
+        typed, note = panel.query(UserMessage)
+        # The scrollbar can show before the note is laid out: its region stays empty until then.
+        await wait_for(
+            lambda: panel.show_vertical_scrollbar and note.region and screen_is_settled(pilot.app, pilot.app.screen),
+            pilot=pilot,
+            description="the transcript scrolls with both messages laid out",
+        )
+        scrollbar = panel.vertical_scrollbar.region
+        assert scrollbar.width == 1
+        assert typed.region.right == note.region.right == scrollbar.x - 1
 
 
 async def test_user_copy_button_shows_only_for_text_outside_compressed_history(
@@ -215,7 +259,7 @@ def test_user_image_preview_caches_render_lines(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr("chrys.app.tui.widgets.chat.messages.ImagePreviewGrid.render_lines", render_lines)
     msg = UserMessage("look at @shot.png", contents=contents)
-    preview = _UserImagePreview(msg._image_previews, is_injection=False)
+    preview = _UserImagePreview(msg._image_previews)
 
     preview.render()
     preview.render()
@@ -377,13 +421,13 @@ def test_format_message_created_at_uses_local_time() -> None:
 
 
 def test_message_headers_include_dim_timestamp_when_present() -> None:
-    user = _user_header_text(timestamp="- 10:16 PM", is_injection=False)
+    user = _user_header_text(timestamp="- 10:16 PM")
     agent = AgentMessage("hi", profile_name="Code Agent", timestamp="- 10:17 PM", duration_ms=2345)
     instant_agent = AgentMessage("hi", profile_name="Code Agent", duration_ms=0)
 
     assert user.plain == "\u276f You - 10:16 PM"
-    assert agent._header_text().plain == "\u25c7 Code Agent - 10:17 PM (2s)"
-    assert instant_agent._header_text().plain == "\u25c7 Code Agent (0ms)"
+    assert agent._header_text().plain == "▾ Code Agent - 10:17 PM (2s)"
+    assert instant_agent._header_text().plain == "▾ Code Agent (0ms)"
 
 
 @pytest.mark.parametrize(
@@ -438,7 +482,7 @@ async def test_agent_and_retry_chrome_render_at_mount_locale(
         await pilot.pause()
 
         assert agent._copy_label() == agent_label
-        assert agent._header_text().plain == f"◇ {agent_label}"
+        assert agent._header_text().plain == f"▾ {agent_label}"
         # Think tags are answer text, shown as written in every locale.
         assert agent.text == "<think>one\n\ntwo</think>"
         copy_button = agent.query_one(MessageCopyButton)
@@ -456,7 +500,7 @@ def test_streaming_agent_header_timestamp_updates_on_final() -> None:
 
     agent.stream_update("done", is_final=True, timestamp="- 10:17 PM")
 
-    assert agent._header_text().plain == "\u25c7 Code Agent - 10:17 PM"
+    assert agent._header_text().plain == "▾ Code Agent - 10:17 PM"
 
 
 def test_agent_message_render_lines_unattached_returns_blank() -> None:
@@ -490,7 +534,11 @@ async def test_streamed_text_stays_muted_until_it_is_known_to_be_the_answer(answ
         await pilot.pause()
 
         assert not msg.has_class("--streaming")
-        assert (msg.styles.border_left == streaming_border) is not answer
+        if answer:
+            assert msg.styles.border_left != streaming_border
+        else:
+            # Text between tool calls draws the thin guide thinking and tool groups draw, in the colour it streamed in.
+            assert msg.styles.border_left == ("solid", streaming_border[1])
 
 
 async def test_a_growing_streamed_answer_never_shows_a_scrollbar_of_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -541,6 +589,17 @@ async def test_agent_message_shows_html_looking_text_as_written() -> None:
         assert "│ two │" in rendered
 
 
+async def test_clicking_an_agent_reply_header_folds_and_unfolds_its_body() -> None:
+    async with WidgetApp(lambda: AgentMessage("hello", profile_name="Code Agent")).run_test() as pilot:
+        msg = pilot.app.query_one(AgentMessage)
+        header = msg.query_one(_AgentHeader)
+
+        await click_when_settled(pilot, header)
+        await wait_for(lambda: msg.collapsed, pilot=pilot, description="reply folded")
+        await click_when_settled(pilot, header)
+        await wait_for(lambda: not msg.collapsed, pilot=pilot, description="reply unfolded")
+
+
 async def test_agent_copy_button_sits_next_to_header_timestamp() -> None:
     async with WidgetApp(
         lambda: AgentMessage("hello", profile_name="Code Agent", timestamp="- 1:23 PM")
@@ -582,6 +641,52 @@ async def test_structured_completion_checkmark_is_styled_and_not_copyable() -> N
 
         assert msg.has_class("--structured-completion")
         assert msg.query_one(MessageCopyButton).display is False
+
+
+@pytest.mark.parametrize(
+    ("make", "indent"),
+    [
+        (lambda: AgentMessage("hello", profile_name="Code Agent"), 0),
+        (lambda: AgentMessage("hello", is_intermediate=True), len(f"{OPEN_ARROW} ") + 2),
+        (lambda: ThinkingMessage("hello"), len(f"{OPEN_ARROW} ") + 2),
+    ],
+    ids=["answer", "between_tool_calls", "thinking"],
+)
+async def test_text_inside_a_turn_starts_two_columns_in_from_its_header_label_and_an_answer_under_its_arrow(
+    make, indent
+) -> None:
+    """An answer's body has no gutter, so it stays on the direct markdown path; text inside a turn draws its guide."""
+    async with WidgetApp(make).run_test() as pilot:
+        await pilot.pause()
+        msg = pilot.app.query_one(StreamedMarkdownMessage)
+        header = msg.query_one(MessageHeaderRow)
+        body = msg.query_one(VirtualizedMarkdown)
+
+        assert body.content_region.x == header.content_region.x + indent
+        assert body._can_render_lines_direct(Region(0, 0, body.size.width, body.size.height)) is (indent == 0)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [lambda: AgentMessage("hello\nworld", is_intermediate=True), lambda: ThinkingMessage("hello\nworld")],
+    ids=["between_tool_calls", "thinking"],
+)
+async def test_a_guide_body_draws_its_guide_and_blank_row_itself_so_the_message_chrome_stays_one_strip(make) -> None:
+    """The guide under the fold arrow and the blank row under the text are the body's: a vertical gutter on the
+    message would end the shared chrome strip its rows render from."""
+    async with WidgetApp(make).run_test() as pilot:
+        await pilot.pause()
+        msg = pilot.app.query_one(StreamedMarkdownMessage)
+        header = msg.query_one(MessageHeaderRow)
+        body = msg.query_one(VirtualizedMarkdown)
+        rows = msg.render_lines(Region(0, 0, msg.size.width, 3))
+
+        assert msg.styles.gutter.height == 0
+        assert msg._background_strip_cache is not None
+        assert all(strip is msg._background_strip_cache for strip in rows)
+        assert body.styles.border_left[0] == "solid"
+        assert body.region.x == header.content_region.x
+        assert msg.region.bottom == body.region.bottom == body.content_region.bottom + 1
 
 
 async def test_agent_message_chrome_render_cache_reuses_rows_and_tracks_theme() -> None:
@@ -702,3 +807,16 @@ async def test_system_message_renders() -> None:
         msg = pilot.app.query_one(SystemMessage)
         # SystemMessage passes text to Static constructor
         assert msg is not None
+
+
+async def test_fold_row_headers_built_under_a_running_app_restyle_nothing_until_they_mount() -> None:
+    """A transcript's replay builds a header per message: mounting styles each, so building one styles none."""
+    async with ChatPanelApp().run_test() as pilot:
+        with patch.object(pilot.app.stylesheet, "update_nodes", autospec=True) as update_nodes:
+            headers = [
+                _FoldRowHeader(THOUGHT_LABEL.bind(), collapsed=True, text="Look."),
+                _AgentReplyHeader(AGENT_LABEL.fallback, None, collapsed=True, text="Next."),
+                _AgentReplyHeader(AGENT_LABEL.fallback, Text("Agent"), collapsed=False, text="Done."),
+            ]
+        assert update_nodes.call_count == 0
+        assert [header.has_class("fold-row-header") for header in headers] == [True, True, False]

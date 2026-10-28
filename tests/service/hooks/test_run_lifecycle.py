@@ -188,8 +188,13 @@ async def test_a_detached_run_interrupted_while_handed_off_is_recorded_as_cancel
 
 async def test_a_payload_that_cannot_be_serialized_fails_the_run_not_the_caller(hooks_dir: Path) -> None:
     manager, log = _recorded(hooks_dir, _hook("gate", HookEvent.BEFORE_TOOL_CALL, mode="blocking"))
-    # A key JSON cannot write, whatever ``default=`` says.
-    payload = {"tool": {"name": "zsh", "call_id": "c1", "args": {("not", "a", "str"): 1}}}
+
+    class _NoTextForm:
+        def __str__(self) -> str:
+            raise TypeError("no text form")
+
+    # A value with no text form: JSON cannot write it, whatever ``default=`` says.
+    payload = {"tool": {"name": "zsh", "call_id": "c1", "args": {"value": _NoTextForm()}}}
 
     decision = await manager.fire(HookEvent.BEFORE_TOOL_CALL, payload)
 
@@ -198,7 +203,7 @@ async def test_a_payload_that_cannot_be_serialized_fails_the_run_not_the_caller(
     assert (record.state, record.outcome, record.tool_name) == ("ended", HookOutcome.LAUNCH_ERROR, "zsh")
     detail = log.detail(record.run_id)
     assert detail is not None and detail.io is not None
-    assert "keys must be" in detail.io.stderr
+    assert "no text form" in detail.io.stderr
     assert manager.executions() == ()
 
 

@@ -170,8 +170,8 @@ class ToolGroupRegistry:
                 self._sub_agent_owning_groups.pop(widget, None)
         self._unlinked_sub_agents.clear()
 
-    def cancel_running_and_end_group(self) -> None:
-        """Cancel in-progress tools in every open group and close them.
+    def cancel_running_and_end_group(self, *, stopped_at: float | None = None) -> None:
+        """Cancel in-progress tools in every open group and close them, stopped at *stopped_at*, now if not given.
 
         Besides the current group, older groups can still hold running
         records: ``end_group`` retains sub-agent invocations whose parent
@@ -195,7 +195,7 @@ class ToolGroupRegistry:
                 groups.append(group)
                 seen.add(id(group))
         for group in groups:
-            group.cancel_running()
+            group.cancel_running(stopped_at=stopped_at)
             group.collapsed = True
         # Always advance the lifecycle, even when a InvocationToolCallStart is still
         # awaiting status cleanup and has not installed its group yet.
@@ -217,10 +217,12 @@ class ToolGroupRegistry:
         provider_call_id: str = "",
         canonical_status: str = "running",
         running_in_place: bool = False,
+        started_at: float | None = None,
     ) -> None:
         """Add a running tool call, creating a group if needed.
 
         With *running_in_place*, the start of a call whose card still runs updates that card in its own group.
+        *started_at* is when the call started, as ``time.monotonic()`` read it, if not now.
         """
         group_generation = self._group_generation
         group = self._current_tool_group
@@ -257,9 +259,10 @@ class ToolGroupRegistry:
                 provider_status=provider_status,
                 provider_call_id=provider_call_id,
                 canonical_status=canonical_status,
+                started_at=started_at,
             )
         else:
-            await group.add_tool(call_id, tool_name, tool_kind, args_summary, args=args)
+            await group.add_tool(call_id, tool_name, tool_kind, args_summary, args=args, started_at=started_at)
         widget = group.get_tool(call_id)
         if self._group_generation == group_generation and isinstance(widget, SubAgentToolCall):
             self._sub_agent_owning_groups[widget] = group
@@ -295,8 +298,6 @@ class ToolGroupRegistry:
             await self._status.remove_trailing_status()
             if self._group_generation != group_generation:
                 return None
-            if self._finalize_agent_message is not None:
-                self._finalize_agent_message()
             if self._tool_widget_configurator is None:
                 group = ToolGroup()
             else:
@@ -306,6 +307,11 @@ class ToolGroupRegistry:
             if not mounted or self._group_generation != group_generation:
                 await self._mount.remove_transcript_widget(group)
                 return None
+            # The text above settles and folds only now, with nothing awaited before the group's first call shows
+            # it: a layout during the mount would show the text folded and the waiting row gone, with nothing in
+            # their place, for a frame.
+            if self._finalize_agent_message is not None:
+                self._finalize_agent_message()
             self._current_tool_group = group
             return group
 
@@ -383,8 +389,9 @@ class ToolGroupRegistry:
         *,
         provider_status: str = "",
         metadata: dict[str, Any] | None = None,
+        stopped_at: float | None = None,
     ) -> None:
-        """Apply a canonical hosted lifecycle transition."""
+        """Apply a canonical hosted lifecycle transition; one that ends the call ends it at *stopped_at*."""
         group = self._tool_groups_by_call_id.get(call_id)
         if group is not None:
             group.update_tool_status(
@@ -392,6 +399,7 @@ class ToolGroupRegistry:
                 status,
                 provider_status=provider_status,
                 metadata=metadata,
+                stopped_at=stopped_at,
             )
             self._ui.schedule_anchor_sync()
 

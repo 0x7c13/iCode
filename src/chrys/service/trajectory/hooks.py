@@ -34,6 +34,8 @@ class HookOutcome:
     LAUNCH_ERROR = "launch_error"
     TIMED_OUT = "timed_out"
     BLOCKED = "blocked"
+    ASKED = "asked"
+    """The run returned ``action: ask``; the user's answer is the following ``hook_confirmation`` wait."""
     CANCELLED = "cancelled"
     ABANDONED = "abandoned"
     DETACHED = "detached"

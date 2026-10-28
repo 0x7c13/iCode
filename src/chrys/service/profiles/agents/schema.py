@@ -202,6 +202,14 @@ class ShellFilterConfig:
     allow_subshells: bool = True
 
 
+ALWAYS_LOADED_TOOL_CATEGORIES: tuple[str, ...] = ("sleep",)
+"""Built-in tool categories every agent loads, whatever its ``tools.builtins`` lists.
+
+Profiles written while ``sleep`` was a switch may list it: the loader drops it, so a
+save no longer writes it, and the tool registry ignores it in a list built in code.
+"""
+
+
 @dataclass
 class ToolsConfig:
     """Tool set configuration for an agent profile."""

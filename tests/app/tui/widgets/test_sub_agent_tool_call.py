@@ -47,6 +47,7 @@ from tests.support.tui_helpers import (
     click_copy_button,
     header_zone_click,
     mount_sub_agent_detail,
+    title_text,
     wait_for_sub_agent_inner_tool,
 )
 from tests.support.waiting import wait_for
@@ -74,7 +75,7 @@ async def test_sub_agent_renders_task_prompt_as_markdown_in_dedicated_panel() ->
         assert header.copy_action_visible is False
         assert header._actions_text().plain.strip() == "View details"
         latest = tc.query_one("#sa-activity-text", Static)
-        assert latest.render().plain == "Running Explore"
+        assert title_text(latest) == "Running Explore"
 
         await tc.add_inner_tool_start("inner1", "read_file", {"path": "README.md"})
         await pilot.pause()
@@ -646,7 +647,7 @@ async def test_sub_agent_omits_task_panel_when_prompt_is_empty() -> None:
 
         assert not list(tc.query("#sa-task-panel"))
         assert not list(tc.query(AgentTranscriptSurface))
-        assert tc.query_one("#sa-activity-text", Static).render().plain == "Running Explore"
+        assert title_text(tc.query_one("#sa-activity-text", Static)) == "Running Explore"
 
 
 async def test_sub_agent_copy_uses_prompt_input(monkeypatch: pytest.MonkeyPatch) -> None:

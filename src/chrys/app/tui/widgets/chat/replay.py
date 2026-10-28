@@ -982,7 +982,8 @@ class HistoryReplayRenderer:
         default_profile: Callable[[], str],
         localization: TranscriptLocalizationPort | None = None,
         tool_widget_configurator: Callable[[Widget], None] | None = None,
-        show_thinking: Callable[[], bool] | None = None,
+        show_reasoning: bool = False,
+        fold_passed_text: bool = False,
     ) -> None:
         self._mount = mount
         self._ui = ui
@@ -990,7 +991,10 @@ class HistoryReplayRenderer:
         self._tool_kind_resolver = tool_kind_resolver
         self._default_profile = default_profile
         self._tool_widget_configurator = tool_widget_configurator
-        self._show_thinking = show_thinking or (lambda: False)
+        self._show_reasoning = show_reasoning
+        """Whether the transcript shows readable thinking; replayed, it starts folded."""
+        self._fold_passed_text = fold_passed_text
+        """Whether text between tool calls starts folded, as the live text it was folded once the turn moved on."""
         self._resolve_message = localization.render if localization is not None else format_message
         self._planner = HistoryReplayPlanner()
 
@@ -1005,7 +1009,7 @@ class HistoryReplayRenderer:
         """Replay saved session messages into the chat transcript."""
         await self._ui.dismiss_welcome_for_content()
         self._ui.on_replay_started()
-        show_reasoning = self._show_thinking()
+        show_reasoning = self._show_reasoning
         plan = self._planner.build_plan(messages, file_snapshots=file_snapshots, show_reasoning=show_reasoning)
         plan.apply_compatibility_annotations()
         replay_profile = initial_profile or self._default_profile()
@@ -1091,6 +1095,7 @@ class HistoryReplayRenderer:
                         is_final=True,
                         profile_name=replay_profile,
                         is_intermediate=True,
+                        collapsed=self._fold_passed_text,
                     )
                     for itext in entry.intermediate_texts
                     if itext.strip()
@@ -1204,6 +1209,7 @@ class HistoryReplayRenderer:
                         profile_name=replay_profile,
                         is_intermediate=True,
                         is_compressed=True,
+                        collapsed=self._fold_passed_text,
                     )
                     for text in entry.intermediate_texts
                     if text.strip()
@@ -1273,6 +1279,7 @@ class HistoryReplayRenderer:
                 duration_ms=None if intermediate else duration_ms,
                 segment_ids=segment_ids,
                 is_status=is_status,
+                collapsed=self._fold_passed_text,
             )
 
         async def flush_text(*, settled: bool = False, thinking_follows: bool = False) -> None:

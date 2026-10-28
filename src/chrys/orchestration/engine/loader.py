@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.state.session_writer import RecoveryCheckpoints
     from chrys.orchestration.engine.usage import UsagePublisher
     from chrys.service.approval.turn_context import TurnContextHolder
+    from chrys.service.hooks.confirmation import HookConfirmationService
     from chrys.service.hooks.manager import HookManager
     from chrys.service.hooks.run_log import HookRunLog
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
@@ -190,9 +191,11 @@ class AgentLoader:
         build_agent_fn: BuildAgentFn,
         register_current_engine: Callable[[], None],
         hook_runs: HookRunLog | None = None,
+        hook_confirmations: HookConfirmationService | None = None,
     ) -> None:
         self._bus = bus
         self._hook_runs = hook_runs
+        self._hook_confirmations = hook_confirmations
         self._persistence = persistence
         self._agent_registry = agent_registry
         self._model_registry = model_registry
@@ -305,7 +308,7 @@ class AgentLoader:
         self, *, project_root: str, project_hooks_enabled: bool, session_id: str | None = None
     ) -> HookManager | None:
         resolved_session_id = session_id or self._session.session_id
-        manager = await SessionHookFactory(self._bus)(
+        manager = await SessionHookFactory(self._bus, confirmations=self._hook_confirmations)(
             project_root=project_root,
             project_hooks_enabled=project_hooks_enabled,
             session_id=resolved_session_id,

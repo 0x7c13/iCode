@@ -46,7 +46,6 @@ tools:
     - filesystem.read
     - search
     - shell
-    - sleep
     - doc_converter
 
 compaction:

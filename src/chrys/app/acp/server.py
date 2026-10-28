@@ -29,6 +29,7 @@ from chrys.app.acp.bridge import (
 )
 from chrys.app.acp.content import AcpContentError, ContentBlock, convert_prompt_blocks
 from chrys.app.acp.history import replay_session_history, session_history_payload
+from chrys.app.acp.hook_confirmations import AcpSessionHookConfirmations
 from chrys.app.acp.json_values import JsonValue, to_json_object
 from chrys.app.acp.session_manager import AcpSessionError, AcpSessionManager, ManagedSession, jsonable_dataclass
 from chrys.foundation.branding import APP_DISPLAY_NAME
@@ -83,7 +84,7 @@ from chrys.foundation.events.types import (
 )
 from chrys.foundation.models.ask_user import AskUserQuestion, validate_request_input_response
 from chrys.foundation.text.encoding import EncodingDetector, decode_bytes
-from chrys.orchestration.session_host import Cancelled, EndTurn, Errored
+from chrys.orchestration.session_host import Cancelled, EndTurn, Errored, Refused, TurnOutcome
 from chrys.service.mutations.types import FileMutationTextSnapshot
 
 if TYPE_CHECKING:
@@ -265,7 +266,7 @@ class _TurnExecution:
     any turn opened.
     """
 
-    outcome: EndTurn | Cancelled | Errored | None
+    outcome: TurnOutcome | None
     usage_payload: dict[str, int] | None
     turn_usage: dict[str, int] | None
     turn_id: str | None
@@ -281,6 +282,11 @@ class _TurnExecution:
         if self.usage_payload is not None:
             meta["sessionUsage"] = self.usage_payload
         return meta
+
+
+def _refusal_meta(turn: _TurnExecution, error: Error) -> dict[str, Any]:
+    """The ``chrys`` object of a ``refusal`` response: the turn's metadata, then why the input was refused."""
+    return {**turn.response_meta(), "code": error.code, "message": error.message}
 
 
 class _TurnInFlight(Exception):
@@ -406,6 +412,11 @@ class ChrysAcpServer:
 
         await session.host.event_bus.subscribe(ApprovalCancelled, _on_approval_cancelled)
         await session.host.event_bus.subscribe(AskUserTimedOut, _on_ask_user_cleared)
+        # Hook confirmations travel the same way: out of band, for every entry alike. The session owns
+        # them before they subscribe, so every way it closes (a failed setup's included) closes them.
+        confirmations = AcpSessionHookConfirmations(session_id, session.host.event_bus, self._client_or_error)
+        session.hook_confirmations = confirmations
+        await confirmations.subscribe()
 
     async def new_session(
         self,
@@ -555,6 +566,13 @@ class ChrysAcpServer:
                 usage=acp_schema.Usage.model_validate(turn.turn_usage),
                 field_meta=with_chrys_metadata(None, turn.response_meta()),
             )
+        if isinstance(turn.outcome, Refused):
+            return acp_schema.PromptResponse(
+                stopReason="refusal",
+                userMessageId=user_message_id,
+                usage=acp_schema.Usage.model_validate(turn.turn_usage),
+                field_meta=with_chrys_metadata(None, _refusal_meta(turn, turn.outcome.error)),
+            )
         if isinstance(turn.outcome, Cancelled):
             return acp_schema.PromptResponse(
                 stopReason="cancelled",
@@ -639,6 +657,12 @@ class ChrysAcpServer:
                     **turn.response_meta(),
                 }
             )
+        if isinstance(turn.outcome, Refused):
+            return {
+                "stopReason": "refusal",
+                "usage": turn.turn_usage,
+                "_meta": with_chrys_metadata(None, _refusal_meta(turn, turn.outcome.error)),
+            }
         payload: dict[str, Any] = {
             "stopReason": "cancelled" if isinstance(turn.outcome, Cancelled) else "end_turn",
             "usage": turn.turn_usage,
@@ -668,7 +692,7 @@ class ChrysAcpServer:
         """
         bridge = AcpEventBridge()
         pending_approvals: dict[str, ApprovalRequest] = {}
-        outcome: EndTurn | Cancelled | Errored | None = None
+        outcome: TurnOutcome | None = None
         usage_payload: dict[str, int] | None = None
         baseline_usage: dict[str, int] | None = None
         execution_started = False
@@ -703,6 +727,8 @@ class ChrysAcpServer:
                             if isinstance(event, InvocationAnswerWithdrawn) and event.origin.kind == "turn":
                                 await self._retract_answer(session_id, session, turn_id, event.segment_ids)
                         outcome = session.host.last_turn_outcome
+                        if isinstance(outcome, Refused):
+                            await self._show_refusal(session_id, outcome.error)
                     finally:
                         if turn_id is not None:
                             # What a later bare retry may withdraw: the answer segments this turn sent.
@@ -745,6 +771,25 @@ class ChrysAcpServer:
             turn_id=turn_id,
             turn_number=turn_number,
         )
+
+    async def _show_refusal(self, session_id: str, error: Error) -> None:
+        """Tell the client why its input was refused, before the request answers ``refusal``.
+
+        A stop reason alone says nothing a client shows, so the reason goes out as one
+        message of its own. It is the ACP frontend's notice, never model output: no
+        ``InvocationContent*`` event carries it, so the session's history never holds it,
+        ``session/load`` never replays it and no retry withdraws it. Sent while the request
+        still holds the session, so nothing a later prompt sends comes first.
+        """
+        chunk = acp_schema.AgentMessageChunk(
+            sessionUpdate="agent_message_chunk",
+            content=acp_schema.TextContentBlock(type="text", text=f"Input rejected: {error.message}"),
+            messageId=str(uuid.uuid4()),
+        )
+        chunk.field_meta = with_chrys_metadata(
+            chunk.field_meta, {"code": error.code, "refusedInput": error.refused_input}
+        )
+        await self._client_or_error().session_update(session_id=session_id, update=chunk)
 
     def _cumulative_usage(self, session_id: str) -> dict[str, int]:
         return _prompt_usage_payload(

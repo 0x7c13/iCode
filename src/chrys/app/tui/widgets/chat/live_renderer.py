@@ -35,6 +35,7 @@ from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
 from chrys.foundation.i18n.formatting import format_message
 
 if TYPE_CHECKING:
+    from chrys.app.tui.widgets.chat.tool_call import ToolGroup
     from chrys.foundation.models.invocations import ContentChannel
 
 
@@ -51,7 +52,8 @@ class LiveTranscriptRenderer:
         tools: ToolGroupRegistry,
         *,
         localization: TranscriptLocalizationPort | None = None,
-        show_thinking: Callable[[], bool] | None = None,
+        thinking_expanded: Callable[[], bool] | None = None,
+        fold_passed_text: bool = False,
     ) -> None:
         self._mount = mount
         self._ui = ui
@@ -69,14 +71,19 @@ class LiveTranscriptRenderer:
         self._blank_segment_text = ""
         self._answer_streamed = False
         """Whether answer text streamed since the turn opened."""
-        self._show_thinking = show_thinking or (lambda: False)
+        self._thinking_expanded = thinking_expanded
+        """Whether new thinking opens, read as each segment opens; None where no thinking shows at all."""
         # The thinking segment being streamed, as the answer's: its message,
-        # and its text while it is still blank. One that opened while thinking
-        # was not shown stays hidden to its end.
+        # and its text while it is still blank.
         self._thinking_msg: ThinkingMessage | None = None
         self._thinking_segment_id = ""
         self._blank_thinking_text = ""
-        self._thinking_hidden = False
+        self._thinking_to_fold: ThinkingMessage | None = None
+        """The thinking mounted last, which folds once what follows it starts, as a tool group does."""
+        self._fold_passed_text = fold_passed_text
+        """Whether text between tool calls folds once what follows it starts, as thinking does."""
+        self._group_to_fold: ToolGroup | None = None
+        """The tool group a message sent mid-turn closed, which folds once the turn goes on below the message."""
 
     @property
     def current_agent_msg(self) -> AgentMessage | None:
@@ -110,7 +117,8 @@ class LiveTranscriptRenderer:
         self._thinking_msg = None
         self._thinking_segment_id = ""
         self._blank_thinking_text = ""
-        self._thinking_hidden = False
+        self._thinking_to_fold = None
+        self._group_to_fold = None
 
     def _finalize_current_agent_message(self) -> None:
         """Terminate and release the active streamed-message presentations: the answer's and the thinking's."""
@@ -135,9 +143,11 @@ class LiveTranscriptRenderer:
         Streamed thinking ends there too.
         """
         self._finalize_thinking()
-        if self._current_agent_msg is None:
+        message = self._current_agent_msg
+        if message is None:
             return
-        self._current_agent_msg.settle_intermediate()
+        # What follows it starts now: it folds at once, as what it went past does.
+        message.settle_intermediate(folded=self._fold_passed_text)
         self._current_agent_msg = None
 
     async def add_user_message(
@@ -154,6 +164,11 @@ class LiveTranscriptRenderer:
             self._ui.on_live_user_turn_started()
             await self._remove_failed_turn()
             self._answer_streamed = False
+            self._thinking_to_fold = None
+            self._group_to_fold = None
+        elif self._tools.current_tool_group is not None:
+            # The turn goes on below the message: what it went past folds once that starts, as with no message.
+            self._group_to_fold = self._tools.current_tool_group
         self._tools.end_group()
         self._finalize_current_agent_message()
         timestamp = format_message_created_at(created_at)
@@ -196,43 +211,57 @@ class LiveTranscriptRenderer:
         """Stream new answer text into its segment's message, mounting it once the text is not blank."""
         self._answer_streamed = True
         if segment_id != self._segment_id:
-            # A failed segment was finalized when it closed: one still current
-            # completed, and the turn went on past it.
-            self.settle_answer_before_tools()
             self._segment_id = segment_id
             self._blank_segment_text = ""
-        if self._current_agent_msg is not None:
-            self._current_agent_msg.append_text(text)
+        current = self._current_agent_msg
+        if current is not None and segment_id in current.segment_ids:
+            current.append_text(text)
             self._ui.schedule_anchor_sync()
             return
         self._blank_segment_text += text
         if not self._blank_segment_text.strip():
             return
         await self._status.remove_trailing_status()
-        folded = self._fold_tool_group()
+        # A failed segment was finalized when it closed: one still current completed, and the turn went on past
+        # it. It settles as this text shows, in the same frame as the folds, and stays the answer if none does.
+        self.settle_answer_before_tools()
+        self._fold_activity()
         message = AgentMessage(
             self._blank_segment_text, is_final=False, profile_name=self._profile_name, segment_ids=(segment_id,)
         )
-        message.take_rows_folded_above(*folded)
         self._blank_segment_text = ""
         self._current_agent_msg = message
         await self._mount.mount_transcript_widget(message)
         self._ui.schedule_anchor_sync()
 
-    def _fold_tool_group(self) -> tuple[int, int]:
-        """End the current tool group, folded, for streamed text to start below it.
+    def fold_before_tools(self) -> None:
+        """Settle the answer a tool batch follows, and fold the thinking and text before it, for its group to start below."""
+        self.settle_answer_before_tools()
+        self.fold_passed_text()
 
-        Returns the rows folding gave up and the group's bottom margin, for the
-        new message's :meth:`StreamedMarkdownMessage.take_rows_folded_above`;
-        both are measured before the fold hides the group's content.
+    def _fold_activity(self) -> None:
+        """End the current tool group, and fold the thinking and text before streamed text, for the text to start below.
+
+        Only what the text follows is still open: what came before folded as a tool group after it started.
         """
         group = self._tools.current_tool_group
-        folded = (0, 0)
         if group is not None:
-            folded = (group.rows_folding_gives_up(), group.styles.margin.bottom)
+            # A control in it may wait for the user: it stays open.
             group.collapsed = True
         self._tools.end_group()
-        return folded
+        self.fold_passed_text()
+
+    def fold_passed_text(self) -> None:
+        """Fold the thinking, and the tool group a message sent mid-turn closed, the turn has gone on past.
+
+        Whether thinking opened as it streamed, it folds once what follows it starts, as a tool group does, and as
+        the text the agent wrote before tool calls does as it settles (:meth:`settle_answer_before_tools`).
+        """
+        passed = (self._thinking_to_fold, self._group_to_fold)
+        self._thinking_to_fold = self._group_to_fold = None
+        for widget in passed:
+            if widget is not None and widget.is_attached:
+                widget.collapsed = True
 
     def finish_answer_segment(self, segment_id: str, *, completed: bool) -> None:
         """Close a streamed answer segment; a failed or interrupted one keeps its partial text."""
@@ -248,16 +277,16 @@ class LiveTranscriptRenderer:
     async def add_thinking_delta(self, segment_id: str, channel: ContentChannel, text: str) -> None:
         """Stream new thinking text into its segment's message, mounting it once the text is not blank.
 
-        Whether thinking shows is read as its segment opens. An answer that
-        streamed before stays as it is: thinking does not tell whether the
-        turn goes on past it.
+        Whether it opens is read as it mounts: folded, its row runs the newest
+        of the text. An answer that streamed before stays as it is: thinking
+        does not tell whether the turn goes on past it.
         """
+        thinking_expanded = self._thinking_expanded
+        if thinking_expanded is None:
+            return
         if segment_id != self._thinking_segment_id:
             self._finalize_thinking()
             self._thinking_segment_id = segment_id
-            self._thinking_hidden = not self._show_thinking()
-        if self._thinking_hidden:
-            return
         if self._thinking_msg is not None:
             self._thinking_msg.append_text(text)
             self._ui.schedule_anchor_sync()
@@ -266,11 +295,14 @@ class LiveTranscriptRenderer:
         if not self._blank_thinking_text.strip():
             return
         await self._status.remove_trailing_status()
-        folded = self._fold_tool_group()
-        message = ThinkingMessage(self._blank_thinking_text, channel=channel, segment_id=segment_id, is_final=False)
-        message.take_rows_folded_above(*folded)
+        self._fold_activity()
+        expanded = thinking_expanded()
+        message = ThinkingMessage(
+            self._blank_thinking_text, channel=channel, segment_id=segment_id, is_final=False, collapsed=not expanded
+        )
         self._blank_thinking_text = ""
         self._thinking_msg = message
+        self._thinking_to_fold = message
         await self._mount.mount_transcript_widget(message)
         self._ui.schedule_anchor_sync()
 
@@ -285,7 +317,6 @@ class LiveTranscriptRenderer:
         self._thinking_msg = None
         self._thinking_segment_id = ""
         self._blank_thinking_text = ""
-        self._thinking_hidden = False
 
     async def abandon_thinking(self, segment_ids: Iterable[str]) -> None:
         """Remove the thinking a retry gave up with its response: the retry thinks again."""
@@ -294,6 +325,9 @@ class LiveTranscriptRenderer:
             # Its closing event that follows finds no segment to close.
             self._thinking_msg = None
             self._finalize_thinking()
+        if self._thinking_to_fold is not None and self._thinking_to_fold.segment_id in abandoned:
+            # Removed, it folds no more: held here, it and its body would outlive it.
+            self._thinking_to_fold = None
         await remove_all_shielded(
             child
             for child in self._query.direct_children()
@@ -323,6 +357,7 @@ class LiveTranscriptRenderer:
         self._segment_id = ""
         self._blank_segment_text = ""
         self._finalize_thinking()
+        self.fold_passed_text()
         if streamed and self._current_agent_msg is not None:
             self._current_agent_msg.stream_update(self._current_agent_msg.text, is_final=True, timestamp=timestamp)
             self._current_agent_msg = None
@@ -455,11 +490,19 @@ class LiveTranscriptRenderer:
                 break
 
     async def add_interrupted(
-        self, reason: str = "Execution interrupted", source: str = "user", *, show_action: bool = True
+        self,
+        reason: str = "Execution interrupted",
+        source: str = "user",
+        *,
+        show_action: bool = True,
+        stopped_at: float | None = None,
     ) -> None:
-        """Display an interruption notice, replacing any trailing status widget."""
+        """Display an interruption notice, replacing any trailing status widget.
+
+        *stopped_at* is when the interrupt stopped the calls still running (``time.monotonic()``), now if not given.
+        """
         self.stop_answer()
-        await self.cancel_running_tools()
+        await self.cancel_running_tools(stopped_at=stopped_at)
         await self._status.remove_trailing_status()
 
         copy = resolve_interrupted_message_copy(reason, source, self._resolve_message)
@@ -468,10 +511,15 @@ class LiveTranscriptRenderer:
         await self._mount.mount_transcript_widget(msg)
         self._ui.on_status_message_mounted()
 
-    async def add_error(self, text: str, *, action_label: str | None = "Retry") -> None:
-        """Display an error message, replacing any trailing status widget."""
+    async def add_error(
+        self, text: str, *, action_label: str | None = "Retry", stopped_at: float | None = None
+    ) -> None:
+        """Display an error message, replacing any trailing status widget.
+
+        *stopped_at* is when the error stopped the calls still running (``time.monotonic()``), now if not given.
+        """
         self.stop_answer()
-        await self.cancel_running_tools()
+        await self.cancel_running_tools(stopped_at=stopped_at)
         await self._status.remove_trailing_status()
 
         msg = ErrorMessage(text, action_label=action_label)
@@ -486,12 +534,12 @@ class LiveTranscriptRenderer:
         await self._mount.mount_transcript_widget(msg)
         self._ui.on_status_message_mounted()
 
-    async def prepare_retry(self) -> None:
+    async def prepare_retry(self, *, stopped_at: float | None = None) -> None:
         """Finalize pending widgets before a main-agent stream retry."""
-        self._tools.cancel_running_and_end_group()
+        self._tools.cancel_running_and_end_group(stopped_at=stopped_at)
         self._finalize_current_agent_message()
 
-    async def cancel_running_tools(self) -> None:
-        """Cancel all in-progress tool calls."""
-        self._tools.cancel_running_and_end_group()
+    async def cancel_running_tools(self, *, stopped_at: float | None = None) -> None:
+        """Cancel all in-progress tool calls, stopped at *stopped_at* (``time.monotonic()``), now if not given."""
+        self._tools.cancel_running_and_end_group(stopped_at=stopped_at)
         self._finalize_dangling_compactions()

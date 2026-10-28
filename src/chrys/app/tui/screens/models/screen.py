@@ -27,6 +27,8 @@ from textual.widgets.option_list import Option, OptionDoesNotExist
 from chrys.app.tui.binding_display import CANCEL_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
 from chrys.app.tui.screens.dialogs.base import BaseDialog
+from chrys.app.tui.util.formatting import with_count_hint
+from chrys.app.tui.util.static_update import update_static_in_place
 from chrys.app.tui.widgets import Checkbox, ConfigAddButton, Select
 from chrys.app.tui.widgets import EnhancedInput as Input
 from chrys.foundation.branding import APP_DISPLAY_NAME
@@ -822,8 +824,9 @@ class ModelConfigScreen(BaseDialog[str]):
 
                         # Max context tokens
                         yield Label(
-                            f"[red]*[/red] {escape(render_str(localizer, _MAX_CONTEXT_WINDOW.bind()))}",
+                            self._max_context_label(str(DEFAULT_MAX_CONTEXT_TOKENS)),
                             classes="mc-label",
+                            id="mc-max-tokens-label",
                         )
                         yield Input(
                             value=str(DEFAULT_MAX_CONTEXT_TOKENS),
@@ -1362,16 +1365,24 @@ class ModelConfigScreen(BaseDialog[str]):
         self._refresh_max_output_label(provider, str(api_style_select.value))
 
     def _refresh_max_output_label(self, provider: str, api_style: str) -> None:
-        self.query_one("#mc-max-output-label", Label).update(self._max_output_label(provider, api_style))
+        raw = self.query_one("#mc-max-output-tokens", Input).value
+        # Updated per keystroke: lay out only when the hint changes the wrapped line count.
+        update_static_in_place(
+            self.query_one("#mc-max-output-label", Label), self._max_output_label(provider, api_style, raw)
+        )
 
-    def _max_output_label(self, provider: str, api_style: str) -> Text:
+    def _max_output_label(self, provider: str, api_style: str, raw: str = "") -> Text:
         param = _token_limit_param_name(provider, api_style)
         rendered = self._render_toast(_MAX_OUTPUT_TOKENS.bind(param=param))
         label = Text(rendered)
         start = rendered.find(param)
         if start >= 0:
             label.stylize("dim", start, start + len(param))
-        return label
+        return with_count_hint(label, raw)
+
+    def _max_context_label(self, raw: str) -> Text:
+        label = Text.assemble(("*", "red"), " ", self._render_toast(_MAX_CONTEXT_WINDOW.bind()))
+        return with_count_hint(label, raw)
 
     # ── Events ───────────────────────────────────────────────────────
 
@@ -1381,6 +1392,17 @@ class ModelConfigScreen(BaseDialog[str]):
 
     @on(Select.Changed, "#mc-api-style")
     def _on_api_style_changed(self, _event: Select.Changed) -> None:
+        self._refresh_max_output_label(
+            str(self.query_one("#mc-provider", Select).value),
+            str(self.query_one("#mc-api-style", Select).value),
+        )
+
+    @on(Input.Changed, "#mc-max-tokens")
+    def _on_max_context_changed(self, event: Input.Changed) -> None:
+        update_static_in_place(self.query_one("#mc-max-tokens-label", Label), self._max_context_label(event.value))
+
+    @on(Input.Changed, "#mc-max-output-tokens")
+    def _on_max_output_changed(self, _event: Input.Changed) -> None:
         self._refresh_max_output_label(
             str(self.query_one("#mc-provider", Select).value),
             str(self.query_one("#mc-api-style", Select).value),

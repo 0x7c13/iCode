@@ -159,8 +159,8 @@ def _rows(main: MainScreen) -> list[str]:
 
 
 def _is_running(row: str) -> bool:
-    """A running row starts with a spinner frame or its resting glyph, all Braille cells."""
-    return 0x2800 <= ord(row[0]) < 0x2900
+    """A running row starts with a still dot, as a running background task."""
+    return row.startswith("●")
 
 
 def _empty(main: MainScreen) -> str:
@@ -220,7 +220,7 @@ async def test_real_runs_appear_running_then_ended(tmp_path: Path) -> None:
                 pilot=pilot,
                 description="the running row",
             )
-            assert "slow-shell · zsh" in _rows(main)[0]
+            assert _rows(main)[0].split()[1] == "slow-shell"
             title = str(main.query_one("#hook-runs-title", Static).render())
             assert title == "Hooks (1 active)"
         finally:
@@ -257,11 +257,10 @@ async def test_a_cancelled_run_shows_cancelled_without_waiting_for_idle(tmp_path
             with contextlib.suppress(asyncio.CancelledError):
                 await fire
             await wait_for(
-                lambda: bool(_rows(main)) and re.search(r" cancelled +\d+m?s$", _rows(main)[0]) is not None,
+                lambda: bool(_rows(main)) and _rows(main)[0].startswith("■"),
                 pilot=pilot,
                 description="shown cancelled",
             )
-            assert _rows(main)[0].startswith("■")
         finally:
             release.touch()
         await manager.drain_session()

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ from chrys.foundation.events.types import (
     ApprovalRequest,
     ApprovalReviewed,
     AskUserTimedOut,
+    HookConfirmationRequest,
+    HookConfirmationWithdrawn,
     ImageAttachmentCompressionFinished,
     ImageAttachmentCompressionStarted,
     QuestionToUser,
@@ -35,6 +38,9 @@ from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.approval_reuse import ReuseChoice
 from chrys.foundation.models.ask_user import AskUserAnswer
+from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
+
+logger = logging.getLogger(__name__)
 
 _LOAD_TITLE_INITIALIZING = msg("tui.agent_load.title.initializing", fallback="Initializing Agent")
 _LOAD_TITLE_SWITCHING = msg("tui.agent_load.title.switching", fallback="Switching Agent")
@@ -546,6 +552,95 @@ class QuestionDialogPort(Protocol):
     def notify_ask_user(self) -> None: ...
 
     def focus_input(self) -> None: ...
+
+
+class HookConfirmationPort(Protocol):
+    """Textual side effects required by :class:`HookConfirmationQueueController`."""
+
+    def show_hook_confirmation(
+        self, event: HookConfirmationRequest, on_result: Callable[[bool | None], None]
+    ) -> object: ...
+
+    def dismiss_hook_confirmation(self, dialog: object) -> None: ...
+
+    def publish_hook_confirmation_answer(
+        self, session_id: str | None, request_id: str, answer: HookConfirmationAnswer
+    ) -> None: ...
+
+    def notify_approval_required(self) -> None: ...
+
+
+class HookConfirmationQueueController:
+    """The TUI frontend of hook confirmations: one dialog at a time, the rest queued.
+
+    A request is claimed in the bus handler, before ``publish`` returns, and
+    shown without waiting for the user. The user's choice is the answer;
+    closing the dialog any other way (Esc, a click outside) declines. A
+    withdrawn request leaves the queue, or its dialog closes, with no answer.
+    Nothing else empties the queue: every request the backend stops waiting on
+    is withdrawn (``HookConfirmationRequest``'s contract), a session switch's
+    and an interrupt's included, so there is no separate clear to keep in step.
+    """
+
+    def __init__(self, port: HookConfirmationPort) -> None:
+        self._port = port
+        self.queue: deque[HookConfirmationRequest] = deque()
+        self.open_request: HookConfirmationRequest | None = None
+        self._open_dialog: object | None = None
+        self._withdrawn: set[str] = set()
+
+    @property
+    def awaiting_user(self) -> bool:
+        return self.open_request is not None or bool(self.queue)
+
+    def on_request(self, event: HookConfirmationRequest) -> None:
+        if not event.claim.try_claim():
+            return
+        self.queue.append(event)
+        if self.open_request is None:
+            self.show_next()
+
+    def on_withdrawn(self, event: HookConfirmationWithdrawn) -> None:
+        for queued in list(self.queue):
+            if queued.request_id == event.request_id:
+                self.queue.remove(queued)
+                return
+        if self.open_request is not None and self.open_request.request_id == event.request_id:
+            # Ended without the user: close the dialog, and answer nothing when it closes.
+            self._withdrawn.add(event.request_id)
+            if self._open_dialog is not None:
+                self._port.dismiss_hook_confirmation(self._open_dialog)
+
+    def show_next(self) -> None:
+        if not self.queue:
+            self.open_request = None
+            self._open_dialog = None
+            return
+        event = self.queue.popleft()
+        self.open_request = event
+
+        def _on_result(result: bool | None, _event: HookConfirmationRequest = event) -> None:
+            if self.open_request is _event:
+                self.open_request = None
+                self._open_dialog = None
+            if _event.request_id in self._withdrawn:
+                self._withdrawn.discard(_event.request_id)
+            else:
+                answer: HookConfirmationAnswer = "approved" if result else "declined"
+                self._port.publish_hook_confirmation_answer(_event.session_id, _event.request_id, answer)
+            if self.open_request is None:
+                self.show_next()
+
+        try:
+            self._port.notify_approval_required()
+            self._open_dialog = self._port.show_hook_confirmation(event, _on_result)
+        except Exception:
+            # Claimed and never shown: answer so the backend does not wait for nobody, and go on.
+            logger.exception("Showing hook confirmation %s failed", event.request_id)
+            self.open_request = None
+            self._open_dialog = None
+            self._port.publish_hook_confirmation_answer(event.session_id, event.request_id, "frontend_unavailable")
+            self.show_next()
 
 
 class QuestionQueueController:

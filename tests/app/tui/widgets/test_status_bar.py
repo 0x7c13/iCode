@@ -541,6 +541,27 @@ async def test_status_bar_empty_runtime_trail_removes_mouse_details_entry() -> N
     assert app.details_clicks == []
 
 
+def test_runtime_tool_count_takes_in_context_tools() -> None:
+    """The trail counts every tool the Tools tab lists, the context management ones included."""
+    from types import SimpleNamespace
+
+    from chrys.app.tui.screens.main.runtime_info import RegistryRuntimeInfoProvider
+    from chrys.foundation.i18n.formatting import format_message
+
+    runtime_info = RegistryRuntimeInfoProvider(  # type: ignore[arg-type]
+        SimpleNamespace(agent_registry=None)
+    )
+    context_tools = AgentRuntimeDetails(
+        context_tools=["compress_context", "recall_context", "list_compressed_contexts"]
+    )
+
+    trail = runtime_info.format_tool_info(["read_file", "sleep"], [], runtime_details=context_tools)
+    alone = runtime_info.format_tool_info([], [], runtime_details=context_tools)
+
+    assert [format_message(part) for part in trail] == ["5 tools"]
+    assert [format_message(part) for part in alone] == ["3 tools"]
+
+
 async def test_status_bar_set_tool_info_refreshes_visible_flash_trail() -> None:
     async with WidgetApp(StatusBar).run_test() as pilot:
         sb = pilot.app.query_one(StatusBar)

@@ -570,7 +570,7 @@ async def test_prompt_submit_blocked_error_preserves_reason_ownership(
         session=host.session, current=host.current, bus=host._bus, fsm=host._fsm
     ).handle_decision(
         HookDecision(blocked=True, block_reason=reason),
-        injected=None,
+        refused_input="prompt",
     )
 
     assert blocked is True

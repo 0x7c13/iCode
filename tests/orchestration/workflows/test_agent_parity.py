@@ -148,6 +148,27 @@ async def test_a_node_delegates_to_its_profile_sub_agents(tmp_path: Path, monkey
     assert not pending_dir(session_dir).exists() or list(pending_dir(session_dir).iterdir()) == []
 
 
+async def test_a_node_has_sleep_though_its_profile_omits_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pause = MockResponse(tool_calls=[("sleep", "call-1", {"seconds": 0, "reason": "pause"})])
+    node_client = MockChatClient(responses=[pause, MockResponse(text="node done")])
+    patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client], builtin_tools=True)
+    project = make_project(tmp_path)
+    write_workflow(project, "pause", _WORKFLOW)
+    host = make_host(tmp_path, project=project, profiles=[make_profile()])
+    try:
+        await confirm(host, "pause")
+        result, _events = await run(host, "pause", input_text="Go")
+    finally:
+        await host.shutdown()
+
+    assert result.outcome.value == "completed"
+    messages, _options = node_client.call_history[1]
+    results = [
+        content.result for message in messages for content in message.contents if content.type == "function_result"
+    ]
+    assert results == ["Slept for 0 seconds."]
+
+
 async def test_a_node_sees_its_profile_skills_and_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     node_client = MockChatClient(responses=[MockResponse(text="node done")])
     patch_runtime(monkeypatch, [MockChatClient(responses=[]), node_client])

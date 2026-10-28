@@ -23,6 +23,7 @@ from chrys.service.mcp.validation import (
     validate_mcp_tool_name_prefix,
 )
 from chrys.service.profiles.agents.schema import (
+    ALWAYS_LOADED_TOOL_CATEGORIES,
     DEFAULT_SUB_AGENT_CONCURRENCY,
     AcpAgentConfig,
     AgentProfile,
@@ -474,7 +475,13 @@ def _parse_tools(raw: object) -> ToolsConfig:
         # keeping them means a save from this version never deletes a newer version's tool.
         if any(not isinstance(category, str) for category in builtins):
             logger.warning("Ignoring non-string entries in tools.builtins")
-        raw_map["builtins"] = [category for category in builtins if isinstance(category, str)]
+        # Every agent loads these anyway: a listed one is dropped without a warning, so a
+        # save no longer writes it.
+        raw_map["builtins"] = [
+            category
+            for category in builtins
+            if isinstance(category, str) and category not in ALWAYS_LOADED_TOOL_CATEGORIES
+        ]
 
         search_raw = raw_map.get("web_search")
         if isinstance(search_raw, dict) and isinstance(search_raw.get("mode"), bool):
