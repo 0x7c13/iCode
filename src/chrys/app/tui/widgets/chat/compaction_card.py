@@ -292,9 +292,6 @@ class CompactionCard(Vertical):
         """Toggle the summary panel, mirroring the ToolGroup header."""
         if not self._has_note:
             return
-        if not self.collapsed:
-            # Folded by hand, it shows as made; opened, it fills the rows a running turn holds below as it grows.
-            note_fold(self, by_user=True)
         self.collapsed = not self.collapsed
 
     def on_tool_copy_button_clicked(self, event: ToolCopyButton.Clicked) -> None:

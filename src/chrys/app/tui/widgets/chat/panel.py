@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import itertools
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from fractions import Fraction
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from weakref import WeakKeyDictionary, WeakSet
 
@@ -78,7 +79,7 @@ from chrys.app.tui.widgets.chat.tool_call import ToolGroup
 from chrys.app.tui.widgets.chat.tool_registry import ToolGroupRegistry
 from chrys.app.tui.widgets.chat.transcript_panel import ChatTranscriptPanelMarker
 from chrys.app.tui.widgets.chat.transcript_reader import TranscriptReader
-from chrys.app.tui.widgets.chat.waiting_row import waits_after
+from chrys.app.tui.widgets.chat.waiting_row import WaitingRow, waits_after
 from chrys.app.tui.widgets.sidebar.toc_types import TocItem
 from chrys.app.tui.widgets.welcome import WelcomeWidget
 
@@ -152,6 +153,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._replay_progress_callback: Callable[[int, int], None] | None = None
         self._waiting_row_timer: Timer | None = None
         """Shows the waiting row once the turn has waited a moment; None while none is pending."""
+        self._waiting_row_moment = 0
+        """Counts the moments the turn waited; only the newest one's timer shows the row."""
         self._locale_controller = locale_controller
         self._sub_agent_transcript_loader = sub_agent_transcript_loader
         self._chrome = ChatPanelChrome(self, locale_controller=locale_controller)
@@ -273,8 +276,8 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         """Re-engage bottom-follow only at exact bottom."""
         self._scroll_controller.check_anchor()
 
-    def entry_folded(self, *, by_user: bool) -> None:
-        self._scroll_controller.entry_folded(by_user=by_user)
+    def entry_folded(self) -> None:
+        self._scroll_controller.entry_folded()
 
     def set_tool_kinds(self, tool_kinds: dict[str, str]) -> None:
         """Set tool name → kind map (used during session replay)."""
@@ -436,7 +439,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         yield from self._chrome.initial_widgets()
 
     def mount(self, *widgets, **kwargs):  # type: ignore[override]
-        """Mount widgets before the waiting row (it, the gap and the spacer stay last).
+        """Mount widgets before the waiting row (it and the spacer stay last).
 
         Gates ``before=`` injection on the row still being an attached
         child: :meth:`clear` nulls the reference before ``remove_children``
@@ -474,17 +477,24 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             return
         if self._turn_waits():
             if not row.display and self._waiting_row_timer is None:
-                self._waiting_row_timer = self.set_timer(_WAITING_ROW_DELAY_SECONDS, self._show_waiting_row)
+                self._waiting_row_moment += 1
+                self._waiting_row_timer = self.set_timer(
+                    _WAITING_ROW_DELAY_SECONDS, partial(self._show_waiting_row, self._waiting_row_moment)
+                )
             return
         if self._waiting_row_timer is not None:
             self._waiting_row_timer.stop()
             self._waiting_row_timer = None
         if row.display:
             # The rows it gives up go in the layout that hides it, as a fold's do.
-            self.entry_folded(by_user=False)
+            self.entry_folded()
             row.display = False
 
-    def _show_waiting_row(self) -> None:
+    def _show_waiting_row(self, moment: int) -> None:
+        # A timer hands this to the panel as its moment passes, and stopping the timer after that does not take it
+        # back: the turn may have moved since, or be waiting a newer moment, which its own timer ends.
+        if moment != self._waiting_row_moment or self._waiting_row_timer is None:
+            return
         self._waiting_row_timer = None
         row = self._chrome.waiting_row
         if row is not None and row.parent is self and self._turn_waits():
@@ -540,8 +550,6 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self.note_user_scroll()
         self.set_anchor_released(True)
         self._auto_scroll_paused_by_user = True
-        if not event.block.requested_collapsed:
-            self.entry_folded(by_user=True)
         with self.app.batch_update():
             event.block.requested_collapsed = not event.block.requested_collapsed
             event.block.try_finalize_fold()
@@ -577,7 +585,15 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._chrome.refresh_localization()
 
     def pre_layout(self, layout: Layout) -> None:
-        show_fold_gaps(self.displayed_children)
+        entries = self.displayed_children
+        show_fold_gaps(entries, end=self._transcript_end(entries))
+
+    def _transcript_end(self, entries: Sequence[Widget]) -> Widget | None:
+        """The last of the *entries* shown, or the waiting row below them: its last line ends the transcript."""
+        for entry in reversed(entries):
+            if isinstance(entry, WaitingRow) or not self.is_infrastructure(entry):
+                return entry
+        return None
 
     def arrange(self, size: Size, optimal: bool = False) -> DockArrangeResult:
         """Defuse Textual anchor pins while chat layout is settling.
@@ -881,7 +897,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             widget.add_class(_REPLAY_PLACEHOLDER_CLASS, update=False)
         precompose_tree(batch)
         try:
-            # An explicit ``before=None`` would skip ``mount``'s default place above the bottom gap.
+            # An explicit ``before=None`` would skip ``mount``'s default place above the waiting row.
             if before is None:
                 await self.mount(*batch)
             else:
@@ -1134,9 +1150,6 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
     def bottom_spacer(self) -> Widget | None:
         return self._bottom_spacer
 
-    def bottom_gap(self) -> Widget | None:
-        return self._chrome.bottom_gap
-
     def scroll_to_bottom_button(self) -> Widget | None:
         return self._scroll_to_bottom_button
 
@@ -1176,10 +1189,9 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         self._tool_registry.reset_for_clear()
         self._toc.clear()
 
-        welcome, waiting_row, bottom_gap, bottom_spacer, scroll_button = self._chrome.rebuild_widgets()
+        welcome, waiting_row, bottom_spacer, scroll_button = self._chrome.rebuild_widgets()
         await self.mount(welcome)
         await self.mount(waiting_row)
-        await self.mount(bottom_gap)
         await self.mount(bottom_spacer)
         await self.mount(scroll_button, after=bottom_spacer)
 
@@ -1219,9 +1231,6 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             or any(not fold.process_hidden and not fold.collapsed for fold in folds)
             or pending_collapsed is False
         )
-        if any_expanded:
-            # Opened, the entries fill the rows a running turn holds below as they grow.
-            self.entry_folded(by_user=True)
         with self.app.batch_update():
             self._process_controller.set_fold_state(any_expanded)
             for fold in folds:

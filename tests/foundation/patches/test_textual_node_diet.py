@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import os
-import shutil
 import subprocess
 import sys
 import weakref
@@ -17,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import textual
 from textual import _queue as queue_module
 from textual import events
 from textual import message_pump as message_pump_module
@@ -33,6 +31,7 @@ from textual.widgets import Static
 from chrys.foundation.patches import patcher, textual_node_diet
 from chrys.foundation.patches.patcher import FilePatch, PatchResult
 from chrys.foundation.patches.staged_members import members_installed, stage_patched_source
+from tests.support.installed_packages import copy_installed_package
 
 Queue = queue_module.Queue
 
@@ -260,7 +259,7 @@ print(textual.__file__)
 def _textual_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Copy the installed Textual into a site directory that the patcher writes instead."""
     site = tmp_path / "site"
-    shutil.copytree(Path(textual.__file__).parent, site / "textual", ignore=shutil.ignore_patterns("__pycache__"))
+    copy_installed_package("textual", site)
 
     def locate(package: str) -> Path:
         if package != "textual":

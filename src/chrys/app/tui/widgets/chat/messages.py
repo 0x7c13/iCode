@@ -655,9 +655,8 @@ class StreamedMarkdownMessage(FoldGap, ProcessMember):
     """A transcript message whose markdown body can stream in.
 
     Holds what streaming needs and what keeps it cheap: the body catches up at
-    most every ``_STREAMED_BODY_INTERVAL_SECONDS``, a height change lays the
-    transcript out once, and while the text streams the message gives up no
-    rows it took (:meth:`get_content_height`). A subclass composes the header
+    most every ``_STREAMED_BODY_INTERVAL_SECONDS`` and a height change lays the
+    transcript out once. A subclass composes the header
     and the body (:meth:`_new_body`) and reacts through :meth:`_refresh_header`
     and :meth:`_on_final`; one whose body waits for it to open
     (:meth:`_builds_body_on_opening`) hands a folded body no text and builds
@@ -674,10 +673,8 @@ class StreamedMarkdownMessage(FoldGap, ProcessMember):
         """A callback that brings the markdown body up to date is queued on this widget."""
         self._body_synced_at = float("-inf")
         """When the markdown body was last handed new text (``time.monotonic()``)."""
-        self._holding_rows = not is_final
-        """The floor of :meth:`get_content_height` applies: the text streams, or its final text is not shown yet."""
-        self._streamed_height: tuple[int, int] | None = None
-        """The most rows its text has taken while it streams, as (content width, rows); None until laid out."""
+        self._measured_rows: tuple[int, int] | None = None
+        """The rows it was last measured at, as (content width, rows); None until measured."""
         self._is_final = is_final
         self._md_widget: VirtualizedMarkdown | None = None
         self._body_freeze_epoch: int | None = None
@@ -819,9 +816,6 @@ class StreamedMarkdownMessage(FoldGap, ProcessMember):
             # A body kept folded and not handed the newest text shows once it shows that text (_sync_folded_body):
             # shown at once, it would show the text it had for a frame and jump to the newest one's rows in the next.
             body.display = not collapsed and not (self._builds_body_on_opening() and body.shown_source != self.text)
-        if collapsed:
-            # Folded, it holds none of the rows its text took as it streamed (see get_content_height).
-            self._streamed_height = None
         self._refresh_header()
         if self._builds_body_on_opening() and (not collapsed or self._releases_body_on_folding()):
             # Once it is mounted: a message folded before then has no body to build or release yet.
@@ -848,12 +842,9 @@ class StreamedMarkdownMessage(FoldGap, ProcessMember):
         self._body_stale = True
         self._is_final = is_final
         if is_final:
-            handed = self._sync_body()
+            self._sync_body()
             self.remove_class("--streaming")
             self._on_final()
-            if not handed or self._streamed_height is None:
-                self._give_back_held_rows()
-            # Otherwise once the body shows the final text: on_virtualized_markdown_table_of_contents_updated.
         elif not self._body_sync_scheduled and self._body_takes_text():
             delay = self._body_synced_at + _STREAMED_BODY_INTERVAL_SECONDS - time.monotonic()
             if delay > 0:
@@ -877,15 +868,14 @@ class StreamedMarkdownMessage(FoldGap, ProcessMember):
         """Whether there is a body to hand new text: a folded one that waits for the message to open is handed none."""
         return self._md_widget is not None and not (self.collapsed and self._builds_body_on_opening())
 
-    def _sync_body(self) -> bool:
-        """Hand the markdown body the current text if it has not seen it yet; whether it did."""
+    def _sync_body(self) -> None:
+        """Hand the markdown body the current text if it has not seen it yet."""
         body = self._md_widget
         if not self._body_stale or body is None or not self._body_takes_text():
-            return False
+            return
         self._body_stale = False
         self._body_synced_at = time.monotonic()
         self._body_parse = body.update(self.text)
-        return True
 
     async def _sync_folded_body(self) -> None:
         """Bring the body to the latest requested open state: release it folded, if it goes; build or update it open.
@@ -916,9 +906,6 @@ class StreamedMarkdownMessage(FoldGap, ProcessMember):
                         self._body_freeze_epoch = None
                         self._clear_arrangement_cache()
                         _ = self.displayed_children
-                        if self._is_final:
-                            # Its final text never shows in a body; streamed text gives them back with its final update.
-                            self._give_back_held_rows()
                 self.post_message(
                     GcReclaimRequested(GcReclaimReason.STABLE_CONTENT_REMOVED, prompt=False, removed=removed)
                 )
@@ -947,12 +934,17 @@ class StreamedMarkdownMessage(FoldGap, ProcessMember):
                     self._absorb_after_parse = self._is_final
                     self._sync_body()
                 return
-            # Handed again even if a parse of it runs: this one's end says when the body shows it.
             self._body_stale = False
-            self._body_synced_at = time.monotonic()
             # Built or kept, its parse is stable content the GC freeze can take; text that still streams is not.
             self._absorb_after_parse = self._is_final
-            installed = self._body_parse = body.update(self.text)
+            if body.source == self.text and self._body_parse is not None and not self._body_parse.is_done:
+                # Handed the newest text already, as it streamed: that parse's end says when the body shows it. Handed
+                # again, the body would parse it again and replace the blocks the GC absorb went to. A parse that
+                # ended without showing it failed: the text is handed again.
+                installed = self._body_parse
+            else:
+                self._body_synced_at = time.monotonic()
+                installed = self._body_parse = body.update(self.text)
         try:
             await installed
             # Its final text, handed as that parse ran (a final update is handed at once), is the text it shows with.
@@ -974,51 +966,27 @@ class StreamedMarkdownMessage(FoldGap, ProcessMember):
     def on_virtualized_markdown_table_of_contents_updated(
         self, event: VirtualizedMarkdown.TableOfContentsUpdated
     ) -> None:
-        """The body installed a parse, as it announces after each: once it shows the final text, the held rows go back.
-
-        It parses that text off the event loop: given back before then, the
-        message would take the old text's height for a frame, and a view that
-        follows the bottom would move down and back up as the final text took
-        the rows again. A parse that fails leaves the old text, and the rows.
-        """
+        """The body installed a parse, as it announces after each: one of the text handed on opening is stable content."""
         if self._absorb_after_parse and event.markdown is self._md_widget and event.markdown.shown_source == self.text:
             self._absorb_after_parse = False
             self.post_message(GcAbsorbRequested(GcAbsorbReason.STABLE_CONTENT_MOUNTED))
-        if self._holding_rows and self._is_final and event.markdown.shown_source == self.text:
-            self._give_back_held_rows()
 
-    def _give_back_held_rows(self) -> None:
-        """End the floor of :meth:`get_content_height`: the message is as tall as its text from now on."""
-        if not self._holding_rows:
-            return
-        laid_out = self._streamed_height is not None
-        self._holding_rows = False
-        self._streamed_height = None
-        if laid_out:
-            # The final text may change nothing else that would lay the message out again.
-            self.refresh(layout=True)
-
-    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
-        """While the text streams, it gives up no rows it took.
+    def _content_rows(self, container: Size, viewport: Size, width: int) -> int:
+        """Rows it gives up go in the layout that measures it, as a fold's do.
 
         Until its closing markup arrives, a ``**`` or a link's URL can wrap a
-        line that then fits again: the message would give up a row and take it
-        back as more text arrives, and a transcript that follows the bottom
-        would move everything on screen down a row and back up each time. The
-        row stays blank below the text instead, until the text fills it or the
-        final text shows. It holds at most a third of the panel's height as it
-        is now: more blank rows would leave the text above the view, so the
-        message gives them back at once, and the view moves as before. Folded,
-        it shows one row and holds none.
+        line that then fits again. Noted as a fold, the shrink shows in the
+        panel's arrangement measuring it; a view that follows the bottom would
+        otherwise hold it a frame, in case the rows came back, and show the row
+        blank under the transcript's last line. The gap below it is not its
+        text's: it goes as an entry comes below it, whose rows the view then
+        follows down.
         """
-        height = super().get_content_height(container, viewport, width)
-        if not self._holding_rows or self.collapsed:
-            return height
-        most_held = container.height // 3
-        streamed = self._streamed_height
-        if streamed is not None and streamed[0] == width and streamed[1] - height <= most_held:
-            height = max(height, streamed[1])
-        self._streamed_height = (width, height)
+        height = super()._content_rows(container, viewport, width)
+        measured = self._measured_rows
+        self._measured_rows = (width, height)
+        if measured is not None and measured[0] == width and height < measured[1]:
+            note_fold(self)
         return height
 
     def _size_updated(self, size: Size, virtual_size: Size, container_size: Size, layout: bool = True) -> bool:
@@ -1216,9 +1184,6 @@ class AgentMessage(StreamedMarkdownMessage):
 
     def on__agent_header_clicked(self) -> None:
         if self._is_final:
-            if not self.collapsed:
-                # Folded by hand, it shows as made; opened, it fills the rows a running turn holds below as it grows.
-                note_fold(self, by_user=True)
             self.collapsed = not self.collapsed
 
     def set_timestamp(self, timestamp: str) -> None:
@@ -1399,9 +1364,6 @@ class ThinkingMessage(StreamedMarkdownMessage):
         self._refresh_header()
 
     def on__agent_header_clicked(self) -> None:
-        if not self.collapsed:
-            # Folded by hand, it shows as made; opened, it fills the rows a running turn holds below as it grows.
-            note_fold(self, by_user=True)
         self.collapsed = not self.collapsed
 
 

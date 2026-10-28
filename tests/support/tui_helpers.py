@@ -36,7 +36,6 @@ from chrys.app.tui.screens.main.suggestions import SuggestionCallbacks, Suggesti
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.support.gc_freeze import GcAbsorbRequested, GcReclaimRequested
 from chrys.app.tui.widgets.chat.agent_transcript_surface import AgentTranscriptSurface
-from chrys.app.tui.widgets.chat.chrome import ChatBottomGap
 from chrys.app.tui.widgets.chat.panel import ChatPanel, _ChatBottomSpacer, _ScrollToBottomButton
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
 from chrys.app.tui.widgets.chat.renderers.sub_agent import SubAgentToolCall
@@ -703,7 +702,7 @@ def chat_content_children(panel: ChatPanel) -> list[object]:
     return [
         child
         for child in panel.children
-        if not isinstance(child, (WaitingRow, ChatBottomGap, _ChatBottomSpacer, _ScrollToBottomButton))
+        if not isinstance(child, (WaitingRow, _ChatBottomSpacer, _ScrollToBottomButton))
     ]
 
 

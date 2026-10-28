@@ -2667,7 +2667,4 @@ class ToolGroup(ToolCopyExcludedMixin, FoldGap, ProcessMember):
     def on_tool_group_title_clicked(self) -> None:
         if self.collapse_locked:
             return
-        if not self.collapsed:
-            # Folded by hand, it shows as made; opened, it fills the rows a running turn holds below as it grows.
-            note_fold(self, by_user=True)
         self.collapsed = not self.collapsed

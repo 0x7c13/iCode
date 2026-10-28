@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from itertools import pairwise
 
+import pytest
 from textual.geometry import Region
 from textual.widget import Widget
 
@@ -81,8 +82,9 @@ async def test_rows_under_an_open_summary_stand_one_gap_apart_and_the_last_has_n
             # Its own guide, then the gap's under the fold arrow.
             assert _top_row(row)[:3] == "│ │"
             assert _header(row).region.x == row.region.x + 2
-        # Nothing follows the last row but the margin before the answer.
+        # Nothing follows the last row but the margin before the answer: it does not end the transcript.
         answer = panel.query(AgentMessage).last()
+        assert not rows[-1].gap_below
         assert answer.region.y == rows[-1].region.bottom + 1
         assert not answer.gap_above
 
@@ -164,6 +166,80 @@ async def test_the_waiting_row_below_a_folded_row_keeps_its_gap_so_the_next_row_
         assert _header(group).region.y == dot_y
 
 
+def _painted_row(widget: Widget, y: int) -> str:
+    """The row the screen paints at *y* across *widget*, children over it included."""
+    strip = widget.screen._compositor.render_strips()[y]
+    return strip.text[widget.region.x : widget.region.right].rstrip()
+
+
+@pytest.mark.parametrize(
+    ("kind", "follows"), [("thinking", "tool call"), ("thinking", "waiting row"), ("tool group", "thinking")]
+)
+async def test_a_folded_row_that_ends_the_chat_keeps_a_blank_row_below_it_until_a_row_follows(
+    kind: str, follows: str
+) -> None:
+    """An open row ends with its own blank row; a folded row that ends the transcript keeps one below it as well.
+    Only its own guide runs on through it: no fold row follows for the guide under its arrow to lead to."""
+    app = ChatPanelApp(thinking_expanded=lambda: False, tool_groups_expanded=lambda: False)
+    async with app.run_test() as pilot:
+        panel = app.query_one(ChatPanel)
+        panel.agent_running = True
+        await panel.add_user_message("prompt")
+        if kind == "thinking":
+            await panel.add_thinking_delta("r", "reasoning", "Look at the file.")
+            row: FoldGap = panel.query_one(ThinkingMessage)
+        else:
+            await panel.add_tool_start("c0", "read_file", KIND_FILESYSTEM_READ, args={"path": "a.py"})
+            row = panel.query_one(ToolGroup)
+        await wait_for(
+            lambda: row.gap_below and screen_is_settled(app, panel.screen),
+            pilot=pilot,
+            description="the folded row laid out with a blank row below it",
+        )
+        assert row.ends_folded() and not row.gap_above
+        assert row.outer_size.height == 1 + FOLD_GAP_ROWS
+        assert _header(row).region.y == row.region.y
+        assert _painted_row(row, row.region.bottom - 1) == "│"
+
+        if follows == "tool call":
+            await panel.add_tool_start("c1", "read_file", KIND_FILESYSTEM_READ, args={"path": "b.py"})
+            below: FoldGap = panel.query_one(ToolGroup)
+        elif follows == "thinking":
+            await panel.add_thinking_delta("r", "reasoning", "Look at the next file.")
+            below = panel.query_one(ThinkingMessage)
+        else:
+            panel.finish_thinking_segment("r")
+            below = panel.query_one(WaitingRow)
+        await wait_for(
+            lambda: below.display and below.gap_above and screen_is_settled(app, panel.screen),
+            pilot=pilot,
+            description=f"a {follows} below the folded row",
+        )
+        # The gap above the row that follows parts them; the one below the folded row went in the same layout.
+        assert not row.gap_below
+        assert row.outer_size.height == 1
+        assert below.region.y == row.region.bottom
+        # A row that folds ends the transcript in its place, the waiting row as it is.
+        assert below.gap_below is (follows != "waiting row")
+
+
+async def test_an_open_row_that_ends_the_chat_shows_its_own_blank_row_and_no_gap_below_it() -> None:
+    async with ChatPanelApp(thinking_expanded=lambda: True).run_test() as pilot:
+        panel = pilot.app.query_one(ChatPanel)
+        panel.agent_running = True
+        await panel.add_user_message("prompt")
+        await panel.add_thinking_delta("r", "reasoning", "Look at the file.")
+        thinking = panel.query_one(ThinkingMessage)
+        await wait_for(
+            lambda: not thinking.ends_folded() and screen_is_settled(pilot.app, panel.screen),
+            pilot=pilot,
+            description="the open thinking laid out",
+        )
+        assert not thinking.gap_below
+        # Its own guide, and its body's, run through its own blank row.
+        assert _painted_row(thinking, thinking.region.bottom - 1) == "│ │"
+
+
 async def test_text_below_a_folded_row_folds_with_its_gap_and_parts_the_tool_call_after_it_by_one() -> None:
     """The text settles and folds as the call starts: a folded row below a folded row, then the call's below it."""
     async with ChatPanelApp().run_test(size=(80, 40)) as pilot:
@@ -222,3 +298,6 @@ async def test_a_nested_transcript_parts_text_from_the_folded_tool_group_above_i
         assert text.region.y == above.region.bottom
         # Open text ends with its own blank row.
         assert not text.collapsed and not below.gap_above
+        # Only the chat keeps a blank row below the folded row that ends it.
+        assert below.ends_folded() and not below.gap_below
+        assert below.outer_size.height == 1
