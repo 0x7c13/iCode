@@ -170,12 +170,12 @@ msgstr "无法加载项目钩子配置：{detail}。已禁用项目钩子；全�
 msgid "construction.service_session_incompatible"
 msgstr "先前的 OpenAI Responses 服务会话与当前智能体配置、工作区、模型配置或服务地址不兼容，或存储已禁用。{app_name} 将仅从本地历史记录继续。"
 
-#. English: Trajectory recording could not start and has been disabled for this
-#. session.
-#. chrys-meta={"fingerprint":"67020f0175a7a2b0413932bf9a05582d7a4debcf941968f058445c18e7f31a66","multiline":false,"placeholders":[]}
+#. English: Detailed trajectory recording is off for this session; your task
+#. can continue.
+#. chrys-meta={"fingerprint":"dc19fb815bca13dfbbb3d6c7406ed71fa3d2dffd25fe54b477ec65f033d2c910","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/session_lifecycle.py
 msgid "construction.trajectory_activation_failed"
-msgstr "轨迹记录无法启动，已为此会话禁用。"
+msgstr "此会话的详细轨迹记录已关闭，任务可以继续。"
 
 #. English: No active agent — cannot switch model
 #. chrys-meta={"fingerprint":"0eb68fe3143e750485fd38d2b6c5145940256aaba7fb6c654ea4b2f67554d981","multiline":false,"placeholders":[]}

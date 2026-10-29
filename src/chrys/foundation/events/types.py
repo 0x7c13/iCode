@@ -1119,6 +1119,8 @@ class Warning(Event):
     message: str = ""
     """Pre-rendered English retained byte-for-byte for compatibility consumers."""
     display_message: MessageRef | None = None
+    reason: str = ""
+    """Machine-readable cause within ``code``, for callers that act on it; empty when ``code`` says it all."""
 
 
 @dataclass

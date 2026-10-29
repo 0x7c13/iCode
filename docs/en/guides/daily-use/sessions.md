@@ -112,6 +112,8 @@ Migration keeps the original data in the source directory; it is not deleted aut
 
 Press **F12** to open the trajectory dashboard. **Overview** summarizes time and usage; **Timeline** shows individual turns and operations; **Insights** helps explain delays; **Session data** shows the saved session. Long sessions are analyzed in the background while a loading indicator is visible. The timing analysis preserves overlapping operations, so parallel work is not counted twice on a critical path.
 
+If iCode can't record a session's trajectory, it shows a warning that trajectory recording is off for the session. You can keep working as usual; only the dashboard and the export get nothing new from that session. Workflow runs don't show this warning. Common causes are an earlier recording of the session that hasn't stopped yet (closing the iCode windows that had the session open ends it), files in the session's `trajectory` folder that other users can read or that belong to another user, a `trajectory` folder that is a link, a trajectory key (`trajectory-hmac.key` in the iCode configuration directory) that iCode can't read, and a trajectory that iCode can't safely add to, such as one written by a newer iCode version.
+
 If a shell command's file content comparison cannot be completed because a file is unreadable, the file-change overview marks detection as incomplete. The recorded change list may omit changes; check the affected files or your Git diff before relying on it for rollback. Files deliberately excluded from content comparison by the size or binary-file limits do not by themselves trigger this warning.
 
 ## Link file changes and model requests in session data

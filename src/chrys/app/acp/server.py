@@ -1675,14 +1675,10 @@ class ChrysAcpServer:
 
     async def _send_warning(self, session_id: str, warning: Warning) -> None:
         """Send one ``chrys/warning``, whether it came from a turn or an RPC."""
-        await self._client_or_error().ext_notification(
-            "chrys/warning",
-            {
-                "sessionId": session_id,
-                "code": warning.code,
-                "message": warning.message,
-            },
-        )
+        payload = {"sessionId": session_id, "code": warning.code, "message": warning.message}
+        if warning.reason:
+            payload["reason"] = warning.reason
+        await self._client_or_error().ext_notification("chrys/warning", payload)
 
     async def _send_runtime_update(self, session_id: str) -> None:
         # Same envelope as the event-bridged senders (SessionReady /

@@ -479,6 +479,14 @@ One-way `ext_notification` pushes, bridged from `EventBus`:
   `chrys/sub_agent_aborted`, `chrys/sub_agent_cascade_aborted`.
 
 Notes:
+- `chrys/warning` is `{ sessionId, code, message }`, plus `reason` when the code has
+  a machine-readable cause. `trajectory_activation_failed` always carries one, saying
+  why the session records no trajectory: `lease_held` (another live writer has it),
+  `permission` (the session's files or a folder above them refused this user: the
+  wrong owner or mode, an ACL, a link, or a read-only folder), `key_unavailable`,
+  `schema_too_new`, `unreadable_tail`, `sequence_exhausted` or `activation_failed`
+  (anything else). The session itself keeps working, so none of these calls for a
+  new session.
 - `chrys/runtime_update` always uses the envelope `{ sessionId, runtime: {...} }`
   for every sender (`session/new`/`load`, model switch, settings reload,
   `set_config_option`, `set_workspace`, rollback, `SessionReady`,
@@ -635,6 +643,11 @@ Priority: P1 = high-value VS Code UX, P2 = can stay TUI-only for now.
 - **[P2] Linking a judge verdict to its permission.** `chrys/approval_reviewed`
   carries the approval `requestId`; the permission that follows a flagged
   verdict carries only the tool's `toolCallId`, and no field links the two.
+- **[P2] Warnings outside a prompt.** `chrys/warning` is sent while a prompt runs,
+  and for what a session's setup or a settings change rejected. When the first
+  thing a session records comes before its first prompt (a session-start or
+  session-restored hook, or a mode, model or agent switch), a recording that cannot
+  start reports `trajectory_activation_failed` to no one, and does not report it again.
 - **[P2] Image attachment compression events**
   (`ImageAttachmentCompressionStarted/Finished`).
 - **[P2] Shell mode / terminal delegation** — use ACP's standard terminal client
