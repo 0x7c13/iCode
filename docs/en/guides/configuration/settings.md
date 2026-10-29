@@ -24,7 +24,7 @@ You can also open a tab directly with `/settings <tab>`:
 | Models & Agents | `models` | Default agent, model roles, and request retries |
 | Security | `security` | Approval, project trust, diagnostics, and telemetry |
 | Sessions | `sessions` | Session titles, storage, and rollback |
-| Tools | `tools` | File search, web tools, agent questions, tool detail display, and workspace notices |
+| Tools | `tools` | File search, images, web tools, agent questions, tool detail display, and workspace notices |
 | Notifications | `notifications` | Notification toggles, delivery methods, and events |
 
 For example, enter `/settings security` to open the **Security** tab directly.
@@ -182,6 +182,12 @@ For telemetry data types, storage locations, endpoint precedence, and collector 
 | Setting | Effect and notes | Takes effect |
 | --- | --- | --- |
 | Respect .gitignore | Applies Git ignore rules to grep and glob searches. When off, hidden paths are still skipped, and other ignore files such as `.ignore` still apply. | On close |
+
+#### Images
+
+| Setting | Effect and notes | Takes effect |
+| --- | --- | --- |
+| Image size limit (KB) | The largest an image's file can be when it is sent to the model, from 32 to 3072 KB. The default is 256. In the request an image takes about a third more than its file, since it is sent as text. A larger image that you attach, that the agent views, or that an ACP client sends is compressed to a JPEG within the limit; the image file itself is not changed. Each new turn and each retry also compresses the images sent earlier in the session that are larger than the limit, and the session keeps the compressed copies, so an image that an MCP tool returns is compressed from the next turn or retry on. If a request with images fails because it is too large, for example with an HTTP 413 error from a gateway, lower the limit and retry. With a lower limit the model sees less detail in each image. | On close |
 
 #### Web search
 

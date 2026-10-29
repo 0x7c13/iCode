@@ -412,6 +412,11 @@ class ChrysSessionHost:
         return self._engine.runtime_details.model.vision
 
     @property
+    def image_send_limit_bytes(self) -> int:
+        """The most bytes an image sent with a prompt takes; a larger one is compressed."""
+        return self._engine.settings.image_send_limit_bytes()
+
+    @property
     def running_background_tasks(self) -> int:
         """How many of the session's shell commands run in the background; shutting down stops them."""
         tasks = self._engine.session.background_tasks

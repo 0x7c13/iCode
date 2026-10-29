@@ -96,6 +96,7 @@ llm:
 | YAML 键 | 环境变量 | 默认值 | 类型、取值与效果 |
 | --- | --- | --- | --- |
 | `tools.search.respect_gitignore` | 无 | `true` | 布尔值；grep 和 glob 搜索时应用 `.gitignore` 规则。设为 `false` 时仍会跳过隐藏路径，`.ignore` 等其他忽略文件也仍然生效 |
+| `tools.image.send_limit_kb` | `CHRYS_IMAGE_SEND_LIMIT_KB` | `256` | 整数，`32` 到 `3072`，超出范围时取最近的边界值；发给模型的一张图片的文件最多占用的 KB 数（在请求中以 base64 发送，约多三分之一）。附加、查看或由 ACP 客户端发送的图片超过它时压缩为不超过它的 JPEG；每轮和每次重试开始时，会话中之前发送的、超过它的图片也会压缩 |
 | `tools.ask_user.inline` | `CHRYS_ASK_USER_INLINE` | `false` | 布尔值；TUI 中将智能体提问显示在对话中，而不是弹出窗口 |
 | `tools.ask_user.timeout_seconds` | `CHRYS_ASK_USER_TIMEOUT_SECONDS` | `900` | 整数或 `null`；等待回答的秒数，超时后向智能体返回超时结果；`0`、负数或用户 YAML 的 `null` 表示无限等待 |
 | `tools.result.ceiling_tokens` | `CHRYS_TOOL_RESULT_CEILING_TOKENS` | `64000` | 整数；单条工具结果交给模型前的最终长度上限，单位 token。`0` 关闭此限制；正数最小 `2000`，负数无效 |
