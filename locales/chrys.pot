@@ -1204,6 +1204,12 @@ msgstr ""
 msgid "settings.tools.ask_user.timeout_seconds.label"
 msgstr ""
 
+#. English: Image size limit (KB)
+#. chrys-meta={"fingerprint":"17cd1ab5a9d1279bd8c6d410ec50c41607ccd3b0ef6876e1c1f492ff569e4a06","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.tools.image.send_limit_kb.label"
+msgstr ""
+
 #. English: Tool result ceiling (tokens)
 #. chrys-meta={"fingerprint":"3084c2a0b19e95311fe3ca34e27d3efcf045f0f49ab2b210b2528cc72f866e88","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -10444,6 +10450,14 @@ msgstr ""
 msgid "tui.settings.hint.tools.ask_user.timeout_seconds"
 msgstr ""
 
+#. English: Larger images are compressed before they are sent, earlier ones in
+#. the session included; from 32 to 3072, default {default}. Lower it if a
+#. request with images fails as too large, then retry.
+#. chrys-meta={"fingerprint":"7b419ad0b038dc3cf63979fc291bfa8a20fb97cbb350416cebfe10df2eea27e9","multiline":false,"placeholders":["default"]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.tools.image.send_limit_kb"
+msgstr ""
+
 #. English: Apply Git ignore rules to grep and glob searches. Hidden paths and
 #. other ignore rules still apply when off.
 #. chrys-meta={"fingerprint":"71a61b74a3e3fd76d7f8bc2782b4475cb49662131e7f2170bdfddc4e663a0e39","multiline":false,"placeholders":[]}
@@ -10725,6 +10739,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"0679fe2ae5bf35ce2a964e8ecb0990ff3acef5402722eae73cf86c98fb32cc8e","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.section.file_search"
+msgstr ""
+
+#. English: Images
+#. chrys-meta={"fingerprint":"a487743debd0f14b53a104585687084d16042140ea1c0fc4b112d15ae55686ac","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.section.images"
 msgstr ""
 
 #. English: Input

@@ -152,6 +152,15 @@ DEFAULT_TOOL_RESULT_CEILING_TOKENS = 64_000
 TOOL_RESULT_CEILING_FLOOR = 2_000
 """Minimum positive ``CHRYS_TOOL_RESULT_CEILING_TOKENS`` value."""
 
+DEFAULT_IMAGE_SEND_LIMIT_KB = 256
+"""Default most KiB an image is sent to a model with (``foundation.text.images.MAX_IMAGE_BYTES``)."""
+
+MIN_IMAGE_SEND_LIMIT_KB = 32
+"""Lowest image send limit: below it most photos shrink to thumbnails."""
+
+MAX_IMAGE_SEND_LIMIT_KB = 3072
+"""Highest image send limit, the size images were sent at before compression got a setting."""
+
 DEFAULT_WORKSPACE_MRU_MAX_ENTRIES = 20
 """Default number of recently used workspace directories kept in the MRU index."""
 
@@ -676,6 +685,7 @@ _LABEL_TOOLS_RESULT_CEILING_TOKENS = msg(
     "settings.tools.result.ceiling_tokens.label", fallback="Tool result ceiling (tokens)"
 )
 _LABEL_SEARCH_RESPECT_GITIGNORE = msg("settings.tools.search.respect_gitignore.label", fallback="Respect .gitignore")
+_LABEL_TOOLS_IMAGE_SEND_LIMIT_KB = msg("settings.tools.image.send_limit_kb.label", fallback="Image size limit (KB)")
 _LABEL_UI_THEME = msg("settings.ui.theme.label", fallback="Theme")
 _LABEL_UI_LOCALE = msg("settings.ui.locale.label", fallback="UI Language")
 _LABEL_UI_CHAT_TOOL_GROUPS_EXPANDED = msg(
@@ -1024,6 +1034,23 @@ class Settings:
             apply=Apply.RELOAD,
             group="tools",
             kind=Kind.BOOL,
+        ),
+    )
+
+    # The most an image attached, viewed or sent by an ACP client takes in a
+    # request; a larger one is compressed to fit. Each turn and retry also
+    # shrinks the session's earlier images to it, so lowering it fixes a
+    # request a gateway refused as too large.
+    image_send_limit_kb: int = field(
+        default=DEFAULT_IMAGE_SEND_LIMIT_KB,
+        metadata=spec(
+            key="tools.image.send_limit_kb",
+            label=_LABEL_TOOLS_IMAGE_SEND_LIMIT_KB,
+            env="CHRYS_IMAGE_SEND_LIMIT_KB",
+            coerce=int_coercer(minimum=MIN_IMAGE_SEND_LIMIT_KB, maximum=MAX_IMAGE_SEND_LIMIT_KB),
+            apply=Apply.RELOAD,
+            group="tools",
+            kind=Kind.INT,
         ),
     )
 
@@ -1992,6 +2019,10 @@ class Settings:
         if self.max_transient_retries is not None:
             return self.max_transient_retries
         return self.frontend_default_max_transient_retries
+
+    def image_send_limit_bytes(self) -> int:
+        """Return the most bytes an image is sent to a model with."""
+        return self.image_send_limit_kb * 1024
 
 
 def _persist_one(key: str, value: Any, *, log_value: bool = True) -> None:

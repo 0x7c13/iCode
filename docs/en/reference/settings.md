@@ -96,6 +96,7 @@ Changing the session storage root does not automatically move existing sessions.
 | YAML key | Environment variable | Default | Type, values, and effect |
 | --- | --- | --- | --- |
 | `tools.search.respect_gitignore` | None | `true` | Boolean; apply `.gitignore` rules to grep and glob searches. When `false`, hidden paths are still skipped and other ignore files such as `.ignore` still apply |
+| `tools.image.send_limit_kb` | `CHRYS_IMAGE_SEND_LIMIT_KB` | `256` | Integer from `32` to `3072`; values outside are clamped. The most KB an image's file takes when sent to the model (about a third more in the request, as base64). A larger image is compressed to a JPEG within it when it is attached, viewed, or sent by an ACP client; at the start of each turn and retry, larger images sent earlier in the session are compressed too |
 | `tools.ask_user.inline` | `CHRYS_ASK_USER_INLINE` | `false` | Boolean; show agent questions in the TUI conversation instead of a dialog |
 | `tools.ask_user.timeout_seconds` | `CHRYS_ASK_USER_TIMEOUT_SECONDS` | `900` | Integer or `null`; seconds to wait for an answer. On timeout, a timeout result is returned to the agent. `0`, a negative value, or `null` in user YAML means wait indefinitely |
 | `tools.result.ceiling_tokens` | `CHRYS_TOOL_RESULT_CEILING_TOKENS` | `64000` | Integer; final length limit for a single tool result before it is passed to the model, in tokens. `0` disables this limit; positive values have a minimum of `2000`; negative values are invalid |

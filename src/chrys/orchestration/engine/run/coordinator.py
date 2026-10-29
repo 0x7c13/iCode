@@ -150,6 +150,7 @@ class TurnCoordinator:
             discover_references=discover_image_references,
             load_attachments=load_image_attachments,
             compression_timeout_seconds=_IMAGE_COMPRESSION_TIMEOUT_SECONDS,
+            image_send_limit=self._image_send_limit,
         )
         self._skills = RuntimeSkillRefresher(
             current=self._current, loader=self._loader, session=self._session, bus=self._bus
@@ -180,6 +181,10 @@ class TurnCoordinator:
             on_successful_turn=self._on_successful_turn,
             hooks=self._hooks,
         )
+
+    def _image_send_limit(self) -> int:
+        """Read the send limit as the settings stand now: a reload may have changed it."""
+        return self._settings_handle.settings.image_send_limit_bytes()
 
     def _runner(self) -> TurnRunner:
         """Create the service for one execution attempt."""

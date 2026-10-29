@@ -1197,9 +1197,9 @@
         ["wrapper", "await self.publish_history_vision_rejection(session_id=event_session_id, should_publish=should_publish)", "unresolved", "chrys.orchestration.engine.run.prompt_content.PromptContentPreparer.publish_history_vision_rejection"],
         ["awaitable", "await self._bus.publish(Error(code='image_attachment_error', message=format_attachment_error_message(discovered.errors), display_message=attachment_error_display(discovered.errors), session_id=event_session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(ImageAttachmentCompressionStarted(image_count=compression_count, session_id=event_session_id))", "unresolved"],
-        ["timeout", "await asyncio.wait_for(asyncio.to_thread(self._load_attachments, discovered.mentions), timeout=self._compression_timeout_seconds)", "unresolved"],
-        ["thread_pool", "asyncio.to_thread(self._load_attachments, discovered.mentions)", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(self._load_attachments, discovered.mentions)", "unresolved"],
+        ["timeout", "await asyncio.wait_for(asyncio.to_thread(load), timeout=self._compression_timeout_seconds)", "unresolved"],
+        ["thread_pool", "asyncio.to_thread(load)", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(load)", "unresolved"],
         ["awaitable", "await self._bus.publish(ImageAttachmentCompressionFinished(image_count=compression_count, session_id=event_session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='image_attachment_error', message=format_attachment_error_message(timeout_errors), display_message=attachment_error_display(timeout_errors), session_id=event_session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='image_attachment_error', message=format_attachment_error_message(loaded.errors), display_message=attachment_error_display(loaded.errors), session_id=event_session_id))", "unresolved"]
@@ -1231,6 +1231,12 @@
         ["wrapper", "await self.publish_current_prompt_vision_rejection(image_references, session_id=event_session_id, should_publish=should_publish)", "unresolved", "chrys.orchestration.engine.run.prompt_content.PromptContentPreparer.publish_current_prompt_vision_rejection"],
         ["wrapper", "await self.publish_history_vision_rejection(session_id=event_session_id, should_publish=should_publish)", "unresolved", "chrys.orchestration.engine.run.prompt_content.PromptContentPreparer.publish_history_vision_rejection"],
         ["wrapper", "await self.publish_history_vision_rejection(session_id=event_session_id, should_publish=should_publish)", "unresolved", "chrys.orchestration.engine.run.prompt_content.PromptContentPreparer.publish_history_vision_rejection"]
+      ],
+      "PromptContentPreparer.shrink_history_images": [
+        ["awaitable", "await self._bus.publish(ImageAttachmentCompressionStarted(image_count=count, session_id=session_id))", "unresolved"],
+        ["timeout", "async with asyncio.timeout(self._compression_timeout_seconds)", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(_shrink_image, image.uri, max_bytes)", "unresolved"],
+        ["awaitable", "await self._bus.publish(ImageAttachmentCompressionFinished(image_count=count, session_id=session_id))", "unresolved"]
       ]
     },
     "chrys.orchestration.engine.run.resume": {
@@ -1360,6 +1366,7 @@
         ["awaitable", "await preamble.started()", "unresolved"],
         ["wrapper", "await self._fire_before_turn(text, target_operation_id=preamble.operation_id if preamble is not None and preamble.start_committed else None)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._fire_before_turn"],
         ["wrapper", "await self._compute_workspace_notice(is_retry=False)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._compute_workspace_notice"],
+        ["awaitable", "await self._content.shrink_history_images()", "unresolved"],
         ["thread_pool", "await asyncio.to_thread(write_rollback_snapshot)", "unresolved"],
         ["wrapper", "await self._refresh_runtime_skills(update_active_turn=False)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._refresh_runtime_skills"],
         ["awaitable", "await preamble.finished(outcome=PreparationOutcome.HANDOFF)", "unresolved"],
@@ -1372,6 +1379,7 @@
         ["awaitable", "await preamble.started()", "unresolved"],
         ["wrapper", "await self._fire_before_turn(additional_text, is_retry=True, target_operation_id=preamble.operation_id if preamble is not None and preamble.start_committed else None)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._fire_before_turn"],
         ["wrapper", "await self._compute_workspace_notice(is_retry=True)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._compute_workspace_notice"],
+        ["awaitable", "await self._content.shrink_history_images()", "unresolved"],
         ["awaitable", "await preamble.finished(outcome=PreparationOutcome.HANDOFF)", "unresolved"],
         ["async_context", "async with self._current.require_loaded().bindings.inputs.retry_request(additional_text=additional_text, created_at=created_at, withdraw=self._withdraw_answer)", "unresolved"],
         ["awaitable", "await self._current.require_loaded().bindings.backend.run(request)", "unresolved"],
@@ -1912,6 +1920,7 @@
         ["awaitable", "await self._content.publish_text('answer', text)", "unresolved"]
       ],
       "AcpUpdateTranslator._merge_tool": [
+        ["wrapper", "await _structured_tool_content(content)", "unresolved", "chrys.orchestration.invoker.acp_protocol._structured_tool_content"],
         ["wrapper", "await self._publish_start(record)", "unresolved", "chrys.orchestration.invoker.acp_protocol.AcpUpdateTranslator._publish_start"],
         ["wrapper", "await self._publish_terminal(record)", "unresolved", "chrys.orchestration.invoker.acp_protocol.AcpUpdateTranslator._publish_terminal"]
       ],
@@ -1949,6 +1958,9 @@
       ],
       "AcpUpdateTranslator.put": [
         ["wrapper", "await self.on_update(seq, notification)", "unresolved", "chrys.orchestration.invoker.acp_protocol.AcpUpdateTranslator.on_update"]
+      ],
+      "_structured_tool_content": [
+        ["thread_pool", "await asyncio.to_thread(_compressed_tool_image, data)", "unresolved"]
       ],
       "drain_acp_task": [
         ["shield", "await asyncio.shield(task)", "unresolved"]

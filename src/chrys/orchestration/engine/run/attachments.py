@@ -274,8 +274,10 @@ def _is_folder_style_mention_value(value: str) -> bool:
     return value.endswith(("/", "\\"))
 
 
-def load_image_attachments(mentions: Sequence[ImageMention]) -> AttachmentParseResult:
-    """Load image bytes for previously discovered mentions."""
+def load_image_attachments(
+    mentions: Sequence[ImageMention], *, max_bytes: int = MAX_IMAGE_BYTES
+) -> AttachmentParseResult:
+    """Load image bytes for previously discovered mentions, each compressed to at most *max_bytes*."""
     attachments: list[ImageAttachment] = []
     errors: list[str] = []
 
@@ -329,9 +331,9 @@ def load_image_attachments(mentions: Sequence[ImageMention]) -> AttachmentParseR
         # JPEG, GIF and WebP: other bytes behind an image name (a renamed BMP)
         # are converted like an oversized image.
         media_type = wire_image_media_type(data, None)
-        if len(data) > MAX_IMAGE_BYTES or media_type is None:
+        if len(data) > max_bytes or media_type is None:
             try:
-                data = compress_image_data(data, max_bytes=MAX_IMAGE_BYTES)
+                data = compress_image_data(data, max_bytes=max_bytes)
             except ImageProcessingError as exc:
                 errors.append(_format_image_error(mention.mention, mention.path, str(exc)))
                 continue
@@ -353,12 +355,12 @@ def load_image_attachments(mentions: Sequence[ImageMention]) -> AttachmentParseR
     return AttachmentParseResult(attachments=attachments, errors=errors)
 
 
-def parse_image_mentions(text: str, cwd: Path) -> AttachmentParseResult:
-    """Parse and load supported image ``@file`` mentions from *text*."""
+def parse_image_mentions(text: str, cwd: Path, *, max_bytes: int = MAX_IMAGE_BYTES) -> AttachmentParseResult:
+    """Parse and load supported image ``@file`` mentions from *text*, each compressed to at most *max_bytes*."""
     discovered = discover_image_mentions(text, cwd)
     if discovered.errors:
         return AttachmentParseResult(attachments=[], errors=discovered.errors)
-    return load_image_attachments(discovered.mentions)
+    return load_image_attachments(discovered.mentions, max_bytes=max_bytes)
 
 
 def build_user_contents(text: str, attachments: list[ImageAttachment]) -> list[Any]:

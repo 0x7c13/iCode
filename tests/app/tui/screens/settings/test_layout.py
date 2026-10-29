@@ -70,6 +70,7 @@ def test_tools_tab_lists_each_tool_category_as_its_own_section() -> None:
     assert tools is not None
     assert [(section.title.fallback, [row.key for row in section.rows]) for section in tools.sections] == [
         ("File search", ["tools.search.respect_gitignore"]),
+        ("Images", ["tools.image.send_limit_kb"]),
         (
             "Web search",
             [

@@ -170,6 +170,7 @@ class TurnRunner:
                 else None,
             )
             await self._compute_workspace_notice(is_retry=False)
+            await self._content.shrink_history_images()
             write_rollback_snapshot = capture_snapshot_writer(self._session, self._settings_handle)
             await asyncio.to_thread(write_rollback_snapshot)
             await self._refresh_runtime_skills(update_active_turn=False)
@@ -281,6 +282,8 @@ class TurnRunner:
                 else None,
             )
             await self._compute_workspace_notice(is_retry=True)
+            # A retry is how a request refused as too large is sent again once the image limit is lowered.
+            await self._content.shrink_history_images()
             if self._current.loaded is not None:
                 if run_scope is not None:
                     self._current.require_loaded().reminder_middleware.prepare_turn(

@@ -1228,6 +1228,12 @@ msgstr "在对话中显示提问"
 msgid "settings.tools.ask_user.timeout_seconds.label"
 msgstr "询问用户超时（秒）"
 
+#. English: Image size limit (KB)
+#. chrys-meta={"fingerprint":"17cd1ab5a9d1279bd8c6d410ec50c41607ccd3b0ef6876e1c1f492ff569e4a06","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.tools.image.send_limit_kb.label"
+msgstr "图片大小上限（KB）"
+
 #. English: Tool result ceiling (tokens)
 #. chrys-meta={"fingerprint":"3084c2a0b19e95311fe3ca34e27d3efcf045f0f49ab2b210b2528cc72f866e88","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -10630,6 +10636,14 @@ msgstr "把智能体的提问直接显示在对话里，而不是弹出窗口。
 msgid "tui.settings.hint.tools.ask_user.timeout_seconds"
 msgstr "留空 = 默认 {default} 秒；0 = 不超时。"
 
+#. English: Larger images are compressed before they are sent, earlier ones in
+#. the session included; from 32 to 3072, default {default}. Lower it if a
+#. request with images fails as too large, then retry.
+#. chrys-meta={"fingerprint":"7b419ad0b038dc3cf63979fc291bfa8a20fb97cbb350416cebfe10df2eea27e9","multiline":false,"placeholders":["default"]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.tools.image.send_limit_kb"
+msgstr "超过此大小的图片先压缩再发送，会话中之前的图片也一样；取值 32 到 3072，默认 {default}。带图片的请求因过大而失败时，调低此值后重试。"
+
 #. English: Apply Git ignore rules to grep and glob searches. Hidden paths and
 #. other ignore rules still apply when off.
 #. chrys-meta={"fingerprint":"71a61b74a3e3fd76d7f8bc2782b4475cb49662131e7f2170bdfddc4e663a0e39","multiline":false,"placeholders":[]}
@@ -10912,6 +10926,12 @@ msgstr "显示偏好"
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.section.file_search"
 msgstr "文件搜索"
+
+#. English: Images
+#. chrys-meta={"fingerprint":"a487743debd0f14b53a104585687084d16042140ea1c0fc4b112d15ae55686ac","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.section.images"
+msgstr "图片"
 
 #. English: Input
 #. chrys-meta={"fingerprint":"aa801f5aa47a9644ff6d258e4f0dc34a47b07d38685b021f96fe2a5f3c4e0ee6","multiline":false,"placeholders":[]}

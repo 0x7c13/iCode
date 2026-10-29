@@ -42,6 +42,7 @@ _SECTION_DISPLAY = msg("tui.settings.section.display", fallback="Display prefere
 _SECTION_WORKSPACE_NOTICE = msg("tui.settings.section.workspace_notice", fallback="Workspace notice")
 _SECTION_NOTIFICATIONS = msg("tui.settings.section.notifications", fallback="Notifications")
 _SECTION_FILE_SEARCH = msg("tui.settings.section.file_search", fallback="File search")
+_SECTION_IMAGES = msg("tui.settings.section.images", fallback="Images")
 _SECTION_WEB = msg("tui.settings.section.web", fallback="Web search")
 _SECTION_ASK_USER = msg("tui.settings.section.ask_user", fallback="Ask user")
 
@@ -175,6 +176,13 @@ _HINT_ROLLBACK_SNAPSHOTS_KEEP = msg(
 _HINT_SEARCH_RESPECT_GITIGNORE = msg(
     "tui.settings.hint.tools.search.respect_gitignore",
     fallback="Apply Git ignore rules to grep and glob searches. Hidden paths and other ignore rules still apply when off.",
+)
+_HINT_TOOLS_IMAGE_SEND_LIMIT_KB = msg(
+    "tui.settings.hint.tools.image.send_limit_kb",
+    fallback=(
+        "Larger images are compressed before they are sent, earlier ones in the session included; "
+        "from 32 to 3072, default {default}. Lower it if a request with images fails as too large, then retry."
+    ),
 )
 _HINT_TOOLS_ASK_USER_INLINE = msg(
     "tui.settings.hint.tools.ask_user.inline",
@@ -452,6 +460,16 @@ TABS: tuple[SettingsTab, ...] = (
             SettingsSection(
                 _SECTION_FILE_SEARCH,
                 (SettingRowSpec("tools.search.respect_gitignore", hint=_HINT_SEARCH_RESPECT_GITIGNORE),),
+            ),
+            SettingsSection(
+                _SECTION_IMAGES,
+                (
+                    SettingRowSpec(
+                        "tools.image.send_limit_kb",
+                        hint=_HINT_TOOLS_IMAGE_SEND_LIMIT_KB,
+                        hint_args=HintArgs.FIELD_DEFAULT,
+                    ),
+                ),
             ),
             SettingsSection(
                 _SECTION_WEB,
