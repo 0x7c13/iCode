@@ -12,6 +12,7 @@ import sys
 import textwrap
 from types import ModuleType, SimpleNamespace
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -548,9 +549,68 @@ def _refuse_the_job_attribute(
 _JOB_AND_HANDLES = (process_mod._PROC_THREAD_ATTRIBUTE_JOB_LIST, process_mod._PROC_THREAD_ATTRIBUTE_HANDLE_LIST)
 
 
+@pytest.mark.parametrize(
+    ("error", "retries"),
+    [
+        pytest.param(5, True, id="win32-access-denied"),
+        pytest.param(0xC0070005, True, id="ntstatus-unsigned-access-denied"),
+        pytest.param(-1073283067, True, id="ntstatus-signed-access-denied"),
+        pytest.param(2, False, id="file-not-found"),
+        pytest.param(87, False, id="invalid-parameter"),
+        pytest.param(-1073741819, False, id="access-violation-same-low-word"),
+    ],
+)
+async def test_windows_spawn_access_denied_fallback_preserves_retry_failure(
+    monkeypatch: pytest.MonkeyPatch, error: int, retries: bool
+) -> None:
+    api = SimpleNamespace(kernel32=SimpleNamespace(SetHandleInformation=lambda handle, mask, flags: 1))
+    retry_error = 87
+    create = create_autospec(process_mod._windows_create_process, side_effect=[error, retry_error])
+    create_job = create_autospec(process_mod._windows_create_job, side_effect=[101, 102])
+    closed: list[int | None] = []
+    monkeypatch.setattr(process_mod, "_windows_process_api", lambda: api)
+    monkeypatch.setattr(process_mod, "_windows_create_job", create_job)
+    monkeypatch.setattr(process_mod, "_make_windows_pipe_pairs", lambda: ((11, 12), (21, 22), (31, 32)))
+    monkeypatch.setattr(process_mod, "_windows_create_process", create)
+    monkeypatch.setattr(process_mod, "_close_windows_handle", closed.append)
+
+    # Every create fails before it can return a process handle; no fake handle reaches an OS wait.
+    with pytest.raises(OSError) as raised:
+        await process_mod._spawn_windows_managed_stdio_process(
+            r"C:\Program Files\WindowsApps\Microsoft.PowerShell\pwsh.exe",
+            ("-NoProfile", "-Command", "Write-Output ok"),
+            cwd="C:\\",
+            env={},
+            limit=64 * 1024,
+            parent_env=None,
+        )
+
+    first = create.call_args_list[0].kwargs
+    assert tuple(attribute for attribute, _value, _failure in first["attributes"]) == _JOB_AND_HANDLES
+    assert not first["flags"] & process_mod._CREATE_SUSPENDED
+    assert create.call_count == (2 if retries else 1)
+    assert create_job.call_count == (2 if retries else 1)
+    assert raised.value.strerror == (
+        "Unable to create the Windows subprocess even without the Job Object attribute."
+        if retries
+        else "Unable to create the Windows subprocess."
+    )
+    reported_error = raised.value.winerror if sys.platform == "win32" else raised.value.errno
+    assert reported_error == (retry_error if retries else error)
+    if retries:
+        second = create.call_args_list[1].kwargs
+        assert second["flags"] == first["flags"] | process_mod._CREATE_SUSPENDED
+        assert second["attributes"] == (first["attributes"][1],)
+        assert [handle for handle in closed if handle is not None] == [101, 102, 11, 12, 21, 22, 31, 32]
+    else:
+        assert [handle for handle in closed if handle is not None] == [101, 11, 12, 21, 22, 31, 32]
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows Job Objects only")
+# ctypes reports CreateProcessW's last error signed, so the NTSTATUS case is negative.
+@pytest.mark.parametrize("error", [5, -1073283067], ids=["win32", "ntstatus"])
 async def test_windows_child_refused_the_job_attribute_runs_only_once_its_job_holds_it(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path, monkeypatch: pytest.MonkeyPatch, error: int
 ) -> None:
     import ctypes
 
@@ -586,11 +646,11 @@ async def test_windows_child_refused_the_job_attribute_runs_only_once_its_job_ho
         suspend_counts.append(real_resume(thread))
         return suspend_counts[-1]
 
-    # Windows answers ERROR_ACCESS_DENIED for a packaged (MSIX) executable, such as PowerShell from the Store.
+    # Denies the job attribute as `error`, as a packaged (MSIX) executable such as Store PowerShell may be refused.
     monkeypatch.setattr(
         process_mod,
         "_windows_create_process",
-        _refuse_the_job_attribute(attempts, error=process_mod._ERROR_ACCESS_DENIED, refused_jobs=refused_jobs),
+        _refuse_the_job_attribute(attempts, error=error, refused_jobs=refused_jobs),
     )
     monkeypatch.setattr(process_mod, "_close_windows_handle", close)
     monkeypatch.setattr(spawn_api.kernel32, "AssignProcessToJobObject", assign)

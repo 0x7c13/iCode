@@ -202,6 +202,7 @@ def _windows_console_encoding() -> str | None:
 _CREATE_NEW_CONSOLE = 0x00000010
 _CREATE_SUSPENDED = 0x00000004
 _ERROR_ACCESS_DENIED = 5
+_NTSTATUS_WIN32_ACCESS_DENIED = 0xC0070005
 _RESUME_THREAD_FAILED = 0xFFFFFFFF
 _PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D
 _PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
@@ -839,7 +840,11 @@ async def _spawn_windows_managed_stdio_process(
             process_info=process_info,
         )
         error = create(flags=creation_flags, attributes=(job_attribute, handle_attribute))
-        suspended = error == _ERROR_ACCESS_DENIED
+        # The denial can also come as NTSTATUS_FROM_WIN32(ERROR_ACCESS_DENIED), which ctypes reports signed.
+        suspended = error is not None and (error & 0xFFFFFFFF) in (
+            _ERROR_ACCESS_DENIED,
+            _NTSTATUS_WIN32_ACCESS_DENIED,
+        )
         if suspended:
             # Windows refuses the job attribute for a packaged (MSIX) executable, such as PowerShell
             # installed from the Store: that child is created suspended and runs once a job holds it.
@@ -849,7 +854,9 @@ async def _spawn_windows_managed_stdio_process(
             _close_windows_handle(refused_job)
             error = create(flags=creation_flags | _CREATE_SUSPENDED, attributes=(handle_attribute,))
         if error is not None:
-            raise OSError(error, "Unable to create the Windows subprocess.", None, error)
+            # Says when the fallback ran too, so a report shows whether the job attribute was all it refused.
+            detail = " even without the Job Object attribute" if suspended else ""
+            raise OSError(error, f"Unable to create the Windows subprocess{detail}.", None, error)
         process_handle = int(process_info.hProcess)
         thread_handle = int(process_info.hThread)
         in_job = not suspended

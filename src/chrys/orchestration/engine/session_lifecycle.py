@@ -151,7 +151,7 @@ _FORK_FAILED = msg(
 
 _CONSTRUCTION_TRAJECTORY_ACTIVATION_FAILED = msg(
     "construction.trajectory_activation_failed",
-    fallback="Trajectory recording could not start and has been disabled for this session.",
+    fallback="Detailed trajectory recording is off for this session; your task can continue.",
 )
 
 
@@ -554,7 +554,7 @@ class SessionLifecycle:
         trajectory_session_id = self._session.session_id
         trajectory_warning_tasks: set[asyncio.Task[None]] = set()
 
-        def _report_trajectory_activation_failure(_reason: str) -> None:
+        def _report_trajectory_activation_failure(reason: str) -> None:
             def _publish_warning() -> None:
                 task = event_loop.create_task(
                     self._bus.publish(
@@ -563,6 +563,7 @@ class SessionLifecycle:
                             message="Trajectory recording could not start and has been disabled for this session.",
                             display_message=_CONSTRUCTION_TRAJECTORY_ACTIVATION_FAILED.bind(),
                             session_id=trajectory_session_id,
+                            reason=reason,
                         )
                     )
                 )
