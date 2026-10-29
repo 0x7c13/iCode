@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 from textual.errors import NoWidget
-from textual.events import Click, MouseDown, MouseUp
+from textual.events import Click, MouseDown, MouseMove, MouseUp
 from textual.geometry import Offset, Region
 from textual.pilot import Pilot
 from textual.selection import SELECT_ALL, SelectEnd, Selection, SelectStart, SelectState
@@ -325,6 +325,29 @@ async def test_forward_event_discards_detached_markdown_selection_hit(monkeypatc
         assert app._mouse_down_widget is None
 
 
+async def _point_on_markdown(pilot: Pilot[None], markdown: VirtualizedMarkdown, *, top: str) -> tuple[int, int]:
+    """A point that hits ``markdown`` once the chat is scrolled to its end: mid-screen when its top
+    is ``"scrolled_off"`` the screen, else on its top row."""
+    screen = markdown.screen
+
+    def point() -> tuple[int, int] | None:
+        region = markdown.region
+        if (region.y < 0) != (top == "scrolled_off"):
+            return None
+        x, y = region.x + 1, screen.size.height // 2 if top == "scrolled_off" else region.y
+        try:
+            widget, _region = screen.get_widget_at(x, y)
+        except NoWidget:
+            return None
+        return (x, y) if widget is markdown else None
+
+    screen.query_one(ChatPanel).scroll_end(animate=False)
+    await wait_for(point, pilot=pilot, description=f"the markdown's top is {top}")
+    found = point()
+    assert found is not None
+    return found
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("top", ["scrolled_off", "on_screen"])
 async def test_press_on_markdown_removed_since_the_last_layout_is_discarded(top: str) -> None:
@@ -343,23 +366,7 @@ async def test_press_on_markdown_removed_since_the_last_layout_is_discarded(top:
         await _maximize_chat_panel_for_selection_test(app, pilot)
         markdown = panel.query_one(VirtualizedMarkdown)
         screen = app.main_screen
-
-        def press_point() -> tuple[int, int] | None:
-            region = markdown.region
-            if (region.y < 0) != (top == "scrolled_off"):
-                return None
-            x, y = region.x + 1, max(region.y, screen.size.height // 2) if top == "scrolled_off" else region.y
-            try:
-                widget, _region = screen.get_widget_at(x, y)
-            except NoWidget:
-                return None
-            return (x, y) if widget is markdown else None
-
-        panel.scroll_end(animate=False)
-        await wait_for(press_point, pilot=pilot, description=f"the markdown's top is {top}")
-        point = press_point()
-        assert point is not None
-        x, y = point
+        x, y = await _point_on_markdown(pilot, markdown, top=top)
         focused = screen.focused
         assert screen.selections == {}
         assert not screen._selecting
@@ -389,6 +396,99 @@ async def test_press_on_markdown_removed_since_the_last_layout_is_discarded(top:
         assert screen._mouse_down_offset is None
         assert screen._selecting is False
         assert screen.focused is focused
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("top", ["scrolled_off", "on_screen"])
+async def test_right_click_over_markdown_removed_since_the_last_layout_still_copies(
+    monkeypatch: pytest.MonkeyPatch, top: str
+) -> None:
+    """A right-click copies the selection even over a widget removed since the last layout."""
+    app = _MainScreenApp()
+    async with app.run_test() as pilot:
+        copied: list[str] = []
+        monkeypatch.setattr("chrys.app.tui.clipboard.clipboard_copy", copied.append)
+        panel = app.main_screen.query_one(ChatPanel)
+        text = "keep this"
+        await panel.add_user_message(text)
+        body = await _rendered_user_body(pilot, app.main_screen.query_one(UserMessage))
+        paragraphs = 40 if top == "scrolled_off" else 1
+        await panel.add_agent_message("\n\n".join(f"line {n}" for n in range(paragraphs)))
+        await _maximize_chat_panel_for_selection_test(app, pilot)
+        markdown = panel.query_one(AgentMessage).query_one(VirtualizedMarkdown)
+        screen = app.main_screen
+        x, y = await _point_on_markdown(pilot, markdown, top=top)
+        screen.selections = {body: Selection(Offset(0, 0), Offset(len(text), 0))}
+
+        with app.batch_update():
+            await markdown.remove()
+            stale, _region = screen.get_widget_at(x, y)
+            assert (stale, markdown.parent) == (markdown, None)
+            screen._forward_event(
+                MouseDown(
+                    markdown,
+                    x=x,
+                    y=y,
+                    delta_x=0,
+                    delta_y=0,
+                    button=3,
+                    shift=False,
+                    meta=False,
+                    ctrl=False,
+                    screen_x=x,
+                    screen_y=y,
+                )
+            )
+
+        assert copied == [text]
+        assert screen.selections == {}
+        assert screen._mouse_down_offset is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dragging", [False, True], ids=["finished", "dragging"])
+async def test_move_over_markdown_removed_since_the_last_layout_ends_only_a_drag(dragging: bool) -> None:
+    """A move over a widget removed since the last layout ends a drag, and leaves a finished
+    selection alone: only a drag extends a selection to the widget under the pointer."""
+    app = _MainScreenApp()
+    async with app.run_test() as pilot:
+        panel = app.main_screen.query_one(ChatPanel)
+        text = "keep this"
+        await panel.add_user_message(text)
+        body = await _rendered_user_body(pilot, app.main_screen.query_one(UserMessage))
+        await panel.add_agent_message("\n\n".join(f"line {n}" for n in range(40)))
+        await _maximize_chat_panel_for_selection_test(app, pilot)
+        markdown = panel.query_one(AgentMessage).query_one(VirtualizedMarkdown)
+        screen = app.main_screen
+        x, y = await _point_on_markdown(pilot, markdown, top="scrolled_off")
+        selection = Selection(Offset(0, 0), Offset(len(text), 0))
+        screen.selections = {body: selection}
+        screen._selecting = dragging
+
+        with app.batch_update():
+            await markdown.remove()
+            # Where its top was scrolled off, the hit gives an offset in the removed widget.
+            hit, offset = screen.get_widget_and_offset_at(x, y)
+            assert (hit, markdown.parent) == (markdown, None)
+            assert offset is not None
+            screen._forward_event(
+                MouseMove(
+                    markdown,
+                    x=x,
+                    y=y,
+                    delta_x=0,
+                    delta_y=0,
+                    button=0,
+                    shift=False,
+                    meta=False,
+                    ctrl=False,
+                    screen_x=x,
+                    screen_y=y,
+                )
+            )
+
+        assert screen.selections == ({} if dragging else {body: selection})
+        assert screen._selecting is False
 
 
 @pytest.mark.asyncio

@@ -51,7 +51,8 @@ def discard_detached_selection_hit(screen: Screen, event: Event) -> bool:
             widget, _region = screen.get_widget_at(event.x, event.y)
         except NoWidget:
             return False
-    elif screen.selections or screen._selecting:
+    elif screen._selecting:
+        # A move reaches the widget under it only while a drag extends a selection.
         widget, _offset = screen.get_widget_and_offset_at(event.x, event.y)
         if widget is None:
             return False
@@ -110,8 +111,7 @@ class RightClickScreenCopyMixin(_RightClickScreenCopyBase):
     def _forward_event(self, event: Event) -> None:
         """Intercept right-click copy before Textual mutates selection state."""
         screen = cast(Screen, self)
-        if discard_detached_selection_hit(screen, event):
-            return
+        # Ahead of the detached-widget check, so a right-click over a widget just removed still copies.
         if (
             isinstance(event, MouseDown)
             and not event.is_forwarded
@@ -119,6 +119,8 @@ class RightClickScreenCopyMixin(_RightClickScreenCopyBase):
             and not self._right_click_targets_text_area(event)
             and self._handle_right_click_copy(event)
         ):
+            return
+        if discard_detached_selection_hit(screen, event):
             return
         super()._forward_event(event)
 
