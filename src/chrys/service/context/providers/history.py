@@ -70,6 +70,8 @@ class CompressedBlock:
 _TURN_ID_KEY = "_turn_id"
 TURN_INDEX_KEY = "_turn"
 _TURN_KEY = TURN_INDEX_KEY
+TURN_STARTED_AT_KEY = "_turn_started_at"
+"""On a turn marker: when the pass it closes began, as the user sent its message or pressed Continue or Retry."""
 _BLOCK_ID_KEY = "_block_id"
 PRE_OUTPUT_HISTORY_LEN_STATE_KEY = "_chrys_pre_output_history_len"
 
@@ -504,12 +506,13 @@ class CompressibleHistoryProvider(HistoryProvider):
     # ---- Marker operations (static, operate on session state) ----
 
     @staticmethod
-    def insert_marker(state: dict[str, Any], turn_index: int) -> str:
+    def insert_marker(state: dict[str, Any], turn_index: int, *, started_at: str | None = None) -> str:
         """Insert a turn marker at the end of message history.
 
         Args:
             state: The provider-scoped state dict (``session.state[source_id]``).
             turn_index: Sequential turn number.
+            started_at: When the pass the marker closes began, if known.
 
         Returns:
             The ``marker_id`` for this marker.
@@ -519,6 +522,8 @@ class CompressibleHistoryProvider(HistoryProvider):
         msg.additional_properties[HistoryMarkerKind.KEY] = HistoryMarkerKind.TURN
         msg.additional_properties[_TURN_ID_KEY] = marker_id
         msg.additional_properties[_TURN_KEY] = turn_index
+        if started_at is not None:
+            msg.additional_properties[TURN_STARTED_AT_KEY] = started_at
         ensure_analytics_item_id(msg.additional_properties)
 
         messages: list[Message] = state.setdefault("messages", [])

@@ -240,7 +240,7 @@ class _History:
     def remove_all_status_markers(self) -> None:
         return None
 
-    def insert_turn_marker(self) -> None:
+    def insert_turn_marker(self, started_at: object = None) -> None:
         return None
 
     def remove_trailing_markers(self) -> None:

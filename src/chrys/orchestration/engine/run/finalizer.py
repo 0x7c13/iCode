@@ -303,7 +303,7 @@ class TurnFinalizer:
             self._history.remove_all_status_markers()
             self._fsm.try_transition(Trigger.RUN_COMPLETED)
 
-        self._history.insert_turn_marker()
+        self._history.insert_turn_marker(self._turn_state.pass_started_at)
         if self._session.mutation_tracker is not None:
             self._session.mutation_tracker.cleanup_unused_snapshots()
 

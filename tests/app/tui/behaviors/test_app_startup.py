@@ -37,7 +37,7 @@ async def test_main_screen_paints_before_engine_construction(tmp_path: Path, sho
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.state.store import JsonFileStateStore
     from tests.support.tui_app_harness import ShutdownOnlyEngine
-    from tests.support.waiting import wait_for
+    from tests.support.waiting import DEFAULT_WAIT_TIMEOUT, MAIN_SCREEN_BUILD_TIMEOUT, wait_for
 
     started = asyncio.Event()
     frames: list[object] = []
@@ -76,6 +76,9 @@ async def test_main_screen_paints_before_engine_construction(tmp_path: Path, sho
         await wait_for(
             lambda: started.is_set() or task.done(),
             description="agent construction after the main screen paints",
+            # The loading shell builds the main screen inside this wait; without it, that build ran before the app
+            # was ready.
+            timeout=MAIN_SCREEN_BUILD_TIMEOUT if show_startup_loading else DEFAULT_WAIT_TIMEOUT,
         )
         if task.done():
             await task

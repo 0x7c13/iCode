@@ -147,6 +147,8 @@ iCode should reply with a greeting. If the model service returns an error, check
 
 While an agent runs, the status bar above the input shows elapsed time and tool calls. Long runs include hours and days, for example `1d 4h 20m 50s`. Tool cards, background tasks, CLI progress, and the F12 timing dashboard also support days; compact displays keep only the largest time units.
 
+Once the agent answers, the answer's header shows how long the whole turn took, for example `Code Agent - 2:04 AM (6m 5s)`: from when you sent your message, or clicked **Continue** or **Retry**, to the answer, including the time the agent waited for your approval or reply. A message you send while the agent works doesn't restart it. It shows the same when you reopen the session.
+
 ## 4. Use agents
 
 ### Select an agent
@@ -167,7 +169,7 @@ The following examples assume the current project is a to-do app and illustrate 
 Analyze the task list implementation and propose a plan for adding a "Clear completed tasks" feature. Explain which files need to change and the implementation steps.
 ```
 
-Q&A Agent may search for files, read their contents, or run read-only commands. Tool calls appear as cards, grouped under one header while the agent works through them. While they run, the header shows what the agent is doing; once they are done, it says what the calls did, by kind, for example `▸ Read 3 files · searched for 2 patterns · ran 1 command`, and ends with how many failed or were interrupted, if any, which stay in view when the window is too narrow for the whole line. While the agent waits with `sleep`, the header shows why and counts down the time left, for example `Sleeping: Waiting for CI · 29s left`; to stop waiting, open the cards and click **Skip**. Once done, it says how long the agent slept, for example `slept 23s`. Click the header to show or hide the cards. After completing its analysis, the agent presents an implementation plan.
+Q&A Agent may search for files, read their contents, or run read-only commands. Tool calls appear as cards, grouped under one header while the agent works through them. While they run, the header shows what the agent is doing; once they are done, it says what the calls did, by kind, for example `▸ Read 3 files · searched for 2 patterns · ran 1 command`, and ends with how many failed or were interrupted, if any, which stay in view when the window is too narrow for the whole line. When the agent made a single call there and it succeeded, the header says what that call did instead, for example `▸ Read src/app.py` or `▸ Ran zsh command: Run the tests`; a path inside the folder you work in is shown relative to it. While the agent waits with `sleep`, the header shows why and counts down the time left, for example `Sleeping: Waiting for CI · 29s left`; to stop waiting, open the cards and click **Skip**. Once done, it says how long the agent slept, for example `slept 23s`. Click the header to show or hide the cards. After completing its analysis, the agent presents an implementation plan.
 
 ### Use Code Agent
 

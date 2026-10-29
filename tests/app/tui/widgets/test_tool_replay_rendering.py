@@ -103,7 +103,7 @@ async def test_replay_history_defers_tool_renderer_creation_until_expand(monkeyp
         assert group._tool_records["tool1#0"].duration_known is True
         expected_tool_timestamp = format_message_created_at("2026-08-19T01:02:03+00:00")
         assert group._tool_records["tool1#0"].timestamp == expected_tool_timestamp
-        assert group.query_one(ToolGroupTitle).render().plain == "▸ Made 1 other call"
+        assert group.query_one(ToolGroupTitle).render().plain == "▸ Called plain_tool"
 
         group.collapsed = False
         await wait_for(lambda: created, pilot=pilot, description="created")

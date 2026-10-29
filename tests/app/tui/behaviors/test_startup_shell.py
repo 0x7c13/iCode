@@ -20,7 +20,7 @@ from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.agents.schema import AgentProfile
 from chrys.service.state.store import JsonFileStateStore
 from tests.support.tui_app_harness import EmptyAgentRegistry, ShutdownOnlyEngine
-from tests.support.waiting import wait_for
+from tests.support.waiting import DEFAULT_WAIT_TIMEOUT, MAIN_SCREEN_BUILD_TIMEOUT, wait_for
 
 
 class StartupApp(ChrysApp):
@@ -44,23 +44,23 @@ def _startup_app(
     )
 
 
-def _held_startup() -> tuple[type[StartupApp], asyncio.Event, asyncio.Event]:
-    """An app whose loading shell stays up until the returned release event is set."""
+def _held_startup() -> tuple[type[StartupApp], asyncio.Event]:
+    """An app whose loading shell stays up until the app shuts down, and the event set once the startup holds it."""
     preparing = asyncio.Event()
-    release = asyncio.Event()
 
     class HeldStartup(StartupApp):
         async def _prepare_main_screen(self):
             preparing.set()
-            await release.wait()
-            return await super()._prepare_main_screen()
+            # Held until the app's shutdown cancels the startup.
+            await asyncio.Event().wait()
+            raise AssertionError("nothing releases the startup")
 
-    return HeldStartup, preparing, release
+    return HeldStartup, preparing
 
 
 @pytest.mark.parametrize(("width", "height"), [(100, 30), (20, 12)], ids=["wide", "narrower-than-the-logo"])
 async def test_loading_shell_centers_the_logo_over_its_dots(tmp_path: Path, width: int, height: int) -> None:
-    held, preparing, release = _held_startup()
+    held, preparing = _held_startup()
     app = _startup_app(tmp_path, held)
     async with app.run_test(size=(width, height)):
         task = app._startup_task
@@ -68,12 +68,14 @@ async def test_loading_shell_centers_the_logo_over_its_dots(tmp_path: Path, widt
         await wait_for(lambda: preparing.is_set() or task.done(), description="the loading shell held on screen")
         if task.done():
             await task
+        assert preparing.is_set()
         rows = [strip.text.rstrip() for strip in app.screen._compositor.render_strips()]
         logo_color = app.screen.query_one("#startup-logo").styles.color
         dots_color = app.screen.query_one("#startup-loading").styles.color
-        release.set()
-        await wait_for(task.done, description="the main screen after the loading shell")
-        await task
+    # Leaving run_test while the startup is held cancels and drains it, as an exit during loading does, so no main
+    # screen is built: the shell is all this test reads, and a loaded runner can stretch that CPU-bound build past a
+    # default wait.
+    assert task.cancelled()
 
     logo = TUI_LOGO.strip("\n").splitlines()
     left = max(0, (width - max(cell_len(line) for line in logo)) // 2)
@@ -94,7 +96,9 @@ async def test_loading_shell_finishes_without_an_available_profile(tmp_path: Pat
     async with app.run_test():
         task = app._startup_task
         assert task is not None
-        await wait_for(task.done, description="loading shell without an agent profile")
+        await wait_for(
+            task.done, description="loading shell without an agent profile", timeout=MAIN_SCREEN_BUILD_TIMEOUT
+        )
         await task
         assert app.screen is app._main_screen
         indicator = app._startup_loading_indicator
@@ -105,7 +109,7 @@ async def test_loading_shell_finishes_without_an_available_profile(tmp_path: Pat
 
 
 async def test_exit_during_loading_drains_the_startup_task(tmp_path: Path) -> None:
-    held, preparing, _release = _held_startup()
+    held, preparing = _held_startup()
     app = _startup_app(tmp_path, held)
     async with app.run_test():
         task = app._startup_task
@@ -162,7 +166,12 @@ async def test_exit_requested_at_startup_refresh_stops_further_startup(tmp_path:
     async with app.run_test():
         task = app._startup_task
         assert task is not None
-        await wait_for(lambda: exit_requested.is_set() or task.done(), description="exit requested at startup paint")
+        await wait_for(
+            lambda: exit_requested.is_set() or task.done(),
+            description="exit requested at startup paint",
+            # The main-screen case asks only once the screen is built.
+            timeout=MAIN_SCREEN_BUILD_TIMEOUT if exit_at_refresh == 2 else DEFAULT_WAIT_TIMEOUT,
+        )
         if task.done():
             await task
         assert exit_requested.is_set()

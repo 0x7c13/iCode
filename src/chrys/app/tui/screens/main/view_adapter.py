@@ -829,11 +829,13 @@ class MainScreenViewAdapter:
         *,
         structured_output_completed: bool = False,
         created_at: datetime | None = None,
+        turn_started_at: datetime | None = None,
     ) -> None:
         await self._screen.query_one(ChatPanel).add_agent_message(
             text,
             structured_output_completed=structured_output_completed,
             created_at=created_at,
+            turn_started_at=turn_started_at,
         )
 
     async def add_user_injection(self, text: str, *, created_at: datetime) -> None:

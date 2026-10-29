@@ -1108,6 +1108,8 @@ class BackendEventHandler:
                 event.text,
                 structured_output_completed=event.structured_output_completed,
                 created_at=event.timestamp,
+                # Sent, Continue or Retry: the backend keeps this instant on the turn, for replay to time it alike.
+                turn_started_at=self._state.run.started_at,
             )
         finally:
             if self._state.run.generation == terminal_generation and s.agent_running:

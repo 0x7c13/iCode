@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Shared base class for dismissable modal dialogs."""
+"""Shared base class for dismissable modal dialogs, and whether a modal screen's widgets are live."""
 
 from __future__ import annotations
 
@@ -8,13 +8,23 @@ from typing import Any, ClassVar, TypeVar
 
 from textual import events
 from textual.await_complete import AwaitComplete
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 
 from chrys.app.tui.behaviors.click_outside_dismiss import ClickOutsideDismissMixin
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, InsertClipboardScreenMixin
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 
 DialogResultT = TypeVar("DialogResultT")
+
+
+def composed_live(screen: Screen) -> bool:
+    """Whether *screen* may query and update the widgets it composed.
+
+    Not once its removal begins, the app's shutdown included: that prunes them before the screen unmounts. Nor when
+    the screen is pushed as the app begins to exit, or in its last running turn to mount once it stopped: none of them
+    mount then. Owners may report to it, and it may mount, at any of those moments; nothing renders it then.
+    """
+    return screen.is_attached and screen.app.is_running and not screen._pruning and not screen._closing
 
 
 class BaseDialog(
@@ -52,13 +62,8 @@ class BaseDialog(
 
     @property
     def _composed_live(self) -> bool:
-        """Whether the widgets it composed are there to query and update.
-
-        Removal prunes them before the dialog unmounts, the app's shutdown included. None of them mount when the
-        dialog is pushed as the app begins to exit, or in its last running turn to mount once it stopped. Owners may
-        report to it, and it may mount, at any of those moments; nothing renders it then.
-        """
-        return self.is_attached and self.app.is_running and not self._pruning and not self._closing
+        """See :func:`composed_live`."""
+        return composed_live(self)
 
     def dismiss_when_topmost(self, result: object | None = None) -> None:
         """Retain completion while covered or mounting; never pop a screen belonging to another operation."""

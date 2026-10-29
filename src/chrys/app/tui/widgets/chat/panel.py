@@ -167,6 +167,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             finalize_agent_message=self._settle_answer_before_tools,
             tool_groups_expanded=tool_groups_expanded,
             tool_widget_configurator=self._configure_tool_widget,
+            workspace_cwd=self._current_workspace_cwd,
         )
         self._live_renderer = LiveTranscriptRenderer(
             self,
@@ -187,6 +188,7 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
             default_profile=lambda: self._profile_name,
             localization=localization,
             tool_widget_configurator=self._configure_tool_widget,
+            workspace_cwd=self._current_workspace_cwd,
             show_reasoning=thinking_expanded is not None,
             fold_passed_text=True,
         )
@@ -260,6 +262,12 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
 
     def watch_workspace_cwd(self, cwd: str) -> None:
         self._chrome.set_workspace_cwd(cwd)
+        # A group's one call names its path relative to the folder: once the folder changes, it names it anew.
+        for group in self.query(ToolGroup):
+            group.refresh_title()
+
+    def _current_workspace_cwd(self) -> str:
+        return self.workspace_cwd
 
     def watch_workspace_branch(self, branch: str) -> None:
         self._chrome.set_workspace_branch(branch)
@@ -1314,12 +1322,14 @@ class ChatPanel(VerticalScroll, ChatTranscriptPanelMarker, can_focus=True):
         *,
         structured_output_completed: bool = False,
         created_at: Any = None,
+        turn_started_at: Any = None,
     ) -> None:
-        """Complete the turn's answer, whose text already streamed as deltas."""
+        """Complete the turn's answer, whose text already streamed as deltas; it took from *turn_started_at*."""
         await self._live_renderer.add_agent_message(
             text,
             structured_output_completed=structured_output_completed,
             created_at=created_at,
+            turn_started_at=turn_started_at,
         )
         self._sync_waiting_row()
         if self._fold_finished_turns():

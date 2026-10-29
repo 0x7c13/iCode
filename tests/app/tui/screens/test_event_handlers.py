@@ -1019,6 +1019,50 @@ def test_final_agent_message_keeps_gate_and_prestamps_terminal_absorb(
     assert input_events[0].time == 20.0
 
 
+def test_final_agent_message_tells_when_its_turn_began() -> None:
+    """The answer is timed from when the user sent the message or pressed Continue or Retry, as the backend keeps it."""
+    began = datetime(2026, 8, 19, 1, 58, tzinfo=UTC)
+    finished = began + timedelta(minutes=6)
+    rendered: list[dict[str, object]] = []
+
+    class _FakeStatusBar:
+        def flash_completed(self) -> None:
+            pass
+
+    class _FakeChatPanel:
+        async def add_agent_message(
+            self,
+            text: str,
+            *,
+            structured_output_completed: bool = False,
+            created_at: datetime | None = None,
+            turn_started_at: datetime | None = None,
+        ) -> None:
+            rendered.append({"text": text, "created_at": created_at, "turn_started_at": turn_started_at})
+
+    status = _FakeStatusBar()
+    panel = _FakeChatPanel()
+    screen = SimpleNamespace(
+        _state=MainScreenState(run=RunState(agent_running=True, started_at=began)),
+        _gc_messages=[],
+        _session_title=fake_session_title(),
+        _set_agent_running=lambda _value: None,
+        query_one=lambda cls: status if cls.__name__ == "StatusBar" else panel,
+        _debug=lambda *_args: None,
+    )
+    handler = make_backend_handler(screen)
+
+    asyncio.run(
+        handler.on_agent_message(
+            InvocationMessage(
+                text="done", is_final=True, origin=InvocationOrigin("turn", "", "turn-test", None), timestamp=finished
+            )
+        )
+    )
+
+    assert rendered == [{"text": "done", "created_at": finished, "turn_started_at": began}]
+
+
 def test_final_agent_message_render_failure_releases_turn_without_absorb() -> None:
     class _FakeStatusBar:
         def flash_completed(self) -> None:
