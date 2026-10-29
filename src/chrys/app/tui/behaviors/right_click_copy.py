@@ -52,7 +52,7 @@ def discard_detached_selection_hit(screen: Screen, event: Event) -> bool:
         except NoWidget:
             return False
     elif screen._selecting:
-        # A move reaches the widget under it only while a drag extends a selection.
+        # Only a drag extending a selection needs the widget under a move to have a parent.
         widget, _offset = screen.get_widget_and_offset_at(event.x, event.y)
         if widget is None:
             return False

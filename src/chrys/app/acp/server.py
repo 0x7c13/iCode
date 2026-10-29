@@ -735,8 +735,10 @@ class ChrysAcpServer:
                         # turn's own spend, and only this snapshot says where it began.
                         baseline_usage = self._cumulative_usage(session_id)
                         events = start(session)
-                        # Only after *start* admitted the turn: a refused retry runs
-                        # nothing, and its error must not report a spend.
+                        # Only after *start* returned: a retry it refuses runs nothing,
+                        # and its error must not report a spend. A prompt checks its
+                        # content and session once its stream is iterated, so an error
+                        # from those checks comes later, with nothing spent.
                         execution_started = True
                         try:
                             async for event in events:
