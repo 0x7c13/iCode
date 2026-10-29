@@ -38,16 +38,26 @@ def cancel_textual_mouse_chain(screen: Screen) -> None:
 
 
 def discard_detached_selection_hit(screen: Screen, event: Event) -> bool:
-    """Consume mouse selection events whose content widget was just detached."""
+    """Consume mouse events that would reach a widget removed since the last layout.
+
+    Until the next layout the screen still hits such a widget. Textual focuses what a press hits,
+    and requires the widget it starts or extends a selection on to have a parent.
+    """
     if event.is_forwarded or not isinstance(event, (MouseDown, MouseMove)):
         return False
-    if not screen.selections and not screen._selecting:
+    if isinstance(event, MouseDown):
+        # With or without a selection on the screen, and also where no offset in the widget comes back.
+        try:
+            widget, _region = screen.get_widget_at(event.x, event.y)
+        except NoWidget:
+            return False
+    elif screen.selections or screen._selecting:
+        widget, _offset = screen.get_widget_and_offset_at(event.x, event.y)
+        if widget is None:
+            return False
+    else:
         return False
-
-    select_widget, _select_offset = screen.get_widget_and_offset_at(event.x, event.y)
-    if select_widget is None:
-        return False
-    if select_widget.is_attached:
+    if widget.is_attached:
         return False
 
     screen.clear_selection()
