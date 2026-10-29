@@ -54,7 +54,7 @@ Shell commands that the agent moved to the background keep running across turns,
 
 iCode sends agent replies and tool call status to the client. A reply reaches the client as the model writes it. When the model service returns the model's reasoning as readable text, iCode sends it as the agent's thoughts, also when it replays a restored session; reasoning of sub-agents is not sent. If a reply fails partway, the client keeps the part it already showed, and the error follows. Retrying without adding a message writes the reply again: when it starts, iCode tells the client to remove the text it writes again, and tool calls stay. When the client cancels a task, iCode interrupts the current task.
 
-If the current model supports image input, a prompt can include images in PNG, JPEG, GIF, or WebP format. A prompt with an image in another format is rejected, and the client receives an error.
+If the current model supports image input, a prompt can include images in PNG, JPEG, GIF, or WebP format. A prompt with an image in another format is rejected, and the client receives an error. When the client restores a session, the images you sent with your prompts are shown again too.
 
 If the client supports session management, a closed session can still be restored in the same working directory. Deleting a session removes the session record saved by iCode, and the session can no longer be restored in iCode.
 
