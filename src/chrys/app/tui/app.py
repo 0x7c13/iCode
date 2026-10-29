@@ -156,10 +156,12 @@ _TERMINAL_MODE_RESET = (
     "\x1b[=0;1u"  # Hard-reset Kitty keyboard flags
 )
 if TYPE_CHECKING:
+    from rich.console import RenderableType
     from textual.app import ComposeResult
     from textual.timer import Timer
 
     from chrys.app.features.session_title import SessionTitleUpdater
+    from chrys.app.tui.graphics.manager import TerminalGraphics
     from chrys.app.tui.screens.main import MainScreen
     from chrys.app.tui.themes.preview import ThemePreview
     from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
@@ -351,6 +353,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         self._update_check = update_check
         self._update_check_task: asyncio.Task[None] | None = None
         self._left_behind_task: asyncio.Task[None] | None = None
+        self._terminal_graphics: TerminalGraphics | None = None
         self._main_screen: MainScreen | None = None
         self._gc_freeze_watchdog: Timer | None = None
         self._gc_pointer_buttons_down: set[int] = set()
@@ -565,6 +568,15 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
             return
         event.prevent_default()
         self.app_focus = False
+
+    def _display(self, screen: Screen, renderable: RenderableType | None) -> None:
+        """Have the Sixel overlay draw images over a frame, inside Textual's own write of it.
+
+        Appending to the frame keeps Textual's synchronized update, cursor restore and Windows
+        chunking around the images; a frame Textual skips or fails to render draws none.
+        """
+        graphics = self._terminal_graphics
+        super()._display(screen, renderable if graphics is None else graphics.frame(renderable))
 
     def _load_screen_css(self, screen: Screen) -> None:
         """Load native secondary-screen CSS without restyling the underlay.
@@ -1020,6 +1032,10 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
 
     async def _prepare_main_screen(self) -> tuple[MainScreen, AgentProfile | None]:
         """Mount the main screen and prepare its subscriptions and loading state."""
+        # Here, not at mount: the main screen's import has brought in the image code by now.
+        from chrys.app.tui.graphics.manager import start_terminal_graphics
+
+        self._terminal_graphics = start_terminal_graphics(self, enabled=self._settings.chat_image_graphics)
         screen = self._build_main_screen()
         await self.push_screen(screen)
         self._main_screen = screen
@@ -1227,12 +1243,24 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
                 markup=False,
             )
 
+    def on_exit_app(self) -> None:
+        """Free the terminal's images while the app's screen is still the terminal's.
+
+        Textual leaves the alternate screen before Unmount, and kitty and Ghostty keep each screen's
+        images apart: deleted any later, they would stay in the terminal's memory.
+        """
+        if self._terminal_graphics is not None:
+            self._terminal_graphics.stop()
+
     async def on_unmount(self) -> None:
         """Shutdown engine on exit."""
         # While the terminal can still be written (Unmount precedes the
         # driver close), settle the OSC 7501 record on idle and stop
         # reporting; the engine shutdown below then cannot overwrite it.
         await self._program_status_reporter.close()
+        if self._terminal_graphics is not None:
+            # Its images were freed when the app exited or crashed; this also ends the payload job.
+            await self._terminal_graphics.close()
         self._gc_freeze.close()
         if self._gc_freeze_watchdog is not None:
             self._gc_freeze_watchdog.stop()
@@ -1276,6 +1304,10 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         # File logging must NEVER break the crash-handling path.
         with contextlib.suppress(Exception):
             self._write_crash_log(error)
+        if self._terminal_graphics is not None:
+            # The app ends without handling ExitApp: free the terminal's images as ``on_exit_app`` does.
+            with contextlib.suppress(Exception):
+                self._terminal_graphics.stop()
         super()._handle_exception(error)
 
     def _write_crash_log(self, error: Exception) -> None:

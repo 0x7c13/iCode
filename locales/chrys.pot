@@ -1336,6 +1336,12 @@ msgstr ""
 msgid "settings.ui.chat.fold_finished_turns.label"
 msgstr ""
 
+#. English: Full-color images
+#. chrys-meta={"fingerprint":"f7bdad3865459dc049b6b8babf8b6cfd87fb48b926019174798e5cfabd5cb35b","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.ui.chat.image_graphics.label"
+msgstr ""
+
 #. English: Expand thinking by default
 #. chrys-meta={"fingerprint":"3d187e34709e9b4d6156cc40d0b44cb6e74930750947e596a8c9d11dc9f5a349","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -10526,6 +10532,14 @@ msgstr ""
 #. chrys-meta={"fingerprint":"dd6f495b926ae2dd26c75f387f91bd697b778178dc885330561ea6187c6faa50","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.fold_finished_turns"
+msgstr ""
+
+#. English: Show images in full color in Ghostty, kitty and Windows Terminal
+#. 1.22 or later. When off, or in other terminals, images are drawn with
+#. colored blocks.
+#. chrys-meta={"fingerprint":"062357153370c6ef6b9430bb6f6a2a6e40e90a528be29f29921d132b1700c603","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.ui.chat.image_graphics"
 msgstr ""
 
 #. English: Show new thinking expanded while the model writes it. When off, it
