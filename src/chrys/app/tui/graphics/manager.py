@@ -42,8 +42,9 @@ from textual._compositor import ChopsUpdate, CompositorUpdate, LayoutUpdate
 from textual.geometry import Region
 
 from chrys.app.tui.graphics import kitty
-from chrys.app.tui.graphics.detect import GraphicsProtocol, detect_graphics_protocol, terminal_cell_pixels
+from chrys.app.tui.graphics.detect import GraphicsProtocol, choose_protocol
 from chrys.app.tui.graphics.payloads import kitty_png, sixel_rows
+from chrys.app.tui.graphics.probe import terminal_cell_pixels
 from chrys.app.tui.graphics.sixel import EncodingStopped
 from chrys.app.tui.terminal.title import app_terminal_title_writer, running_under_textual_web_driver
 
@@ -52,13 +53,14 @@ if TYPE_CHECKING:
     from textual.app import App
     from textual.screen import Screen
 
+    from chrys.app.tui.graphics.probe import TerminalReport
     from chrys.app.tui.widgets.chat.image_preview import ChatImagePreview, ImageBox
     from chrys.app.tui.widgets.chat.image_view import TerminalImages
 
 logger = logging.getLogger(__name__)
 
 KITTY_BUDGET_BYTES: Final = 192 * 1024 * 1024
-"""Decoded bytes kept in the terminal; Ghostty and kitty start evicting at 320 MB."""
+"""Decoded bytes kept in the terminal; Ghostty, kitty and iTerm2 start evicting at 320 MB."""
 SIXEL_BUDGET_CHARS: Final = 48 * 1024 * 1024
 """Encoded rows kept for images not on screen."""
 FRAME_BUDGET_CHARS: Final = 192 * 1024
@@ -95,17 +97,20 @@ def graphics_for(app: App) -> TerminalGraphics | None:
     return _registry.get(app)
 
 
-def start_terminal_graphics(app: App, *, enabled: bool) -> TerminalGraphics | None:
-    """Choose a protocol for ``app``'s terminal and install the graphics that draw it, if any."""
+def start_terminal_graphics(app: App, *, enabled: bool, report: TerminalReport | None) -> TerminalGraphics | None:
+    """Choose a protocol from what ``app``'s terminal answered at start, and install the graphics drawing it."""
     write = app_terminal_title_writer(app)
     if not enabled or write is None or app.is_headless or app.is_inline or running_under_textual_web_driver():
         return None
-    protocol = detect_graphics_protocol(os.environ, truecolor=app.console.color_system == "truecolor")
+    protocol = choose_protocol(report, os.environ, truecolor=app.console.color_system == "truecolor")
     if protocol is GraphicsProtocol.BLOCKS:
         return None
     if protocol is GraphicsProtocol.SIXEL and TEXTUAL_VERSION != SIXEL_TEXTUAL_VERSION:
         return None
-    graphics = TerminalGraphics(app, protocol, write)
+    # Placeholder images are sized by the cell: its pixels where the terminal sets them on the tty (not on
+    # Windows, nor over SSH clients that leave them 0), else the size it answered.
+    reported = None if report is None else report.cell_pixels
+    graphics = TerminalGraphics(app, protocol, write, cell_pixels=lambda: _tty_cell_pixels() or reported)
     logger.debug("Terminal images use %s", protocol.value)
     return graphics
 

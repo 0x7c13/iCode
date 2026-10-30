@@ -71,8 +71,9 @@ _HINT_UI_CHAT_FOLD_FINISHED_TURNS = msg(
 _HINT_UI_CHAT_IMAGE_GRAPHICS = msg(
     "tui.settings.hint.ui.chat.image_graphics",
     fallback=(
-        "Show images in full color in Ghostty, kitty and Windows Terminal 1.22 or later. When off, or in other "
-        "terminals, images are drawn with colored blocks."
+        "Show images in full color in Ghostty, kitty, iTerm2 3.7.5 or later and Windows Terminal 1.22 or later, "
+        "asking the terminal at startup which one it is. When off, or in other terminals, images are drawn with "
+        "colored blocks."
     ),
 )
 _HINT_APP_UPDATE_CHECK = msg(

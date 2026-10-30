@@ -38,6 +38,7 @@ from chrys.app.features.buddy.lifecycle import on_successful_turn as on_buddy_su
 from chrys.app.parsing import SanitizingArgumentParser
 from chrys.app.tui.behaviors.insert_clipboard import INSERT_CLIPBOARD_BINDINGS, copy_with_insert, paste_with_insert
 from chrys.app.tui.binding_display import QUIT_BINDING, localized_binding
+from chrys.app.tui.graphics.detect import ask_terminal
 from chrys.app.tui.i18n import LocaleController, render_str
 from chrys.app.tui.notifications import NotificationService, NotificationSettings
 from chrys.app.tui.support.gc_freeze import (
@@ -162,6 +163,7 @@ if TYPE_CHECKING:
 
     from chrys.app.features.session_title import SessionTitleUpdater
     from chrys.app.tui.graphics.manager import TerminalGraphics
+    from chrys.app.tui.graphics.probe import TerminalReport
     from chrys.app.tui.screens.main import MainScreen
     from chrys.app.tui.themes.preview import ThemePreview
     from chrys.app.tui.widgets.loading import ChrysLoadingIndicator
@@ -287,10 +289,13 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         gc_freeze_measure_counts: bool = False,
         update_check: UpdateCheck | None = None,
         show_startup_loading: bool = False,
+        terminal_report: TerminalReport | None = None,
     ) -> None:
         from chrys.service.state.store import JsonFileStateStore
 
         self._show_startup_loading = show_startup_loading
+        # What the terminal answered when asked before the app took its input; None when it was not asked.
+        self._terminal_report = terminal_report
         self._startup_loading_indicator: ChrysLoadingIndicator | None = None
         self._bus = event_bus
         self._engine = engine
@@ -1035,7 +1040,9 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         # Here, not at mount: the main screen's import has brought in the image code by now.
         from chrys.app.tui.graphics.manager import start_terminal_graphics
 
-        self._terminal_graphics = start_terminal_graphics(self, enabled=self._settings.chat_image_graphics)
+        self._terminal_graphics = start_terminal_graphics(
+            self, enabled=self._settings.chat_image_graphics, report=self._terminal_report
+        )
         screen = self._build_main_screen()
         await self.push_screen(screen)
         self._main_screen = screen
@@ -1471,6 +1478,8 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             record_hook_runs=True,
         )
 
+        # Last before the app runs: Textual would type the terminal's replies into the prompt as keys.
+        terminal_report = ask_terminal(os.environ, enabled=loaded.settings.chat_image_graphics)
         app = app_cls(
             bus,
             engine,
@@ -1486,6 +1495,7 @@ def main(app_cls: type[ChrysApp] = ChrysApp) -> None:
             session_title_updater=session_title_updater,
             update_check=for_this_copy(enabled=loaded.settings.update_check, served=running_under_textual_web_driver()),
             show_startup_loading=True,
+            terminal_report=terminal_report,
         )
         try:
             # On Windows, the ProactorEventLoop shutdown can raise KeyboardInterrupt

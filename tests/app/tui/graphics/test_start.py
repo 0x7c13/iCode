@@ -4,32 +4,38 @@
 
 from __future__ import annotations
 
-import os
+from typing import TYPE_CHECKING
 
 import pytest
 from rich.color import ColorSystem
 
-from chrys.app.tui.graphics import detect, manager
-from chrys.app.tui.graphics.detect import GraphicsProtocol, detect_graphics_protocol
-from tests.support.terminal_images import TerminalImagesApp
+from chrys.app.tui.graphics import manager, payloads
+from chrys.app.tui.graphics.detect import GraphicsProtocol
+from chrys.app.tui.graphics.probe import TerminalReport
+from chrys.app.tui.widgets.chat.image_view import TerminalImages
+from tests.support.terminal_images import TerminalImagesApp, image_previews
+from tests.support.tui_app_harness import make_chrys_app
+from tests.support.waiting import MAIN_SCREEN_BUILD_TIMEOUT, wait_for
 
-_GHOSTTY = {"TERM": "xterm-ghostty", "TERM_PROGRAM": "ghostty"}
-_WINDOWS_TERMINAL = {"WT_SESSION": "abc"}
+if TYPE_CHECKING:
+    from pathlib import Path
+
+_GHOSTTY = TerminalReport("ghostty 1.4.0", frozenset({62, 22, 52}), (16, 34))
+_WINDOWS_TERMINAL = TerminalReport("", frozenset({61, 4, 6, 22, 52}), (10, 20))
 
 
 def _start(
-    app: TerminalImagesApp, monkeypatch: pytest.MonkeyPatch, *, enabled: bool
+    app: TerminalImagesApp, monkeypatch: pytest.MonkeyPatch, *, enabled: bool, report: TerminalReport | None
 ) -> manager.TerminalGraphics | None:
     """Start graphics as a terminal-backed app would: test apps are headless."""
     with monkeypatch.context() as patch:
         patch.setattr(TerminalImagesApp, "is_headless", property(lambda _app: False))
-        return manager.start_terminal_graphics(app, enabled=enabled)
+        return manager.start_terminal_graphics(app, enabled=enabled, report=report)
 
 
 def _set_env(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
-    """Make ``env`` the only terminal the environment names, whatever terminal runs the tests."""
-    detected = ("TERM", "TERM_PROGRAM", "WT_SESSION", "NO_COLOR")
-    for name in (*detected, *detect._MULTIPLEXER_VARIABLES, *detect._OTHER_TERMINAL_VARIABLES):
+    """Make ``env`` what the environment says of the terminal, whatever terminal runs the tests."""
+    for name in ("WT_SESSION", "TERM_PROGRAM"):
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
     for name, value in env.items():
@@ -37,22 +43,27 @@ def _set_env(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("env", "enabled", "expected"),
+    ("report", "env", "enabled", "expected"),
     [
-        pytest.param(_GHOSTTY, True, GraphicsProtocol.KITTY, id="ghostty"),
-        pytest.param(_WINDOWS_TERMINAL, True, GraphicsProtocol.SIXEL, id="windows-terminal"),
-        pytest.param(_GHOSTTY, False, None, id="setting-off"),
-        pytest.param({"TERM": "xterm-256color"}, True, None, id="unknown-terminal"),
+        pytest.param(_GHOSTTY, {}, True, GraphicsProtocol.KITTY, id="ghostty"),
+        pytest.param(_WINDOWS_TERMINAL, {"WT_SESSION": "abc"}, True, GraphicsProtocol.SIXEL, id="windows-terminal"),
+        pytest.param(_GHOSTTY, {}, False, None, id="setting-off"),
+        pytest.param(TerminalReport("XTerm(390)", frozenset({4})), {}, True, None, id="unknown-terminal"),
+        pytest.param(None, {"WT_SESSION": "abc"}, True, None, id="not-asked"),
     ],
 )
 async def test_graphics_start_for_known_terminals_when_enabled(
-    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], enabled: bool, expected: GraphicsProtocol | None
+    monkeypatch: pytest.MonkeyPatch,
+    report: TerminalReport | None,
+    env: dict[str, str],
+    enabled: bool,
+    expected: GraphicsProtocol | None,
 ) -> None:
     _set_env(monkeypatch, env)
     app = TerminalImagesApp(None)
     async with app.run_test(size=(40, 10)):
         app.console._color_system = ColorSystem.TRUECOLOR
-        graphics = _start(app, monkeypatch, enabled=enabled)
+        graphics = _start(app, monkeypatch, enabled=enabled, report=report)
 
         assert (None if graphics is None else graphics.protocol) is expected
         assert manager.graphics_for(app) is graphics
@@ -62,19 +73,61 @@ async def test_graphics_start_for_known_terminals_when_enabled(
 
 
 async def test_sixel_needs_the_textual_its_overlay_was_written_against(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_env(monkeypatch, _WINDOWS_TERMINAL)
-    assert detect_graphics_protocol(os.environ, truecolor=True) is GraphicsProtocol.SIXEL
+    _set_env(monkeypatch, {"WT_SESSION": "abc"})
     monkeypatch.setattr(manager, "TEXTUAL_VERSION", "0.0.0")
     app = TerminalImagesApp(None)
     async with app.run_test(size=(40, 10)):
         app.console._color_system = ColorSystem.TRUECOLOR
-        assert _start(app, monkeypatch, enabled=True) is None
+        assert _start(app, monkeypatch, enabled=True, report=_WINDOWS_TERMINAL) is None
 
 
-async def test_headless_apps_draw_half_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
-    _set_env(monkeypatch, _GHOSTTY)
+async def test_headless_apps_draw_half_blocks() -> None:
     app = TerminalImagesApp(None)
     async with app.run_test(size=(40, 10)):
         app.console._color_system = ColorSystem.TRUECOLOR
-        assert manager.start_terminal_graphics(app, enabled=True) is None
+        assert manager.start_terminal_graphics(app, enabled=True, report=_GHOSTTY) is None
         assert manager.graphics_for(app) is None
+
+
+async def test_placeholder_images_take_the_answered_cell_size_where_the_tty_gives_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sizes: list[tuple[int, int]] = []
+
+    def kitty_png(data_uri: str, *, columns: int, rows: int, cell_pixels: tuple[int, int]) -> bytes:
+        sizes.append(cell_pixels)
+        return payloads.kitty_png(data_uri, columns=columns, rows=rows, cell_pixels=cell_pixels)
+
+    monkeypatch.setattr(manager, "kitty_png", kitty_png)
+    monkeypatch.setattr(manager, "_tty_cell_pixels", lambda: None)
+    app = TerminalImagesApp(None)
+    async with app.run_test(size=(80, 24)) as pilot:
+        app.console._color_system = ColorSystem.TRUECOLOR
+        graphics = _start(app, monkeypatch, enabled=True, report=_GHOSTTY)
+        assert graphics is not None
+        await app.mount(TerminalImages(image_previews((40, 20))))
+        await wait_for(lambda: bool(sizes), pilot=pilot, description="the image's payload is built")
+
+        assert sizes == [(16, 34)]
+        await graphics.close()
+
+
+async def test_the_app_starts_graphics_with_what_the_terminal_answered(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    starts: list[tuple[bool, TerminalReport | None]] = []
+
+    def start_terminal_graphics(
+        _app: object, *, enabled: bool, report: TerminalReport | None
+    ) -> manager.TerminalGraphics | None:
+        starts.append((enabled, report))
+        return None
+
+    monkeypatch.setattr(manager, "start_terminal_graphics", start_terminal_graphics)
+    app = make_chrys_app(tmp_path, terminal_report=_GHOSTTY)
+    async with app.run_test():
+        await wait_for(
+            lambda: bool(starts), description="graphics start with the main screen", timeout=MAIN_SCREEN_BUILD_TIMEOUT
+        )
+
+    assert starts == [(True, _GHOSTTY)]

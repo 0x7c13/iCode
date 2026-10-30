@@ -10534,10 +10534,11 @@ msgstr ""
 msgid "tui.settings.hint.ui.chat.fold_finished_turns"
 msgstr ""
 
-#. English: Show images in full color in Ghostty, kitty and Windows Terminal
-#. 1.22 or later. When off, or in other terminals, images are drawn with
-#. colored blocks.
-#. chrys-meta={"fingerprint":"062357153370c6ef6b9430bb6f6a2a6e40e90a528be29f29921d132b1700c603","multiline":false,"placeholders":[]}
+#. English: Show images in full color in Ghostty, kitty, iTerm2 3.7.5 or later
+#. and Windows Terminal 1.22 or later, asking the terminal at startup which one
+#. it is. When off, or in other terminals, images are drawn with colored
+#. blocks.
+#. chrys-meta={"fingerprint":"f91f55c011a11a3824883b45448be99f092cca0e59f60f49728d53c99856cb68","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.image_graphics"
 msgstr ""

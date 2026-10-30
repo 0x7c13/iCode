@@ -1,54 +1,49 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Choose how the terminal can show images, from the environment alone.
+"""Choose how the terminal can show images, from what it answers when asked at start (``probe.py``).
 
-No terminal is asked: Textual's input parser does not know the replies (device attributes, cell size,
-graphics query) and would type them into the prompt as keys, which Windows Terminal makes likely by
-splitting replies under load. A terminal these rules miss shows the half-block images every terminal
-shows.
-
-- Ghostty and kitty: the kitty graphics protocol with Unicode placeholders. ``TERM`` names them;
-  ``TERM_PROGRAM`` names Ghostty locally, and over SSH when Ghostty sends it with a generic xterm
-  ``TERM``.
-- Windows Terminal, which sets ``WT_SESSION`` (also inside WSL) but no ``TERM_PROGRAM``, and no
-  ``TERM`` or a generic xterm one (WSL, Git Bash): Sixel. Windows Terminal before 1.22 and conhost
-  ignore Sixel, leaving the half-blocks underneath.
-- A terminal started from a Ghostty or Windows Terminal shell inherits ``TERM_PROGRAM`` or
-  ``WT_SESSION``. One that sets its own ``TERM_PROGRAM`` (VS Code, WezTerm, ...) or ``TERM``
-  (Alacritty, foot, ...) is not taken for them, nor one that runs under a generic ``TERM`` but marks
-  its shells with a variable of its own (xterm, VTE terminals, Konsole, JetBrains, Emacs, Vim and
-  Neovim). One that marks nothing still is.
-- Inside tmux, screen or zellij the outer terminal is unknown and placeholders need passthrough:
-  half-blocks.
+- Ghostty 1.0+, kitty 0.28+ and iTerm2 3.7.5+, named by their XTVERSION reply: the kitty graphics
+  protocol with Unicode placeholders, where the app writes 24-bit color (over SSH, only where the host
+  sets ``COLORTERM``). Before 3.7.5, and in nightlies built before that fix, iTerm2 draws nothing for a
+  placeholder that, like these, gives a row and a column but no third diacritic.
+- Windows Terminal, which answers no XTVERSION but sets ``WT_SESSION`` (also inside WSL), and lists
+  Sixel (``4``) in its device attributes from 1.22: Sixel. A terminal started from a Windows Terminal
+  shell inherits ``WT_SESSION``; one that names itself in XTVERSION or ``TERM_PROGRAM`` is not taken
+  for it.
+- Anything else, and any terminal not asked: half-blocks. The terminal is asked only when the setting
+  is on, Textual draws to a real terminal, colors are on, no multiplexer sits between (tmux, screen
+  and zellij hide the terminal outside them, and placeholders would need passthrough), and ``TERM`` is
+  unset (Windows) or an xterm one, as every terminal above sets it.
 """
 
 from __future__ import annotations
 
-import sys
+import re
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
+
+from chrys.app.tui.graphics.probe import query_terminal
+from chrys.app.tui.terminal.title import running_under_textual_web_driver
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-_KITTY_TERMS = frozenset({"xterm-ghostty", "xterm-kitty"})
-_KITTY_PROGRAMS = frozenset({"ghostty", "kitty"})
-_GENERIC_TERM_PREFIX = "xterm"
-"""A ``TERM`` Ghostty may run under (``xterm-256color`` when its own entry is unknown on the host), and
-the one Windows Terminal's WSL and Git Bash shells set."""
-_OTHER_TERMINAL_VARIABLES = (
-    "XTERM_VERSION",
-    "VTE_VERSION",
-    "KONSOLE_VERSION",
-    "TERMINAL_EMULATOR",
-    "ALACRITTY_WINDOW_ID",
-    "INSIDE_EMACS",
-    "VIM_TERMINAL",
-    "NVIM",
+    from chrys.app.tui.graphics.probe import TerminalReport
+
+_PLACEHOLDER_TERMINALS: Final = (
+    ("ghostty ", (1, 0), None),
+    ("kitty(", (0, 28), None),
+    ("iTerm2 ", (3, 7, 5), (3, 7, 20260917)),
 )
-"""Set by terminals that may run under a generic ``TERM``, so that ``TERM`` names none of them."""
-_MULTIPLEXER_VARIABLES = ("TMUX", "STY", "ZELLIJ")
-_MULTIPLEXER_TERM_PREFIXES = ("screen", "tmux")
+"""XTVERSION prefixes of terminals that draw kitty Unicode placeholders, with the oldest release that does
+and, for nightlies, which number their third part by build date (``iTerm2 3.7.20261029-nightly``), the
+oldest nightly."""
+_BUILD_DATE: Final = 10_000_000
+"""A third version part this large is a build date."""
+_SIXEL_ATTRIBUTE: Final = 4
+_ASKED_TERM_PREFIX: Final = "xterm"
+_MULTIPLEXER_VARIABLES: Final = ("TMUX", "STY", "ZELLIJ")
+_LEADING_VERSION = re.compile(r"\d+(?:\.\d+)*")
 
 
 class GraphicsProtocol(Enum):
@@ -62,42 +57,46 @@ class GraphicsProtocol(Enum):
     """Sixel images drawn over the half-blocks after each frame."""
 
 
-def detect_graphics_protocol(env: Mapping[str, str], *, truecolor: bool) -> GraphicsProtocol:
-    """The protocol this terminal is known to draw correctly, judged by ``env``.
+def ask_terminal(env: Mapping[str, str], *, enabled: bool) -> TerminalReport | None:
+    """Ask the terminal what it is, where its answer could give images better than half-blocks."""
+    if not enabled or running_under_textual_web_driver() or not _worth_asking(env):
+        return None
+    return query_terminal()
+
+
+def _worth_asking(env: Mapping[str, str]) -> bool:
+    if "NO_COLOR" in env or any(env.get(name) for name in _MULTIPLEXER_VARIABLES):
+        return False
+    term = env.get("TERM", "")
+    return not term or term.startswith(_ASKED_TERM_PREFIX)
+
+
+def choose_protocol(report: TerminalReport | None, env: Mapping[str, str], *, truecolor: bool) -> GraphicsProtocol:
+    """The protocol the terminal that gave ``report`` is known to draw correctly.
 
     ``truecolor`` is whether the app writes 24-bit colors: placeholder cells name their image by color.
     """
-    if "NO_COLOR" in env or any(env.get(name) for name in _MULTIPLEXER_VARIABLES):
+    if report is None:
         return GraphicsProtocol.BLOCKS
-    term = env.get("TERM", "")
-    if term.startswith(_MULTIPLEXER_TERM_PREFIXES):
-        return GraphicsProtocol.BLOCKS
-    term_program = env.get("TERM_PROGRAM", "")
-    generic_term = (not term or term.startswith(_GENERIC_TERM_PREFIX)) and not any(
-        env.get(name) for name in _OTHER_TERMINAL_VARIABLES
-    )
-    if term in _KITTY_TERMS or (term_program in _KITTY_PROGRAMS and generic_term):
-        if term_program and term_program not in _KITTY_PROGRAMS:
+    for prefix, oldest, oldest_nightly in _PLACEHOLDER_TERMINALS:
+        if report.version.startswith(prefix):
+            version = _leading_version(report.version.removeprefix(prefix))
+            if oldest_nightly is not None and version[2:3] >= (_BUILD_DATE,):
+                oldest = oldest_nightly
+            if truecolor and version >= oldest:
+                return GraphicsProtocol.KITTY
             return GraphicsProtocol.BLOCKS
-        return GraphicsProtocol.KITTY if truecolor else GraphicsProtocol.BLOCKS
-    if env.get("WT_SESSION") and not term_program and generic_term:
+    if (
+        not report.version
+        and env.get("WT_SESSION")
+        and not env.get("TERM_PROGRAM")
+        and _SIXEL_ATTRIBUTE in report.attributes
+    ):
         return GraphicsProtocol.SIXEL
     return GraphicsProtocol.BLOCKS
 
 
-def terminal_cell_pixels(fd: int) -> tuple[int, int] | None:
-    """The terminal's cell size in pixels from ``TIOCGWINSZ``, or None where it is not reported."""
-    if sys.platform == "win32":
-        return None
-    import fcntl
-    import struct
-    import termios
-
-    try:
-        packed = fcntl.ioctl(fd, termios.TIOCGWINSZ, bytes(8))
-    except OSError:
-        return None
-    rows, columns, width, height = struct.unpack("HHHH", packed)
-    if not rows or not columns or not width or not height:
-        return None
-    return max(1, width // columns), max(1, height // rows)
+def _leading_version(text: str) -> tuple[int, ...]:
+    """The numbers a version starts with: ``1.4.1-main+abc`` is (1, 4, 1); none is ()."""
+    match = _LEADING_VERSION.match(text)
+    return () if match is None else tuple(int(part) for part in match[0].split("."))
