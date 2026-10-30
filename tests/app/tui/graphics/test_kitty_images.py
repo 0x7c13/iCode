@@ -235,6 +235,28 @@ async def test_stopping_sends_the_delete_still_waiting_for_its_frame() -> None:
         )
 
 
+async def test_stopping_deletes_every_image_in_one_write() -> None:
+    """Each write takes one of the 30 places in Textual's write queue, which nothing takes from once the
+    terminal's window is closed: a write per image would hold the exit there for good."""
+    app = TerminalImagesApp(GraphicsProtocol.KITTY)
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = TerminalImages(image_previews((20, 10), (20, 10), (20, 10)))
+        await app.mount(view)
+        await wait_for(lambda: all(slot.kitty_id for slot in view.slots), pilot=pilot, description="images sent")
+        ids = sorted(str(slot.kitty_id) for slot in view.slots)
+        graphics = app.graphics
+        assert graphics is not None
+        slot, box = view.image_cells(view.content_size.width)[0]
+        # One of them waiting for its frame to be deleted.
+        assert graphics.kitty_image(view, slot, replace(box, columns=10, rows=3, pixel_height=5)) == 0
+        written = len(app.writes)
+
+        graphics.stop()
+
+        assert len(app.writes) == written + 1
+        assert sorted(_deletes(app)) == ids
+
+
 async def test_an_image_evicted_out_of_view_is_sent_again_when_scrolled_back(monkeypatch: pytest.MonkeyPatch) -> None:
     """The screen must not keep placeholder lines it cached for a deleted id: those cells show nothing."""
     # Each 40x10-cell image at 10x20 pixels a cell costs 400 * 200 * 4 bytes: the budget holds one.

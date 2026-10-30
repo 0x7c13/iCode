@@ -315,13 +315,18 @@ class TerminalGraphics:
                         view.refresh()
 
     def _drop(self, slot: ImageSlot) -> None:
+        if image_id := self._forget(slot):
+            self._write(kitty.delete_command(image_id))
+
+    def _forget(self, slot: ImageSlot) -> int:
+        """Free ``slot``'s payload; the kitty id it held, if any, is returned for the caller to delete."""
+        image_id = slot.kitty_id
         cost = self._slots.pop(slot, None)
         if cost is not None:
             self._spent -= cost
-        if slot.kitty_id:
-            self._write(kitty.delete_command(slot.kitty_id))
         slot.kitty_id, slot.kitty_box = 0, None
         slot.rows, slot.rows_box = (), None
+        return image_id
 
     def _drop_after_frame(self, slot: ImageSlot) -> None:
         image_id = slot.kitty_id
@@ -338,11 +343,13 @@ class TerminalGraphics:
             self._write(kitty.delete_command(image_id))
 
     def _delete_everything(self) -> None:
-        for slot in list(self._slots):
-            if slot.kitty_id:
-                self._drop(slot)
-        for image_id in list(self._doomed):
-            self._write_delete(image_id)
+        # In one write: each takes one of the 30 places in Textual's write queue, which nothing takes from
+        # once the terminal is gone (its window closed), so a write per image could hold the exit for good.
+        ids = [self._forget(slot) for slot in list(self._slots) if slot.kitty_id]
+        ids.extend(self._doomed)
+        self._doomed.clear()
+        if ids:
+            self._write("".join(kitty.delete_command(image_id) for image_id in ids))
 
     # ── Lifecycle ────────────────────────────────────────────────
 
