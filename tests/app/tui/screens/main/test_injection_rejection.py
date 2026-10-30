@@ -61,7 +61,7 @@ class _InputBar:
         self.locked = False
         self.value = ""
 
-    def restore_draft(self, text: str) -> bool:
+    def restore_draft(self, text: str, *, keep_card: bool = False) -> bool:
         if not text or self.value:
             return False
         self.value = text

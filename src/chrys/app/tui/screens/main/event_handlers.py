@@ -901,6 +901,7 @@ class BackendEventHandler:
             self._state.runtime.keep_hook_snapshot_of(s.main_usage_source_id)
             self.refresh_hook_indicator()
         s.profile = event.display_name or event.agent_profile
+        self._state.runtime.profile_name = event.agent_profile
         s.runtime_metadata = event.runtime_details
         self._state.runtime.details_confirmed = True
         if event.runtime_details.model.selection_source == "active":
@@ -2050,7 +2051,14 @@ class BackendEventHandler:
         s.debug("Error", f"[{event.code}] {full_msg[:60]}")
 
     def _restore_pending_submit_text(self) -> InputRestore | None:
-        """Restore the prompt text that the input widget cleared on submit."""
+        """Restore the prompt text that the input widget cleared on submit.
+
+        A prepared send (a prompt shortcut's) gives back its own draft, with
+        its card, and the same proof of that restore.
+        """
+        give_back = self._state.submit.give_back
+        if give_back is not None:
+            return give_back()
         s = self
         return self._ui().restore_input_text(s.pending_user_submit_text)
 

@@ -732,9 +732,11 @@ class ModelConfigScreen(BaseDialog[str]):
     is running: profile navigation stays available, but mutating controls
     are hidden/disabled and Close/Escape always dismisses with ``""``.
 
-    Dismisses with ``"switched"`` when deleting the runtime-effective
-    profile requires a backend reload, ``"updated"`` after a Save, or
-    ``""`` on Close / Escape when the runtime can remain unchanged.
+    Dismisses with ``"switched"`` when the session's own model was deleted
+    (reload, ending a session-only switch to it), ``"updated"`` after a
+    Save, ``"reloaded"`` when only the model the runtime ran was deleted
+    (an agent's own), or ``""`` on Close / Escape when the runtime can
+    remain unchanged.
     """
 
     CSS_PATH = "screen.tcss"
@@ -748,17 +750,29 @@ class ModelConfigScreen(BaseDialog[str]):
         registry: ModelProfileRegistry,
         global_default_profile_id: str = "",
         *,
+        session_selected_profile_id: str = "",
+        session_running_profile_id: str = "",
         read_only: bool = False,
     ) -> None:
         self._registry = registry
         self._global_default_profile_id = global_default_profile_id
+        # The session's two models, when the caller knows them (``SessionModels``):
+        # its own choice, which a prompt shortcut's switch makes for the session
+        # alone, leaving the process pointer as it was ("" means the pointer's);
+        # and what the runtime runs, an agent's own model when it brings one
+        # ("" means the selected one).
+        self._session_selected_profile_id = session_selected_profile_id
+        self._session_running_profile_id = session_running_profile_id
         self._read_only = read_only
         self._selected_profile_id: str = ""
         # A successful Save requires a soft restart even when the global
         # default pointer is unchanged because profile fields may affect
         # the runtime-effective model.
         self._saved_anything = False
-        self._requires_runtime_reload = False
+        # Set by a deletion: of the session's own model (reload and end its
+        # session-only switch), or of the model the runtime runs (reload only).
+        self._selected_model_deleted = False
+        self._running_model_deleted = False
         # Set while the prompt-caching reminder is pushed or showing: a second
         # Save pressed before it mounts would push a second reminder.
         self._prompt_cache_offer_open = False
@@ -1593,10 +1607,14 @@ class ModelConfigScreen(BaseDialog[str]):
         """Actually delete the profile after confirmation.
 
         Deleting the global default promotes, in the user settings document,
-        the first remaining profile as the sidebar lists them. Deleting the runtime-effective profile also
-        resynchronizes the process pointer to a selectable profile — the
-        file default when it resolves, else the first selectable one —
-        and requests a backend reload. If no profiles remain, a fresh
+        the first remaining profile as the sidebar lists them. Deleting the
+        process pointer's profile resynchronizes the pointer to a selectable
+        profile — the file default when it resolves, else the first
+        selectable one. Deleting the session's own model requests a backend
+        reload that also ends a session-only switch to it; deleting the model
+        the runtime runs (an agent's own) requests a reload alone, after which
+        the session falls back to its own model; a session keeps its own model
+        when only the pointer's profile goes. If no profiles remain, a fresh
         editable profile is created before either pointer is reconciled.
         """
         if self._read_only:
@@ -1611,8 +1629,20 @@ class ModelConfigScreen(BaseDialog[str]):
         # selection is supported); resolve it against the still-complete
         # registry before deleting, or a name pointer at the deleted profile
         # would silently keep the dead executor running.
-        active_profile = resolve_profile_selector(self._registry, get_active_profile_id())
-        was_runtime_effective = active_profile is not None and active_profile.id == profile_id
+        pointer_profile = resolve_profile_selector(self._registry, get_active_profile_id())
+        pointer_was_deleted = pointer_profile is not None and pointer_profile.id == profile_id
+        selected_profile = (
+            resolve_profile_selector(self._registry, self._session_selected_profile_id)
+            if self._session_selected_profile_id
+            else pointer_profile
+        )
+        running_profile = (
+            resolve_profile_selector(self._registry, self._session_running_profile_id)
+            if self._session_running_profile_id
+            else selected_profile
+        )
+        selected_was_deleted = selected_profile is not None and selected_profile.id == profile_id
+        running_was_deleted = running_profile is not None and running_profile.id == profile_id
 
         await asyncio.to_thread(delete_profile, profile_id)
         self._registry.remove(profile_id)
@@ -1634,7 +1664,7 @@ class ModelConfigScreen(BaseDialog[str]):
             await self._persist_active_profile(new_global_default)
             self._global_default_profile_id = new_global_default.id
 
-        if was_runtime_effective:
+        if pointer_was_deleted:
             # The file default may itself be dangling or hollow (deleting a
             # non-default profile never repairs the file pointer); adopting
             # it verbatim would strand the session on the placeholder while
@@ -1651,7 +1681,8 @@ class ModelConfigScreen(BaseDialog[str]):
                 set_model_pointer(replacement.id, origin=SettingOrigin(layer=Source.PROCESS_RUNTIME))
             else:
                 set_model_pointer(None, origin=SettingOrigin(layer=Source.PROCESS_RUNTIME))
-            self._requires_runtime_reload = True
+        self._selected_model_deleted |= selected_was_deleted
+        self._running_model_deleted |= running_was_deleted
 
         if seeded_default:
             return
@@ -1779,19 +1810,24 @@ class ModelConfigScreen(BaseDialog[str]):
     def _cancel_result(self) -> str:
         """Return the dismiss result from explicit reload requirements.
 
-        * ``"switched"`` — deleting the runtime-effective profile set
-          the reload latch after reconciling the process pointer.
+        * ``"switched"`` — the session's own model was deleted; the reload
+          ends a session-only switch to it.
         * ``"updated"`` — at least one Save reached disk + registry;
           the engine must rebuild so profile edits take effect.
-        * ``""`` — no runtime reload is required; a global-default-only
-          deletion applies to future processes.
+        * ``"reloaded"`` — only the model the runtime ran (an agent's own)
+          was deleted; the reload keeps the session's own choice.
+        * ``""`` — no runtime reload is required; deleting the global
+          default, or the pointer's profile while the session has a model
+          of its own, applies to the sessions that start next.
         """
         if self._read_only:
             return ""
-        if self._requires_runtime_reload:
+        if self._selected_model_deleted:
             return "switched"
         if self._saved_anything:
             return "updated"
+        if self._running_model_deleted:
+            return "reloaded"
         return ""
 
     def _default_dismiss_result(self) -> str:  # type: ignore[override]

@@ -302,6 +302,10 @@ class AgentProfileSwitch(Event):
     """User switches to a different agent profile."""
 
     profile_name: str = ""
+    session_scoped: bool = False
+    """The switch belongs to this session only (a TUI prompt shortcut card): a
+    new or another restored session goes back to the agent in use before it.
+    False for the user's own switch, which also ends a session-scoped one."""
 
 
 @dataclass
@@ -322,6 +326,10 @@ class ConfigUpdate(Event):
 @dataclass
 class SettingsReload(Event):
     """User updated .env settings — engine should reload Settings and rebuild agent."""
+
+    release_session_scoped_model: bool = False
+    """Also end a session-scoped model switch, so the session takes the reloaded
+    model: set when the user picks a model for this session and the default together."""
 
 
 @dataclass
@@ -349,6 +357,12 @@ class SetModelProfile(Event):
     """
 
     profile_id: str = ""
+    session_scoped: bool = False
+    """The switch belongs to this session only (a TUI prompt shortcut card): it
+    sets the session's selected model, leaving a model the agent binds alone
+    and the ``$`` picker free, and a new or another restored session goes back
+    to the default. False (ACP) pins the model over the agent's for the rest of
+    the session, as before."""
 
 
 # ---------------------------------------------------------------------------

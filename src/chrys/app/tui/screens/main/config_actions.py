@@ -12,7 +12,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Literal
 
 from chrys.app.tui.screens.main.model_indicator import model_lock_notice
-from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, session_models
 from chrys.foundation.events.types import SetApprovalMode
 from chrys.foundation.i18n import msg
 from chrys.service.approval.policy import ApprovalMode
@@ -64,6 +64,12 @@ class RuntimeConfigCallbacks:
     debug: Callable[[str, str], None]
     notification_service: Callable[[], NotificationService]
     settings_coordinator: Callable[[], SettingsCoordinator]
+    user_picked: Callable[[], None]
+    """The user chose an agent or model; a prompt shortcut's pending switch gives way to it.
+
+    Only the ``#`` and ``$`` pickers choose one. A settings dialog's ``"switched"`` result is not a
+    choice: both dialogs return it only when they fall back after the session's profile was deleted,
+    renamed or (agents) retired to sub-agent use, so no dialog result calls this."""
 
 
 def resolve_approval_mode(arg: str, current: ApprovalMode) -> ApprovalMode:
@@ -189,7 +195,11 @@ class RuntimeConfigController:
         )
 
     async def on_model_picked(self, profile_id: str) -> None:
-        """Persist a picked model profile and request a backend settings reload."""
+        """Persist a picked model profile and request a backend settings reload.
+
+        The pick is for this session and the default together, so it also ends
+        any per-session model switch the session holds.
+        """
         if self._services.execution_busy():
             return
         from chrys.foundation.events.types import SettingsReload
@@ -205,7 +215,8 @@ class RuntimeConfigController:
                 timeout=5,
             )
             return
-        await self._services.bus.publish(SettingsReload())
+        await self._services.bus.publish(SettingsReload(release_session_scoped_model=True))
+        self._callbacks.user_picked()
 
     def start_agent_profile_switch(self, profile_name: str) -> object:
         """Run :meth:`switch_agent_profile` in a screen worker."""
@@ -218,7 +229,17 @@ class RuntimeConfigController:
         from chrys.foundation.events.types import AgentProfileSwitch
 
         await self._services.bus.publish(AgentProfileSwitch(profile_name=profile_name))
+        self._callbacks.user_picked()
         self._callbacks.debug("AgentProfileSwitch", profile_name)
+
+    def _config_read_only(self) -> bool:
+        """Whether a config dialog opening now is read-only: a turn runs, or a send in flight will start one.
+
+        A dialog reads the session once, as it opens. A prompt shortcut's send
+        holds its claim while its commands run, then switches the model and
+        publishes under whatever opened meanwhile.
+        """
+        return self._state.run.agent_running or self._state.submit.active or self._services.execution_busy()
 
     def open_model_config(self) -> None:
         """Schedule opening the model configuration modal."""
@@ -254,11 +275,16 @@ class RuntimeConfigController:
                 self._callbacks.start_worker(partial(self.on_model_config_result, result))
                 self._view.focus_input()
 
+            # What a deletion does depends on which of the session's models it hits; the
+            # process pointer, the third fact, the dialog reads itself.
+            models = session_models(self._state, self._services)
             self._view.push_screen(
                 ModelConfigScreen(
                     registry,
                     _canonical_active_model_profile_id(registry, global_default_profile_id),
-                    read_only=self._state.run.agent_running or self._services.execution_busy(),
+                    session_selected_profile_id=_canonical_active_model_profile_id(registry, models.selected),
+                    session_running_profile_id=_canonical_active_model_profile_id(registry, models.running),
+                    read_only=self._config_read_only(),
                 ),
                 _on_result,
             )
@@ -273,7 +299,13 @@ class RuntimeConfigController:
             self._model_config_opening = False
 
     async def on_model_config_result(self, result: str) -> None:
-        """Handle model config modal result — reload settings if applied."""
+        """Handle model config modal result — reload settings if applied.
+
+        ``"switched"``: the session's own model was deleted, so the reload also
+        ends a prompt shortcut's session-only switch to it. ``"updated"``: a
+        Save, announced. ``"reloaded"``: the model the runtime ran (an agent's
+        own) was deleted; the session keeps its choice.
+        """
         if not result:
             return
         from chrys.foundation.events.types import SettingsReload
@@ -283,8 +315,8 @@ class RuntimeConfigController:
             directory, profiles = await asyncio.to_thread(registry.read_profiles)
             registry.install_profiles(directory, profiles)
         await self._adopt_global_default_when_nothing_active()
-        await self._services.bus.publish(SettingsReload())
-        if result != "switched":
+        await self._services.bus.publish(SettingsReload(release_session_scoped_model=result == "switched"))
+        if result == "updated":
             self._view.notify(_MODEL_PROFILE_UPDATED.bind(), title=_MODEL_SETTINGS_TITLE.bind())
         self._callbacks.debug("ModelConfig", result)
 
@@ -372,7 +404,7 @@ class RuntimeConfigController:
                 workspace_cwd=self._state.workspace_marker.current_cwd or None,
                 workspace_roots=list(self._state.workspace.roots),
                 on_saved=self.on_agent_config_saved,
-                read_only=self._state.run.agent_running or self._services.execution_busy(),
+                read_only=self._config_read_only(),
                 **kwargs,
             ),
             self._start_agent_config_result,

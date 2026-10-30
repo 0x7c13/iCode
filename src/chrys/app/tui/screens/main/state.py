@@ -18,6 +18,7 @@ from chrys.foundation.platform import safe_getcwd
 from chrys.service.approval.policy import ApprovalMode
 
 if TYPE_CHECKING:
+    from chrys.app.tui.screens.main.ports import InputRestore
     from chrys.foundation.config.settings_store import SettingsHandle
     from chrys.foundation.events.bus import EventBus
     from chrys.foundation.events.types import (
@@ -73,6 +74,31 @@ class MainScreenServices:
         return self.engine_provider().was_turn_lifecycle_saved(task) if self.engine_provider is not None else False
 
 
+@dataclass(frozen=True, slots=True)
+class SessionModels:
+    """The session's two models, each a profile selector ("" when unknown).
+
+    They differ when the agent brings its own model: the runtime runs that one
+    while the session's own choice waits underneath. The process pointer, the
+    default for the sessions that start next, is a third fact, read where it is
+    needed (``get_active_profile_id``).
+    """
+
+    running: str
+    """What the runtime runs: its own word once it has named one, else the launch setting."""
+    selected: str
+    """The session's own choice: a prompt shortcut's session-only switch, else the process pointer's."""
+
+
+def session_models(state: MainScreenState, services: MainScreenServices) -> SessionModels:
+    """The one place the main screen reads which models the session has (:class:`SessionModels`)."""
+    confirmed = state.runtime.details.model.profile_id if state.runtime.details_confirmed else ""
+    running = confirmed or services.active_model_profile_id
+    handle = services.settings_handle
+    selected = handle.settings.model_profile if handle is not None else services.active_model_profile_id
+    return SessionModels(running=running, selected=selected)
+
+
 @dataclass
 class RunState:
     """Live run and loading flags."""
@@ -93,6 +119,8 @@ class RuntimeState:
     """Active runtime metadata shown by the main screen."""
 
     profile: str = ""
+    profile_name: str = ""
+    """The active agent's profile name, its identity; ``profile`` is its display label."""
     main_usage_source_id: str = ""
     details: AgentRuntimeDetails = field(default_factory=AgentRuntimeDetails)
     details_confirmed: bool = False
@@ -198,14 +226,43 @@ class SubmitCoordinator:
     # what a running turn publishes meanwhile comes from that turn's own task,
     # and is the turn's.
     publisher: asyncio.Task[Any] | None = field(default=None, repr=False)
+    # Counts claims: a claim's own number tells its owner, after an await,
+    # whether the submit in flight is still the one it began.
+    generation: int = 0
+    # A prepared send's own way to give its text back, and its own check that
+    # it may still publish; None for a plain submit.
+    give_back: Callable[[], InputRestore | None] | None = field(default=None, repr=False)
+    still_valid: Callable[[], bool] | None = field(default=None, repr=False)
 
-    def begin(self, text: str, *, kind: SubmitKind = "turn") -> None:
-        """Mark a submit as active and clear any previous block decision."""
+    def begin(
+        self,
+        text: str,
+        *,
+        kind: SubmitKind = "turn",
+        give_back: Callable[[], InputRestore | None] | None = None,
+        still_valid: Callable[[], bool] | None = None,
+    ) -> int:
+        """Mark a submit as active, clear any previous block decision, and return this claim's number."""
         self.active = True
         self.text = text
         self.blocked = False
         self.kind = kind
         self.publisher = None
+        self.give_back = give_back
+        self.still_valid = still_valid
+        self.generation += 1
+        return self.generation
+
+    def holds(self, claim: int) -> bool:
+        """Return whether claim *claim* is still the submit in flight."""
+        return self.active and self.generation == claim
+
+    def release(self, claim: int) -> bool:
+        """End claim *claim* if it is still the submit in flight; a later claim is left alone."""
+        if not self.holds(claim):
+            return False
+        self.clear()
+        return True
 
     def publish_from_current_task(self) -> None:
         """Name the current task as the one about to publish the submit."""
@@ -226,6 +283,8 @@ class SubmitCoordinator:
         self.blocked = False
         self.kind = "turn"
         self.publisher = None
+        self.give_back = None
+        self.still_valid = None
 
 
 @dataclass

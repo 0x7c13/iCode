@@ -23,7 +23,6 @@ from textual.widget import Widget
 from textual.widgets import Button, Label
 
 from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
-from chrys.app.tui.screens.agents.panels.config_card import CardListChanged, CollapsibleConfigCard
 from chrys.app.tui.screens.agents.panels.markdown_report import (
     NOT_ADVERTISED,
     SUPPORTED_MARK,
@@ -75,6 +74,7 @@ from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.dialogs.connection_test import ConnectionTestDialog
 from chrys.app.tui.widgets import Checkbox, ConfigAddButton, EnhancedTextArea, HatchedEmptyState, Select
 from chrys.app.tui.widgets import EnhancedInput as Input
+from chrys.app.tui.widgets.config_card import CardListChanged, CollapsibleConfigCard
 from chrys.foundation.branding import APP_DISPLAY_NAME
 from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message

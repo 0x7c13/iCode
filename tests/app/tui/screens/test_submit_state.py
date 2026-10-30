@@ -8,6 +8,7 @@ import asyncio
 
 import pytest
 
+from chrys.app.tui.screens.main.ports import InputRestore
 from chrys.app.tui.screens.main.submit_state import SubmitState
 
 
@@ -64,3 +65,75 @@ async def test_submit_state_is_in_publish_only_on_its_publishing_task() -> None:
 
     state.clear()
     assert state.in_publish() is False
+
+
+def test_each_claim_gets_a_new_number_and_only_the_latest_holds() -> None:
+    state = SubmitState()
+
+    first = state.begin("first")
+    assert state.holds(first) is True
+
+    second = state.begin("second", kind="retry")
+
+    assert second != first
+    assert state.holds(second) is True
+    assert state.holds(first) is False
+
+
+def test_release_ends_only_the_claim_still_in_flight() -> None:
+    state = SubmitState()
+    first = state.begin("first")
+    second = state.begin("second")
+
+    # The earlier claim's late cleanup leaves the newer one alone.
+    assert state.release(first) is False
+    assert state.active is True
+    assert state.text == "second"
+    assert state.holds(second) is True
+
+    assert state.release(second) is True
+    assert state.active is False
+    assert state.holds(second) is False
+    # Releasing twice does nothing more.
+    assert state.release(second) is False
+
+
+def test_a_number_never_comes_back_after_clear() -> None:
+    state = SubmitState()
+    first = state.begin("first")
+    state.clear()
+
+    second = state.begin("second")
+
+    assert second != first
+    assert state.holds(first) is False
+    assert state.release(first) is False
+    assert state.holds(second) is True
+
+
+def test_claim_keeps_its_give_back_and_check_until_it_ends() -> None:
+    state = SubmitState()
+
+    def give_back() -> InputRestore | None:
+        return InputRestore(generation=1, text="prepared")
+
+    def still_valid() -> bool:
+        return True
+
+    claim = state.begin("prepared", give_back=give_back, still_valid=still_valid)
+    assert state.give_back is give_back
+    assert state.still_valid is still_valid
+
+    # A plain claim after it carries none of the earlier send's.
+    plain = state.begin("plain")
+    assert state.give_back is None
+    assert state.still_valid is None
+
+    state.begin("prepared again", give_back=give_back, still_valid=still_valid)
+    state.block()
+    state.clear()
+    assert state == SubmitState(generation=state.generation)
+    assert state.give_back is None
+    assert state.still_valid is None
+    assert state.holds(claim) is False
+    assert state.holds(plain) is False

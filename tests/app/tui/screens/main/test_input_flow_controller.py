@@ -8,16 +8,19 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
-from chrys.app.tui.screens.main.input_flow import InputFlowController
+from chrys.app.tui.screens.main.input_flow import InputFlowController, PreparedSend, SendIntent
+from chrys.app.tui.screens.main.ports import InputRestore
 from chrys.app.tui.screens.main.screen import MainScreen
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.support.gc_freeze import (
     GcAbsorbReason,
     GcAbsorbRequested,
 )
+from chrys.app.tui.widgets.chrome.status_bar import STATUS_RESUMING
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     Error,
@@ -44,6 +47,8 @@ class _FakeInputFlowView:
         self.user_contents: list[object] = []
         self.gc_messages: list[object] = []
         self.session_id = "panel-session"
+        # The composer's draft: text handed back lands only in an empty one.
+        self.draft = ""
 
     def set_terminal_title_for_user_message(self, text: str) -> None:
         self.calls.append(("title", text))
@@ -96,6 +101,16 @@ class _FakeInputFlowView:
 
     def update_toc(self) -> None:
         self.calls.append("toc")
+
+    def restore_input_draft(self, text: str) -> bool:
+        self.calls.append(("restore", text))
+        if not text or self.draft:
+            return False
+        self.draft = text
+        return True
+
+    def flash_submit_still_sending(self) -> None:
+        self.calls.append("still_sending")
 
 
 def _make_input_flow_controller(
@@ -182,6 +197,9 @@ def test_input_bar_retry_leaves_status_action_until_admission() -> None:
     screen = SimpleNamespace(
         query_one=query_one,
         _input_flow=flow,
+        # No prompt shortcut card on this draft: the retry goes out as typed.
+        _prompt_card=SimpleNamespace(submit=lambda _text, *, intent="message": False),
+        _route_shortcut_draft=lambda _text, *, intent="message": False,
         _model_unconfigured=lambda: False,
         _workflow=SimpleNamespace(workflow_mode=False),
         _suggestions=SimpleNamespace(suggestion_mode=None),
@@ -216,6 +234,9 @@ def test_inline_status_retry_resumes_without_consuming_input_draft() -> None:
         _state=MainScreenState(),
         query_one=query_one,
         _input_flow=flow,
+        # No prompt shortcut card on this draft: the retry goes out as typed.
+        _prompt_card=SimpleNamespace(submit=lambda _text, *, intent="message": False),
+        _route_shortcut_draft=lambda _text, *, intent="message": False,
         _model_unconfigured=lambda: False,
     )
 
@@ -232,6 +253,18 @@ def test_request_retry_ignores_duplicate_while_retry_submit_is_pending() -> None
     controller, _state, view = _make_input_flow_controller(EventBus(), state=state)
 
     controller.request_retry("duplicate note")
+
+    # Nothing is scheduled; the typed note goes back to the composer, which says a send is still in flight.
+    assert view.calls == [("restore", "duplicate note"), "still_sending"]
+    assert view.draft == "duplicate note"
+
+
+def test_request_retry_without_a_note_while_a_submit_is_pending_changes_nothing() -> None:
+    state = MainScreenState()
+    state.submit.active = True
+    controller, _state, view = _make_input_flow_controller(EventBus(), state=state)
+
+    controller.request_retry("")
 
     assert view.calls == []
 
@@ -256,7 +289,8 @@ async def test_retry_reserves_before_worker_start_and_releases_after_admission(o
     controller.request_retry("same-tick duplicate")
     assert state.submit.active
     assert state.submit.text == "first note"
-    assert view.calls == [("retry_pending", True)]
+    # The same-tick duplicate is refused: its note goes back to the composer.
+    assert view.calls == [("retry_pending", True), ("restore", "same-tick duplicate"), "still_sending"]
     assert len(scheduled) == 1
     task = asyncio.create_task(scheduled.pop()())
     try:
@@ -334,7 +368,7 @@ def test_retry_distinguishes_admission_rejections_from_fast_run_errors(
             self.retry_mode = initial_retry_mode
             self.value = ""
 
-        def restore_draft(self, text: str) -> bool:
+        def restore_draft(self, text: str, *, keep_card: bool = False) -> bool:
             self.value = text
             return True
 
@@ -436,7 +470,7 @@ async def test_rejected_retry_keeps_mounted_action_until_next_retry_is_accepted(
         value = ""
         locked = True
 
-        def restore_draft(self, text: str) -> bool:
+        def restore_draft(self, text: str, *, keep_card: bool = False) -> bool:
             self.value = text
             return True
 
@@ -839,3 +873,428 @@ def test_send_user_message_defers_fast_error_until_user_bubble_is_rendered() -> 
     assert view.user_contents == [["hello", "prepared-image-content"]]
     assert state.submit.blocked is False
     assert input_bar.retry_mode is True
+
+
+# -- prepared sends: one claim from Enter to publish ---------------------------
+
+_PREPARED_DRAFT = "check !`git status`"
+_PREPARED_FINAL = "check clean"
+
+
+class _Recorded:
+    def __init__(self) -> None:
+        self.events: list[UserMessage | UserRetry] = []
+        self.in_publish: list[tuple[bool, str, str]] = []
+
+
+async def _record_publishes(bus: EventBus, state: MainScreenState, *, start_turn: bool = True) -> _Recorded:
+    recorded = _Recorded()
+
+    async def record(event: UserMessage | UserRetry) -> None:
+        recorded.events.append(event)
+        # Who the frontend would attribute a refusal published now to.
+        recorded.in_publish.append((state.submit.in_publish(), state.submit.text, state.submit.kind))
+        if isinstance(event, UserMessage) and start_turn and event.injection_id is None:
+            event.started_turn = True
+
+    await bus.subscribe(UserMessage, record)
+    await bus.subscribe(UserRetry, record)
+    return recorded
+
+
+class _Send:
+    """A prepared send's own give-back and validity check, as the card builds them.
+
+    The give-back hands the draft to the composer at most once; *valid* is
+    what the send's check answers when asked.
+    """
+
+    def __init__(self, view: _FakeInputFlowView, text: str = _PREPARED_DRAFT) -> None:
+        self._view = view
+        self.text = text
+        self.valid = True
+        self.give_backs = 0
+        self.validity_checks = 0
+
+    def give_back(self) -> InputRestore | None:
+        # As the card's give-back: the proof of its restore the first time, None after or when a draft wins.
+        self.give_backs += 1
+        if self.give_backs > 1 or not self._view.restore_input_draft(self.text):
+            return None
+        return InputRestore(generation=self.give_backs, text=self.text)
+
+    def still_valid(self) -> bool:
+        self.validity_checks += 1
+        return self.valid
+
+
+def _begin(controller: InputFlowController, send: _Send, intent: SendIntent = "message") -> PreparedSend | None:
+    return controller.begin_prepared(send.text, intent, give_back=send.give_back, still_valid=send.still_valid)
+
+
+@pytest.mark.parametrize("intent", ["message", "continue"])
+async def test_begin_prepared_claims_at_once_and_opens_nothing_else(intent: SendIntent) -> None:
+    controller, state, view = _make_input_flow_controller(EventBus())
+    send = _Send(view)
+
+    prepared = _begin(controller, send, intent)
+
+    assert prepared is not None
+    assert (prepared.text, prepared.intent) == (_PREPARED_DRAFT, intent)
+    assert controller.holds(prepared)
+    assert state.submit.holds(prepared.claim)
+    assert state.submit.text == _PREPARED_DRAFT
+    assert state.submit.kind == ("retry" if intent == "continue" else "turn")
+    # The send's own give-back and check are the claim's.
+    assert state.submit.give_back == send.give_back
+    assert state.submit.still_valid == send.still_valid
+    # No render gate, running or retry-pending state until it publishes; nothing given back or checked yet.
+    assert not state.render_gate.active
+    assert not state.run.agent_running
+    assert view.calls == []
+    assert (send.give_backs, send.validity_checks) == (0, 0)
+
+
+@pytest.mark.parametrize("intent", ["message", "continue"])
+async def test_begin_prepared_is_refused_while_another_send_holds_the_claim(intent: SendIntent) -> None:
+    controller, state, view = _make_input_flow_controller(EventBus())
+    first_send = _Send(view, "first")
+    first = _begin(controller, first_send)
+    assert first is not None
+    second = _Send(view)
+
+    assert _begin(controller, second, intent) is None
+
+    # Given back through its own give-back, and the composer says a send is in flight; the first keeps its claim.
+    assert second.give_backs == 1
+    assert view.calls == [("restore", _PREPARED_DRAFT), "still_sending"]
+    assert controller.holds(first)
+    assert state.submit.text == "first"
+    assert state.submit.give_back == first_send.give_back
+    assert first_send.give_backs == 0
+
+
+async def test_refused_begin_prepared_says_nothing_when_its_text_did_not_come_back() -> None:
+    controller, _state, view = _make_input_flow_controller(EventBus())
+    first = _begin(controller, _Send(view, "first"))
+    assert first is not None
+    view.draft = "typed meanwhile"
+    second = _Send(view)
+
+    assert _begin(controller, second) is None
+
+    assert second.give_backs == 1
+    assert "still_sending" not in view.calls
+    assert view.draft == "typed meanwhile"
+    assert controller.holds(first)
+
+
+async def test_begin_prepared_continue_is_refused_while_a_turn_runs_and_a_message_is_not() -> None:
+    state = MainScreenState()
+    state.run.agent_running = True
+    controller, state, view = _make_input_flow_controller(EventBus(), state=state)
+    send = _Send(view)
+
+    assert _begin(controller, send, "continue") is None
+    assert send.give_backs == 1
+    assert view.calls == [("restore", _PREPARED_DRAFT), "still_sending"]
+    assert not state.submit.active
+
+    view.draft = ""
+    message = _begin(controller, _Send(view, "note for the turn"))
+    assert message is not None
+    assert controller.holds(message)
+
+
+async def test_publish_prepared_message_opens_a_turn_with_the_final_text_under_the_same_claim() -> None:
+    bus = EventBus()
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    recorded = await _record_publishes(bus, state)
+    send = _Send(view)
+    prepared = _begin(controller, send)
+    assert prepared is not None
+    claims_before = state.submit.generation
+
+    assert controller.publish_prepared(prepared, _PREPARED_FINAL) is True
+    # Nothing is published, and nothing checked, until the worker runs.
+    assert recorded.events == []
+    assert send.validity_checks == 0
+    await _run_started(scheduled)
+
+    assert [(type(event).__name__, event.text) for event in recorded.events] == [("UserMessage", _PREPARED_FINAL)]
+    # Published under the claim taken at Enter, attributed to it, holding the draft as written.
+    assert state.submit.generation == claims_before
+    assert recorded.in_publish == [(True, _PREPARED_DRAFT, "turn")]
+    assert send.validity_checks == 1
+    assert f"user:{_PREPARED_FINAL}" in view.calls
+    assert state.run.agent_running
+    assert not state.submit.active
+    assert send.give_backs == 0
+
+
+async def test_publish_prepared_message_while_a_turn_runs_is_an_injection() -> None:
+    bus = EventBus()
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    recorded = await _record_publishes(bus, state)
+    prepared = _begin(controller, _Send(view))
+    assert prepared is not None
+
+    assert controller.publish_prepared(prepared, _PREPARED_FINAL) is True
+    # A turn started after the publish was scheduled: decided when the worker publishes.
+    state.run.agent_running = True
+    await _run_started(scheduled)
+
+    assert len(recorded.events) == 1
+    event = recorded.events[0]
+    assert isinstance(event, UserMessage)
+    assert event.text == _PREPARED_FINAL
+    assert event.injection_id is not None
+    assert recorded.in_publish == [(True, _PREPARED_DRAFT, "injection")]
+    assert state.pending_injection.matches(event.injection_id)
+    assert "lock_input" in view.calls
+    assert not any(isinstance(call, str) and call.startswith("user:") for call in view.calls)
+    assert not state.submit.active
+
+
+async def test_publish_prepared_continue_shows_retry_pending_then_the_resumed_run() -> None:
+    bus = EventBus()
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    recorded = await _record_publishes(bus, state)
+    prepared = _begin(controller, _Send(view), "continue")
+    assert prepared is not None
+
+    assert controller.publish_prepared(prepared, _PREPARED_FINAL) is True
+    # The retry-pending state and the render gate open in the worker, right before it publishes.
+    assert view.calls == []
+    assert not state.render_gate.active
+    await _run_started(scheduled)
+
+    assert [(type(event).__name__, event.text) for event in recorded.events] == [("UserRetry", _PREPARED_FINAL)]
+    assert recorded.in_publish == [(True, _PREPARED_DRAFT, "retry")]
+    assert view.calls[0] == ("retry_pending", True)
+    assert view.calls.count(("retry_pending", False)) == 1
+    assert "hide_status_action" in view.calls
+    assert f"status:{status_text(STATUS_RESUMING.bind())}" in view.calls
+    assert f"retry-note:{_PREPARED_FINAL}" in view.calls
+    assert state.run.agent_running
+    assert not state.submit.active
+    assert not state.render_gate.active
+
+
+@pytest.mark.parametrize("intent", ["message", "continue"])
+@pytest.mark.parametrize("stale", ["no_longer_valid", "agent_loading", "claim_lost"])
+async def test_publish_worker_checks_again_and_gives_the_draft_back_once(intent: SendIntent, stale: str) -> None:
+    bus = EventBus()
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    recorded = await _record_publishes(bus, state)
+    send = _Send(view)
+    prepared = _begin(controller, send, intent)
+    assert prepared is not None
+    assert controller.publish_prepared(prepared, _PREPARED_FINAL) is True
+    newer: int | None = None
+
+    # What changes between the scheduling and the worker's run.
+    if stale == "no_longer_valid":
+        send.valid = False
+    elif stale == "agent_loading":
+        state.run.agent_loading = True
+    else:
+        state.submit.clear()
+        newer = state.submit.begin("someone else's", kind="turn")
+    await _run_started(scheduled)
+
+    assert recorded.events == []
+    assert not state.render_gate.active
+    assert ("retry_pending", True) not in view.calls
+    assert not state.run.agent_running
+    if newer is None:
+        # Its own claim ends, and its draft comes back through its give-back, once.
+        assert not state.submit.active
+        assert send.give_backs == 1
+        assert view.calls == [("restore", _PREPARED_DRAFT)]
+    else:
+        # Not its claim any more: it neither ends the newer one nor gives anything back.
+        assert state.submit.holds(newer)
+        assert send.give_backs == 0
+        assert view.calls == []
+
+
+async def test_publish_prepared_when_the_claim_is_not_its_own_schedules_nothing() -> None:
+    bus = EventBus()
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    send = _Send(view)
+    prepared = _begin(controller, send)
+    assert prepared is not None
+    state.submit.clear()
+
+    assert controller.publish_prepared(prepared, _PREPARED_FINAL) is False
+
+    assert scheduled == []
+    assert send.give_backs == 0
+
+
+async def test_abandon_prepared_releases_its_claim_and_returns_what_its_give_back_says() -> None:
+    controller, state, view = _make_input_flow_controller(EventBus())
+    send = _Send(view)
+    prepared = _begin(controller, send)
+    assert prepared is not None
+
+    assert controller.abandon_prepared(prepared) is True
+
+    assert not state.submit.active
+    assert state.submit.give_back is None
+    assert send.give_backs == 1
+    assert view.calls == [("restore", _PREPARED_DRAFT)]
+    assert view.draft == _PREPARED_DRAFT
+
+
+async def test_abandon_prepared_keeps_a_draft_typed_meanwhile() -> None:
+    controller, state, view = _make_input_flow_controller(EventBus())
+    send = _Send(view)
+    prepared = _begin(controller, send)
+    assert prepared is not None
+    view.draft = "typed meanwhile"
+
+    assert controller.abandon_prepared(prepared) is False
+
+    assert send.give_backs == 1
+    assert view.draft == "typed meanwhile"
+    # The claim is released all the same: a later send is not stuck behind it.
+    assert not state.submit.active
+    assert _begin(controller, _Send(view, "next")) is not None
+
+
+async def test_an_old_token_never_touches_a_newer_claim() -> None:
+    bus = EventBus()
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    recorded = await _record_publishes(bus, state)
+    old_send = _Send(view, "old draft")
+    old = _begin(controller, old_send)
+    assert old is not None
+    assert controller.abandon_prepared(old) is True
+    view.draft = ""
+    view.calls.clear()
+    newer_send = _Send(view, "newer draft")
+    newer = _begin(controller, newer_send)
+    assert newer is not None
+
+    # The old send's late cleanup and late publish both find the claim is not theirs.
+    assert controller.abandon_prepared(old) is False
+    assert controller.publish_prepared(old, "old final") is False
+    assert not controller.holds(old)
+
+    assert scheduled == []
+    assert recorded.events == []
+    assert view.calls == []
+    assert (old_send.give_backs, newer_send.give_backs) == (1, 0)
+    assert controller.holds(newer)
+    assert state.submit.text == "newer draft"
+
+    assert controller.publish_prepared(newer, "newer final") is True
+    await _run_started(scheduled)
+    assert [event.text for event in recorded.events] == ["newer final"]
+
+
+async def test_a_plain_send_cannot_take_the_claim_from_a_prepared_one() -> None:
+    bus = EventBus()
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    recorded = await _record_publishes(bus, state)
+    send = _Send(view)
+    prepared = _begin(controller, send)
+    assert prepared is not None
+
+    controller.submit_user_text("typed while it prepares")
+    controller.request_retry("a continue note")
+    await _run_started(scheduled)
+
+    assert recorded.events == []
+    assert controller.holds(prepared)
+    # The continue note, refused at once, is back in the composer; the message's worker, refused later, finds
+    # that draft there and leaves it.
+    assert view.draft == "a continue note"
+    assert ("restore", "typed while it prepares") in view.calls
+    assert view.calls.count("still_sending") == 1
+    assert send.give_backs == 0
+
+    assert controller.publish_prepared(prepared, _PREPARED_FINAL) is True
+    await _run_started(scheduled)
+    assert [event.text for event in recorded.events] == [_PREPARED_FINAL]
+
+
+async def test_a_prepared_message_that_opens_no_turn_comes_back_through_its_give_back() -> None:
+    bus = EventBus()
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller, state, view = _make_input_flow_controller(bus, start_worker=scheduled.append)
+    recorded = await _record_publishes(bus, state, start_turn=False)
+    send = _Send(view)
+    prepared = _begin(controller, send)
+    assert prepared is not None
+
+    assert controller.publish_prepared(prepared, _PREPARED_FINAL) is True
+    await _run_started(scheduled)
+
+    assert [event.text for event in recorded.events] == [_PREPARED_FINAL]
+    # The draft as written comes back through the send's own give-back, not the published text.
+    assert send.give_backs == 1
+    assert view.calls == [("restore", _PREPARED_DRAFT)]
+    assert not state.submit.active
+    assert not state.render_gate.active
+    assert not state.run.agent_running
+
+
+# -- plain sends release only their own claim ----------------------------------
+
+
+class _TakeoverBus:
+    """A bus whose publish hands the claim to a newer send meanwhile, then accepts, refuses or raises."""
+
+    def __init__(self, state: MainScreenState, outcome: str) -> None:
+        self._state = state
+        self._outcome = outcome
+        self.newer: int | None = None
+        self.published: list[object] = []
+
+    async def publish(self, event: object) -> None:
+        self.published.append(event)
+        # The submit in flight was let go meanwhile, and a newer send took the claim.
+        self._state.submit.clear()
+        self.newer = self._state.submit.begin("newer", kind="turn")
+        if self._outcome == "refused":
+            self._state.submit.block()
+        elif self._outcome == "raised":
+            raise RuntimeError("publish failed")
+        elif isinstance(event, UserMessage) and event.injection_id is None:
+            event.started_turn = True
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "refused", "raised"])
+@pytest.mark.parametrize("entry", ["message", "retry", "injection"])
+async def test_a_plain_sends_cleanup_never_ends_a_newer_claim(entry: str, outcome: str) -> None:
+    state = MainScreenState()
+    state.run.agent_running = entry == "injection"
+    bus = _TakeoverBus(state, outcome)
+    scheduled: list[Callable[[], Awaitable[object]]] = []
+    controller = _make_input_flow_controller(cast(Any, bus), state=state, start_worker=scheduled.append)[0]
+
+    if entry == "retry":
+        controller.request_retry("a note")
+    else:
+        controller.submit_user_text("hello")
+    assert len(scheduled) == 1
+    if outcome == "raised":
+        with pytest.raises(RuntimeError, match="publish failed"):
+            await _run_started(scheduled)
+    else:
+        await _run_started(scheduled)
+
+    assert len(bus.published) == 1
+    assert bus.newer is not None
+    assert state.submit.holds(bus.newer)
+    assert state.submit.text == "newer"

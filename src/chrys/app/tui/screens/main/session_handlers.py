@@ -999,6 +999,7 @@ class SessionHandler:
 
         to_label = event.to_display_name or event.to_profile
         from_label = event.from_display_name or event.from_profile
+        self._state.runtime.profile_name = event.to_profile
         s.runtime_metadata = event.runtime_details
         self._state.runtime.details_confirmed = True
         if event.runtime_details.model.selection_source == "active":

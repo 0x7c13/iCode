@@ -29,7 +29,9 @@ from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.screens.models.picker import ModelPickerAction, ModelsScreen
 from chrys.app.tui.screens.models.screen import ModelConfigScreen
-from chrys.foundation.config.settings import DEFAULT_LOCALE
+from chrys.foundation.config.settings import DEFAULT_LOCALE, Settings
+from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle
+from chrys.foundation.config.spec import Source
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AgentRuntimeDetails,
@@ -43,7 +45,7 @@ from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile, is_model_profile_selectable
 from tests.app.tui.screens._model_config_support import _model_config_result_events
-from tests.support.event_capture import capture_event_sequence
+from tests.support.event_capture import capture_event_sequence, capture_events
 from tests.support.tui_helpers import discard_worker
 
 
@@ -118,6 +120,7 @@ def _callbacks() -> RuntimeConfigCallbacks:
         debug=lambda _key, _message="": None,
         notification_service=_notification_service,
         settings_coordinator=_settings_coordinator,
+        user_picked=lambda: None,
     )
 
 
@@ -400,6 +403,81 @@ async def test_config_screens_receive_file_default_and_runtime_effective_pointer
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("pin", "running", "expected_selected", "expected_running"),
+    [
+        ("Model S", "model-s", "model-s", "model-s"),
+        ("model-s", "model-a", "model-s", "model-a"),
+        ("", "model-a", "model-p", "model-a"),
+        ("", "", "model-p", "model-p"),
+    ],
+    ids=["shortcut-by-name", "agent-own-over-shortcut", "agent-own", "neither"],
+)
+async def test_the_model_dialog_is_told_both_of_the_sessions_models(
+    pin: str, running: str, expected_selected: str, expected_running: str
+) -> None:
+    """A prompt shortcut's switch selects a model for this session alone, in the settings the engine
+    shares, not the process pointer; an agent's own model may run instead. The dialog decides what a
+    deletion does against both (``session_models``)."""
+    registry = ModelProfileRegistry()
+    for profile_id, name in (("model-p", "Model P"), ("model-s", "Model S"), ("model-a", "Model A")):
+        registry.register(ModelProfile(id=profile_id, name=name, model_id=f"wire-{profile_id}"))
+    loaded = LoadedSettings(settings=Settings(), provenance={}).overlay(Source.PROCESS_RUNTIME, model_profile="model-p")
+    if pin:
+        loaded = loaded.overlay(Source.SESSION, model_profile=pin)
+    state = MainScreenState()
+    if running:
+        state.runtime.details_confirmed = True
+        state.runtime.details.model.profile_id = running
+    view = _View()
+    controller = RuntimeConfigController(
+        state=state,
+        services=MainScreenServices(
+            bus=EventBus(),
+            model_registry=registry,
+            settings_handle=SettingsHandle(loaded),
+            active_model_profile_id="model-p",
+        ),
+        view=cast(Any, view),
+        callbacks=_callbacks(),
+    )
+
+    controller.open_model_config()
+    await view.drain_workers()
+
+    model_screen, _callback = view.pushed[0]
+    assert isinstance(model_screen, ModelConfigScreen)
+    assert model_screen._session_selected_profile_id == expected_selected
+    assert model_screen._session_running_profile_id == expected_running
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "releases", "announced"),
+    [("switched", [True], False), ("updated", [False], True), ("reloaded", [False], False), ("", [], False)],
+)
+async def test_each_model_dialog_result_asks_for_its_own_effects(
+    result: str, releases: list[bool], announced: bool
+) -> None:
+    """``switched`` reloads and ends a session-only switch; ``updated`` reloads and says so; ``reloaded``
+    reloads alone, keeping the session's own choice; nothing else reloads."""
+    bus = EventBus()
+    published = await capture_events(bus, SettingsReload)
+    view = _View()
+    controller = RuntimeConfigController(
+        state=MainScreenState(),
+        services=MainScreenServices(bus=bus, model_registry=ModelProfileRegistry()),
+        view=cast(Any, view),
+        callbacks=_callbacks(),
+    )
+
+    await controller.on_model_config_result(result)
+
+    assert [event.release_session_scoped_model for event in published] == releases
+    assert bool(view.notifications) is announced
+
+
+@pytest.mark.asyncio
 async def test_open_model_config_keeps_the_event_loop_responsive_while_the_pointer_read_waits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -607,7 +685,17 @@ def test_view_adapter_open_runtime_details_pushes_runtime_details_dialog() -> No
     def push_screen(dialog: object) -> None:
         pushed.append(dialog)
 
-    screen = SimpleNamespace(app=SimpleNamespace(push_screen=push_screen))
+    def load_shortcuts() -> list[object]:
+        return []
+
+    def shortcut_model_text(spec: str) -> str:
+        return spec
+
+    screen = SimpleNamespace(
+        app=SimpleNamespace(push_screen=push_screen),
+        prompt_shortcut_sources_loader=lambda: load_shortcuts,
+        shortcut_model_text=shortcut_model_text,
+    )
     details = AgentRuntimeDetails()
 
     MainScreenViewAdapter(cast(Any, screen), state=MainScreenState()).open_runtime_details(details)
@@ -615,6 +703,8 @@ def test_view_adapter_open_runtime_details_pushes_runtime_details_dialog() -> No
     assert len(pushed) == 1
     assert isinstance(pushed[0], RuntimeDetailsDialog)
     assert pushed[0]._details is details
+    assert pushed[0]._load_shortcuts is load_shortcuts
+    assert pushed[0]._shortcut_model_text is shortcut_model_text
 
 
 class _CoordinatorStub:
@@ -807,3 +897,94 @@ async def test_profile_switch_confirmation_lands_promoted_model_on_runtime_cache
     assert services.active_model_profile_id == promoted.id
     assert state.runtime.details_confirmed is True
     assert state.runtime.details.model.profile_id == promoted.id
+
+
+# -- a prompt shortcut's pending switch gives way only to the user's own pick --
+
+
+def _picks_controller(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, busy: bool = False, running: bool = False
+) -> tuple[RuntimeConfigController, list[str], MainScreenState]:
+    monkeypatch.setattr("chrys.service.profiles.models.env_bridge.activate_model_profile", lambda _profile_id: None)
+    registry = AgentProfileRegistry()
+    registry.load_all(user_dir=tmp_path / "agents")
+    state = MainScreenState()
+    state.runtime.profile = "Code"
+    state.run.agent_running = running
+    picks: list[str] = []
+
+    class _Engine:
+        def execution_busy(self) -> bool:
+            return busy
+
+    controller = RuntimeConfigController(
+        state=state,
+        services=MainScreenServices(bus=EventBus(), agent_registry=registry, engine_provider=_Engine),
+        view=cast(Any, _View()),
+        callbacks=replace(_callbacks(), user_picked=lambda: picks.append("picked")),
+    )
+    return controller, picks, state
+
+
+@pytest.mark.parametrize("pick", ["agent_picker", "model_picker"])
+async def test_users_own_agent_or_model_pick_tells_the_prompt_card(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pick: str
+) -> None:
+    controller, picks, _state = _picks_controller(monkeypatch, tmp_path)
+
+    if pick == "agent_picker":
+        await controller.switch_agent_profile("QA")
+    else:
+        await controller.on_model_picked("picked-id")
+
+    assert picks == ["picked"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "model_settings_updated",
+        # The model settings' "switched" result is the fallback after deleting the session's model.
+        "model_settings_switched",
+        "agent_config_rename",
+        "agent_config_fallback",
+        "agent_config_saved",
+        "agent_picker_while_running",
+        "model_picker_while_busy",
+        "model_pick_failed",
+    ],
+)
+async def test_changes_that_are_not_the_users_pick_leave_the_prompt_card_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: str
+) -> None:
+    controller, picks, state = _picks_controller(
+        monkeypatch,
+        tmp_path,
+        busy=change == "model_picker_while_busy",
+        running=change == "agent_picker_while_running",
+    )
+    if change == "model_pick_failed":
+
+        def fail(_profile_id: str) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr("chrys.service.profiles.models.env_bridge.activate_model_profile", fail)
+
+    if change == "model_settings_updated":
+        await controller.on_model_config_result("updated")
+    elif change == "model_settings_switched":
+        await controller.on_model_config_result("switched")
+    elif change == "agent_config_rename":
+        controller.on_agent_config_saved("Code Renamed", "QA")
+        await controller.on_agent_config_result("")
+    elif change == "agent_config_fallback":
+        await controller.on_agent_config_result("switched")
+    elif change == "agent_config_saved":
+        controller.on_agent_config_saved("Code Renamed", None)
+    elif change == "agent_picker_while_running":
+        await controller.switch_agent_profile("QA")
+    else:
+        await controller.on_model_picked("picked-id")
+
+    assert picks == []
+    assert state.runtime.pending_active_switch is None or change == "agent_config_saved"

@@ -1074,12 +1074,17 @@ class SuggestionScreen:
         super().__setattr__(name, value)
 
     def __init__(self) -> None:
-        self.app = type("_App", (), {"available_themes": ["textual-dark"], "theme": "textual-dark"})()
+        self.app = type(
+            "_App", (), {"available_themes": ["textual-dark"], "theme": "textual-dark", "is_running": True}
+        )()
         self.state = MainScreenState()
         self.state.runtime.profile = "Code"
         self._set_workspace_cwd("")
         self.services = MainScreenServices(bus=EventBus(), state_store=object())
         self.is_attached = True
+        # What the adapter reads, with is_attached, to tell a live screen from one being torn down.
+        self._pruning = False
+        self._closing = False
         self.opened: list[str] = []
         self.notifications: list[str] = []
         self.submitted: list[str] = []
@@ -1090,6 +1095,8 @@ class SuggestionScreen:
         self.applied_titles: list[str] = []
         self.suggestion_list = SuggestionListStub()
         self.input_bar = DismissInputBarStub()
+        # Every worker started, for the test to await: a started worker is the test's to finish.
+        self.workers: list[TaskWorker] = []
 
     def _set_workspace_cwd(self, cwd: str) -> None:
         """Move the workspace as ``MainScreen._set_workspace_cwd`` does."""
@@ -1166,7 +1173,9 @@ class SuggestionScreen:
         self.notifications.append(format_message(message) if isinstance(message, MessageRef) else message)
 
     def run_worker(self, work, **_kwargs) -> TaskWorker:
-        return TaskWorker(work)
+        worker = TaskWorker(work)
+        self.workers.append(worker)
+        return worker
 
     def query_one(self, cls):
         name = cls.__name__

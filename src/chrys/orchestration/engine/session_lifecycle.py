@@ -46,6 +46,7 @@ from chrys.foundation.trajectory.event_types import RuntimeFinishReason as Traje
 from chrys.foundation.util.lock import FileLock
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.engine.state import lifecycle_permits
+from chrys.orchestration.engine.state.active_session import session_pin_overrides
 from chrys.orchestration.engine.state.machine import Trigger
 from chrys.orchestration.invoker.contracts import AbortCause
 from chrys.orchestration.invoker.runtime import restore_phase4_state
@@ -1022,24 +1023,9 @@ class SessionLifecycle:
             return
         self._fsm.restore_terminal_state(failed=source == "error")
 
-    def _session_pin_overrides(self) -> dict[str, Any]:
-        """Snapshot the per-session pins every re-load must carry.
-
-        Keep this contract in sync with the same-named implementation in
-        state/controls.py; changes to either implementation must update both.
-        Pins travel only while pinned, so an unpinned session picks up a changed
-        env value on its next load.
-        """
-        overrides: dict[str, Any] = {}
-        if self._session.ask_user_timeout_pinned:
-            overrides["ask_user_timeout_seconds"] = self._settings_handle.settings.ask_user_timeout_seconds
-        if self._session.model_profile_pinned:
-            overrides["model_profile"] = self._settings_handle.settings.model_profile
-            overrides["model_profile_override"] = self._settings_handle.settings.model_profile_override
-            overrides["model_profile_override_sub_agents"] = (
-                self._settings_handle.settings.model_profile_override_sub_agents
-            )
-        return overrides
+    def _session_pin_overrides(self, *, with_scoped_model: bool = True) -> dict[str, Any]:
+        """Snapshot the per-session pins every re-load must carry (:func:`session_pin_overrides`)."""
+        return session_pin_overrides(self._session, self._settings_handle.settings, with_scoped_model=with_scoped_model)
 
     def _reload_eval_context(self) -> EvalContext:
         """The launch mode's retry policy, passed *into* the load (as every re-load must)."""
@@ -1324,11 +1310,83 @@ class SessionLifecycle:
         or prepare + ``_commit_session_transition``); the shutdown here relies on
         the fence to have already invalidated the old session's turn state.
         """
+        # A prompt shortcut card's switches belong to the session they were made
+        # in: the new one starts as if they never happened.
+        staged_loaded = await self._load_without_scoped_model()
+        replaced = self._session.session_switch.agent_before
+        if replaced is not None:
+            profile = self._agent_before_switch(replaced)
+        # Outside the try on purpose: a close that fails has left nothing, so the
+        # switches stay with the session that still holds them.
         await self.close_session()
-        self.reset_turn_runtime_after_session_shutdown()
-        self.cleanup_empty_session_dir()
-        self.reset_for_restart(None)
-        await self.start(profile, operation="new_session")
+        try:
+            self.reset_turn_runtime_after_session_shutdown()
+            self.cleanup_empty_session_dir()
+            self.reset_for_restart(None)
+            await self.start(profile, operation="new_session", staged_loaded=staged_loaded)
+        finally:
+            # The session the switches belonged to is closed, whether or not the new one started.
+            self._end_session_switch(staged_loaded)
+
+    def _agent_before_switch(self, replaced: AgentProfile) -> AgentProfile:
+        """The agent a session-scoped agent switch replaced, as the registry has it now."""
+        registry = self._agent_registry
+        return (registry.get(replaced.name) if registry is not None else None) or replaced
+
+    def _end_session_switch(self, staged_loaded: LoadedSettings | None) -> None:
+        """End what a prompt shortcut card switched for the session just left.
+
+        The one place a session-scoped switch ends with its session. Invariant:
+        the switch record, the settings in force and ``session.agent_profile``
+        never disagree. *staged_loaded* is what the next session was to start
+        with, loaded without the switch's model; None when there was no model
+        switch, the load failed or those settings cannot go in force yet (a
+        restore that failed before entering the target's folder), which keeps
+        the pin together with the settings that carry it.
+
+        When nothing replaced the session left (``current.loaded`` is None: only
+        a build's commit installs one after ``close_session``), the next session
+        never went live, so what it would have started with is put in force here:
+        any later start then begins from it, whichever path it takes.
+
+        Synchronous on purpose: it runs in ``finally`` blocks a cancel passes
+        through, and an ``await`` here could leave it half done.
+        """
+        switch = self._session.session_switch
+        agent_before = switch.agent_before
+        switch.agent_before = None
+        if self._current.loaded is None:
+            if agent_before is not None:
+                self._session.agent_profile = self._agent_before_switch(agent_before)
+            if staged_loaded is not None:
+                self._settings_handle.install(staged_loaded)
+        if staged_loaded is not None:
+            self._session.release_scoped_model()
+
+    async def _load_without_scoped_model(self) -> LoadedSettings | None:
+        """Settings for a fresh session when this one holds a session-scoped model switch, else None.
+
+        The switch belongs to the session it was made in: the next one starts on
+        the default model. Best-effort, like any re-derivation here: an
+        unreadable config keeps the live settings, switch included.
+        """
+        if not (self._session.model_profile_pinned and self._session.session_switch.model):
+            return None
+        overrides = self._session_pin_overrides(with_scoped_model=False)
+        workspace = self._session.workspace
+        try:
+            old_loaded = self._settings_handle.loaded
+            candidate = await asyncio.to_thread(
+                load_settings,
+                project_root=Path(workspace.primary_cwd) if workspace is not None else Path(safe_getcwd()),
+                eval_context=self._reload_eval_context(),
+                **overrides,
+            )
+        except Exception:
+            logger.warning("Settings re-derivation for the new session failed", exc_info=True)
+            return None
+        routed, _ = route_restart_settings(reattribute_command_line(candidate, old_loaded), old_loaded)
+        return routed
 
     async def on_session_clear(self, event: SessionClear) -> None:
         """Delete the ACTIVE session and start a fresh one as one fenced transition.
@@ -1384,6 +1442,12 @@ class SessionLifecycle:
 
         restoring_current = self._session.guard.owns(event.session_id)
         target_lock: FileLock | None = None
+        left_session = False
+        drops_scoped_model = False
+        staged_loaded: LoadedSettings | None = None
+        # The staged settings describe the target's folder: they may go in force
+        # on failure only once the session is in that folder too.
+        in_target_folder = False
         transition_owner: str | None = None
         if not restoring_current:
             try:
@@ -1615,11 +1679,16 @@ class SessionLifecycle:
             # anything is torn down — so an unreadable config file aborts the
             # restore with the current session intact.
             old_loaded = self._settings_handle.loaded
+            # A session-scoped model switch stays with its session: another
+            # session restores on its own saved model or the default.
+            drops_scoped_model = (
+                not restoring_current and self._session.model_profile_pinned and self._session.session_switch.model
+            )
             candidate = await asyncio.to_thread(
                 load_settings,
                 project_root=Path(target_cwd),
                 eval_context=self._reload_eval_context(),
-                **self._session_pin_overrides(),
+                **self._session_pin_overrides(with_scoped_model=not drops_scoped_model),
             )
             staged_loaded, _ = route_restart_settings(reattribute_command_line(candidate, old_loaded), old_loaded)
             if profile is None:
@@ -1632,10 +1701,13 @@ class SessionLifecycle:
                 await self.close_session_in_place()
             else:
                 await self.close_session()
+                # The session the switches belonged to is closed, whether or not the restore completes.
+                left_session = True
             self.reset_turn_runtime_after_session_shutdown()
             self.cleanup_empty_session_dir()
 
             self._session.workspace = session_ws
+            in_target_folder = True
 
             if target_lock is not None:
                 self._session.guard.install(event.session_id, target_lock)
@@ -1655,6 +1727,10 @@ class SessionLifecycle:
                 staged_loaded=staged_loaded,
             )
         except BaseException as exc:
+            if left_session:
+                # Before the fence opens and the failure is published: nothing may see the old switches.
+                self._end_session_switch(staged_loaded if drops_scoped_model and in_target_folder else None)
+                left_session = False
             if transition_owner is not None:
                 self._permits.finish_session_transition(transition_owner)
                 transition_owner = None
@@ -1669,6 +1745,9 @@ class SessionLifecycle:
                 )
             raise
         finally:
+            if left_session:
+                # The restored session runs on its own agent and model.
+                self._end_session_switch(staged_loaded if drops_scoped_model and in_target_folder else None)
             if target_lock is not None:
                 target_lock.release()
             if transition_owner is not None:

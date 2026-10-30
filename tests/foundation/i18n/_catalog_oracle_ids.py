@@ -9,6 +9,7 @@ from tests.foundation.i18n._buddy_catalog_oracle_ids import BUDDY_MESSAGE_IDS
 from tests.foundation.i18n._error_catalog_oracle_ids import ERROR_MESSAGE_IDS
 from tests.foundation.i18n._help_catalog_oracle_ids import HELP_MESSAGE_IDS
 from tests.foundation.i18n._hook_panel_catalog_oracle_ids import HOOK_PANEL_MESSAGE_IDS
+from tests.foundation.i18n._prompt_catalog_oracle_ids import PROMPT_MESSAGE_IDS
 from tests.foundation.i18n._settings_catalog_oracle_ids import SETTINGS_MESSAGE_IDS
 from tests.foundation.i18n._tool_card_catalog_oracle_ids import TOOL_CARD_MESSAGE_IDS
 from tests.foundation.i18n._web_catalog_oracle_ids import WEB_MESSAGE_IDS
@@ -533,7 +534,9 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.input.placeholder.models",
     "tui.input.placeholder.prompt",
     "tui.input.placeholder.shell",
+    ("tui.input.prompt_fields_pending", "tui.input.prompt_fields_pending#plural"),
     "tui.input.queued",
+    "tui.input.title.prompt_fields_pending",
     "tui.input.retry",
     "tui.input.send",
     "tui.language_command.unknown_locale",
@@ -720,6 +723,9 @@ _message_ids: set[str | tuple[str, str]] = {
     "tui.runtime_details.section.project_hooks",
     "tui.runtime_details.section.sub_agent_tools",
     "tui.runtime_details.skills",
+    "tui.runtime_details.shortcuts",
+    "tui.runtime_details.loading.shortcuts",
+    "tui.runtime_details.empty.shortcuts",
     "tui.runtime_details.title",
     "tui.runtime_details.token_count",
     "tui.runtime_details.tools",
@@ -1847,4 +1853,5 @@ EXPECTED_MESSAGE_IDS: frozenset[str | tuple[str, str]] = (
     | ERROR_MESSAGE_IDS
     | SETTINGS_MESSAGE_IDS
     | TOOL_CARD_MESSAGE_IDS
+    | PROMPT_MESSAGE_IDS
 )

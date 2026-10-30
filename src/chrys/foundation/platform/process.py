@@ -30,6 +30,7 @@ from chrys.foundation.platform.c_api import declare_functions, struct_fields
 from chrys.foundation.platform.child_reap import install_stopped_child_reap_fix
 from chrys.foundation.platform.runtime_paths import is_windows_store_python_stub
 from chrys.foundation.text.encoding import decode_bytes, is_mostly_text
+from chrys.foundation.util.once_close import finish_close
 
 # Every subprocess in the app is spawned through this module, and the shim has to
 # be in place before the first one starts, so install it on import.  See
@@ -39,6 +40,10 @@ install_stopped_child_reap_fix()
 _CP_UTF8 = 65001
 _STOPPED_PROCESS_POLL_INTERVAL = 1.0
 _PROCESS_WAIT_CLEANUP_TIMEOUT = 2.0
+_LATE_START_GRACE = 30.0
+"""How long a start a cancel stopped waiting for may still finish and have its tree ended; then it is given up."""
+_LATE_CHILD_ENDINGS: set[asyncio.Task[None]] = set()
+"""Tree endings for starts that finished after their cancel went on; each removes itself when done."""
 _WINDOWS_TREE_KILL_TIMEOUT = 2.0
 
 
@@ -443,7 +448,7 @@ async def spawn_managed_stdio_process(
             raise
 
     try:
-        process = await asyncio.create_subprocess_exec(
+        process = await _create_owned_subprocess(
             command,
             *args,
             stdin=asyncio.subprocess.PIPE,
@@ -994,7 +999,7 @@ async def _managed_subprocess_gen(*args: Any, **kwargs: Any) -> AsyncGenerator[a
     kwargs.setdefault("stdin", subprocess.DEVNULL)
 
     try:
-        proc = await asyncio.create_subprocess_exec(*args, **kwargs)
+        proc = await _create_owned_subprocess(*args, **kwargs)
     except OSError as exc:
         raise_if_missing_cwd(kwargs.get("cwd"), exc)
         raise
@@ -1277,6 +1282,80 @@ def _windows_tree_kill_argv(pid: int) -> list[str] | None:
     if taskkill is None:
         return None
     return [taskkill, "/PID", str(pid), "/T", "/F"]
+
+
+async def _create_owned_subprocess(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+    """Start a subprocess that a cancel arriving while it starts cannot leave running.
+
+    ``create_subprocess_exec`` returns only once the child's pipes are connected,
+    but the child runs from the fork on. Cancelled in between, asyncio kills the
+    direct child alone, and whatever it started (a shell's commands) runs on with
+    no owner. So the start finishes under a shield, and a cancel that came
+    meanwhile ends the child's whole tree before it is passed on. That ending
+    runs as one task drained to its end: a second cancel cannot cut it short.
+    """
+    # Callers pass their own stdin; detached by default as in :func:`managed_subprocess`.
+    kwargs.setdefault("stdin", subprocess.DEVNULL)
+    spawn = asyncio.ensure_future(asyncio.create_subprocess_exec(*args, **kwargs))
+    try:
+        return await asyncio.shield(spawn)
+    except asyncio.CancelledError:
+        await finish_close(asyncio.create_task(_end_started_child(spawn, kwargs)))
+        raise
+
+
+async def _end_started_child(spawn: asyncio.Future[asyncio.subprocess.Process], kwargs: dict[str, Any]) -> None:
+    """Wait a bounded time for the start a cancel interrupted, then end the child's whole tree.
+
+    A cancel must always be able to end, so a start that does not finish in
+    time (a working folder on a stalled network disk) is not waited for: the
+    caller's cancel goes on, and the child's tree is ended whenever the start
+    finishes (:func:`_end_child_once_started`).
+    """
+    await asyncio.wait({spawn}, timeout=_PROCESS_WAIT_CLEANUP_TIMEOUT)
+    if not spawn.done():
+        _end_child_once_started(spawn, kwargs)
+        return
+    if spawn.cancelled() or spawn.exception() is not None:
+        # A start that failed left nothing running; the cancel is what the caller hears.
+        return
+    await _end_child_tree(spawn.result(), kwargs)
+
+
+def _end_child_once_started(spawn: asyncio.Future[asyncio.subprocess.Process], kwargs: dict[str, Any]) -> None:
+    """End the tree of a start that finishes after its cancel went on, or give the start up after a grace.
+
+    Cancelling the start instead would end only the direct child (asyncio
+    kills that one), leaving whatever it started running with no owner; that
+    is the last resort, for a start still stuck after :data:`_LATE_START_GRACE`.
+    """
+    loop = asyncio.get_running_loop()
+    give_up = loop.call_later(_LATE_START_GRACE, spawn.cancel)
+
+    def started(future: asyncio.Future[asyncio.subprocess.Process]) -> None:
+        give_up.cancel()
+        # Read here, so a failure is not logged as never retrieved.
+        if future.cancelled() or future.exception() is not None:
+            return
+        ending = loop.create_task(_end_child_tree(future.result(), kwargs))
+        _LATE_CHILD_ENDINGS.add(ending)
+        ending.add_done_callback(_LATE_CHILD_ENDINGS.discard)
+
+    spawn.add_done_callback(started)
+
+
+async def _end_child_tree(proc: asyncio.subprocess.Process, kwargs: dict[str, Any]) -> None:
+    """End a started child and everything it started, then reap it within a bounded wait."""
+    process_group_id = _infer_process_group_id(proc, kwargs)
+    if process_group_id is not None:
+        kill_process_group(process_group_id)
+    if proc.pid is not None:
+        await kill_windows_process_tree(proc.pid)
+    with contextlib.suppress(ProcessLookupError, OSError):
+        proc.kill()
+    finalize_subprocess_transport(proc)
+    with contextlib.suppress(ProcessLookupError, OSError, TimeoutError):
+        await asyncio.wait_for(proc.wait(), timeout=_PROCESS_WAIT_CLEANUP_TIMEOUT)
 
 
 def _infer_process_group_id(proc: asyncio.subprocess.Process, kwargs: dict[str, Any]) -> int | None:
