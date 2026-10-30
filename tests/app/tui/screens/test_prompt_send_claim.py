@@ -23,8 +23,10 @@ from textual.worker import WorkerCancelled
 
 import chrys.app.tui.screens.main.prompt_card as prompt_card_module
 from chrys.app.tui.app import ChrysApp
+from chrys.app.tui.screens.agents.config import AgentsConfigScreen
 from chrys.app.tui.screens.main.input_flow import PreparedSend
 from chrys.app.tui.screens.main.screen import MainScreen
+from chrys.app.tui.screens.models.screen import ModelConfigScreen
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chrome.input_bar import InputBar, _ChatTextArea
 from chrys.app.tui.widgets.chrome.prompt_card import PromptCard
@@ -43,12 +45,15 @@ from chrys.foundation.events.types import (
 from chrys.foundation.i18n import MessageRef
 from chrys.foundation.platform import get_platform
 from chrys.service.profiles.agents.registry import AgentProfileRegistry
+from chrys.service.profiles.models.registry import ModelProfileRegistry
+from chrys.service.profiles.models.schema import ModelProfile
 from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import ENGINE_TURN_TIMEOUT, wait_for
 
 if TYPE_CHECKING:
     from textual.pilot import Pilot
+    from textual.screen import Screen
 
 type Hold = Literal["agent_switch", "command"]
 type Entry = Literal[
@@ -277,7 +282,7 @@ def _expected_publish(entry: Entry, consumed: str | None) -> tuple[str, str]:
 
 
 async def _app_with_hold(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hold: Hold
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hold: Hold, *, model_registry: ModelProfileRegistry | None = None
 ) -> tuple[ChrysApp, EventBus, _Gate, _Published]:
     _global_shortcut("zzqa", f"---\nagent: QA\n---\n{_AGENT_BODY}")
     _global_shortcut("zzcmd", _COMMAND_BODY)
@@ -289,7 +294,11 @@ async def _app_with_hold(
     await bus.subscribe(UserMessage, published)
     await bus.subscribe(UserRetry, published)
     app = make_chrys_app(
-        tmp_path / "state", engine=SessionGenerationEngine(), agent_registry=_registry(tmp_path), event_bus=bus
+        tmp_path / "state",
+        engine=SessionGenerationEngine(),
+        agent_registry=_registry(tmp_path),
+        event_bus=bus,
+        model_registry=model_registry,
     )
     return app, bus, gate, published
 
@@ -659,3 +668,43 @@ async def test_a_send_cancelled_before_its_worker_starts_ends_and_the_next_one_g
             description="next send published",
         )
         assert [text for text, _cwd in commands] == [draft]
+
+
+@pytest.mark.parametrize(
+    ("key", "dialog", "notice"),
+    [("f4", ModelConfigScreen, "#mc-read-only-notice"), ("f2", AgentsConfigScreen, "#ac-read-only-notice")],
+    ids=["models", "agents"],
+)
+async def test_a_config_dialog_opened_while_a_send_prepares_is_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str, dialog: type[Screen[str]], notice: str
+) -> None:
+    """A dialog reads the session once, as it opens, and the send then switches the model and starts its
+    turn under it: left editable, the model just switched to could be deleted with no reload."""
+    registry = ModelProfileRegistry()
+    registry.register(ModelProfile(id="model-a", name="Model A", model_id="wire-a"))
+    app, _bus, gate, published = await _app_with_hold(tmp_path, monkeypatch, "command", model_registry=registry)
+    async with app.run_test(size=(120, 40)) as pilot:
+        main, chat = await _ready(pilot, monkeypatch)
+
+        async def opens_read_only() -> bool:
+            await pilot.press(key)
+            await wait_for(
+                lambda: isinstance(app.screen, dialog) and bool(app.screen.query(notice)),
+                pilot=pilot,
+                description="dialog open",
+            )
+            shown = app.screen.query_one(notice).display
+            await pilot.press("escape")
+            await wait_for(lambda: app.screen is main and chat.has_focus, pilot=pilot, description="dialog closed")
+            return shown
+
+        # Nothing in flight: the same dialog is editable.
+        assert not await opens_read_only()
+
+        _draft, final = await _start_held_send(pilot, main, chat, "command", gate)
+        assert await opens_read_only()
+
+        gate.release.set()
+        await wait_for(
+            lambda: published.described() == [("UserMessage", final)], pilot=pilot, description="send published"
+        )

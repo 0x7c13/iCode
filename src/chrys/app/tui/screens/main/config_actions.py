@@ -232,6 +232,15 @@ class RuntimeConfigController:
         self._callbacks.user_picked()
         self._callbacks.debug("AgentProfileSwitch", profile_name)
 
+    def _config_read_only(self) -> bool:
+        """Whether a config dialog opening now is read-only: a turn runs, or a send in flight will start one.
+
+        A dialog reads the session once, as it opens. A prompt shortcut's send
+        holds its claim while its commands run, then switches the model and
+        publishes under whatever opened meanwhile.
+        """
+        return self._state.run.agent_running or self._state.submit.active or self._services.execution_busy()
+
     def open_model_config(self) -> None:
         """Schedule opening the model configuration modal."""
         if self._state.run.agent_loading:
@@ -275,7 +284,7 @@ class RuntimeConfigController:
                     _canonical_active_model_profile_id(registry, global_default_profile_id),
                     session_selected_profile_id=_canonical_active_model_profile_id(registry, models.selected),
                     session_running_profile_id=_canonical_active_model_profile_id(registry, models.running),
-                    read_only=self._state.run.agent_running or self._services.execution_busy(),
+                    read_only=self._config_read_only(),
                 ),
                 _on_result,
             )
@@ -395,7 +404,7 @@ class RuntimeConfigController:
                 workspace_cwd=self._state.workspace_marker.current_cwd or None,
                 workspace_roots=list(self._state.workspace.roots),
                 on_saved=self.on_agent_config_saved,
-                read_only=self._state.run.agent_running or self._services.execution_busy(),
+                read_only=self._config_read_only(),
                 **kwargs,
             ),
             self._start_agent_config_result,
