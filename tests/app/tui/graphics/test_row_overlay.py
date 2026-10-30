@@ -306,7 +306,9 @@ async def test_a_frame_draws_at_most_its_budget_and_the_rest_follows(
     async with app.run_test(size=(80, 24)) as pilot:
         view = TerminalImages(image_previews((40, 20)))
         await app.mount(view)
-        await wait_for(lambda: view.slots[0].rows, pilot=pilot, description="the rows were encoded")
+        # Drawn first: rows owed from before, drawn under the budget and then erased by the repaint,
+        # would be drawn twice.
+        await _all_drawn(app, view, pilot)
         monkeypatch.setattr(manager, "FRAME_BUDGET_CHARS", 3 * len(view.slots[0].rows[0]))
         mark = len(app.frames)
 
@@ -315,7 +317,7 @@ async def test_a_frame_draws_at_most_its_budget_and_the_rest_follows(
 
         per_frame = [len(_draws(frame)) for frame in app.frames[mark:] if _draws(frame)]
         assert max(per_frame) == 3
-        assert sum(per_frame) == 10
+        assert _on_screen(app.frames) == _image_rows(view)
 
 
 async def test_nothing_is_drawn_while_a_modal_covers_the_screen(protocol: GraphicsProtocol) -> None:
@@ -381,10 +383,10 @@ async def test_rows_wait_while_the_terminal_has_not_taken_earlier_output(
 
         view.refresh()
         await wait_for(lambda: len(app.frames) > mark, pilot=pilot, description="the image was painted over")
-        painted = len(app.frames)
+        own = app.overlay_frames
         # No rows, nor any frame of the overlay's own, which would add writes to the queue.
         assert not await wait_until(
-            lambda: _drawn_since(app, mark) or len(app.frames) > painted, pilot=pilot, timeout=0.3
+            lambda: _drawn_since(app, mark) or app.overlay_frames > own, pilot=pilot, timeout=0.3
         )
 
         writer._queue.get_nowait()
@@ -398,6 +400,8 @@ async def test_a_backlog_with_no_rows_owed_writes_nothing_more(
 ) -> None:
     app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 24)) as pilot:
+        overlay = app.graphics.overlay if app.graphics is not None else None
+        assert overlay is not None
         text = Static("text")
         await app.mount(text)
         writer = WriterThread(io.StringIO())  # never started: the test plays the writer
@@ -405,12 +409,12 @@ async def test_a_backlog_with_no_rows_owed_writes_nothing_more(
         writer.write("output the terminal has not taken")
         mark = len(app.frames)
         text.update("more text")
-        await wait_for(lambda: len(app.frames) > mark, pilot=pilot, description="the text was painted")
-        painted = len(app.frames)
+        await wait_for(
+            lambda: "more text" in "".join(app.frames[mark:]), pilot=pilot, description="the text was painted"
+        )
 
-        writer._queue.get_nowait()
-        # Without the pilot, whose pauses paint frames.
-        assert not await wait_until(lambda: len(app.frames) > painted, timeout=0.3)
+        # No frame of the overlay's own is due, to try again while the backlog lasts or after it.
+        assert (overlay._frame_handle, overlay._settle_handle) == (None, None)
 
 
 class _SynchronizedApp(TerminalImagesApp):

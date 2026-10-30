@@ -13,7 +13,7 @@ from textual._compositor import CompositorUpdate
 from textual.app import App
 
 from chrys.app.tui.graphics import kitty
-from chrys.app.tui.graphics.manager import TerminalGraphics
+from chrys.app.tui.graphics.manager import TerminalGraphics, _OverlayFrame
 from chrys.app.tui.widgets.chat.image_preview import ChatImagePreview, extract_image_previews
 
 if TYPE_CHECKING:
@@ -28,7 +28,8 @@ class TerminalImagesApp(App[None]):
 
     ``writes`` holds what the graphics wrote outside frames (kitty commands) and ``frames`` each frame
     the overlay extended, rendered as the terminal would receive it, frame text included. Rendering
-    happens here because a headless app never renders its frames.
+    happens here because a headless app never renders its frames. ``overlay_frames`` counts those the
+    overlay wrote of its own, to draw rows owed; the others are Textual's.
     """
 
     CSS = "Screen { layers: base above; }"
@@ -38,6 +39,7 @@ class TerminalImagesApp(App[None]):
         self.protocol = protocol
         self.writes: list[str] = []
         self.frames: list[str] = []
+        self.overlay_frames = 0
         self.graphics: TerminalGraphics | None = None
 
     def on_mount(self) -> None:
@@ -52,6 +54,7 @@ class TerminalImagesApp(App[None]):
         framed = renderable if self.graphics is None else self.graphics.frame(renderable)
         if framed is not renderable and isinstance(framed, CompositorUpdate):
             self.frames.append(framed.render_segments(self.console))
+            self.overlay_frames += isinstance(renderable, _OverlayFrame)
         super()._display(screen, framed)
 
     def screen_lines(self) -> list[str]:
