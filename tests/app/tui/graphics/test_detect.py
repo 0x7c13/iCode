@@ -12,6 +12,7 @@ from chrys.app.tui.graphics.probe import TerminalReport
 
 KITTY = GraphicsProtocol.KITTY
 SIXEL = GraphicsProtocol.SIXEL
+ITERM = GraphicsProtocol.ITERM
 BLOCKS = GraphicsProtocol.BLOCKS
 _SIXEL = frozenset({61, 4, 6, 22, 52})
 _WT = {"WT_SESSION": "abc"}
@@ -38,8 +39,10 @@ _WT = {"WT_SESSION": "abc"}
         pytest.param(TerminalReport("iTerm2 3.7.20260916-nightly"), {}, BLOCKS, id="iterm2-nightly-too-old"),
         pytest.param(TerminalReport("iTerm2 3.6.20250101-nightly"), {}, BLOCKS, id="iterm2-3.6-nightly"),
         pytest.param(TerminalReport("iTerm2 3.8.20270101-nightly"), {}, KITTY, id="iterm2-later-nightly"),
-        pytest.param(TerminalReport("WezTerm 20240203-110809-5046fc22", _SIXEL), {}, BLOCKS, id="wezterm"),
-        pytest.param(TerminalReport("xterm.js(6.1.0-beta.304)", frozenset({62, 4})), {}, BLOCKS, id="vscode"),
+        pytest.param(TerminalReport("WezTerm 20240203-110809-5046fc22", _SIXEL), {}, ITERM, id="wezterm"),
+        pytest.param(TerminalReport("WezTerm 20240203-110809-5046fc22"), _WT, ITERM, id="wezterm-started-from-wt"),
+        pytest.param(TerminalReport("xterm.js(6.1.0-beta.304)", frozenset({62, 4, 9, 22})), {}, ITERM, id="vscode"),
+        pytest.param(TerminalReport("xterm.js(6.1.0-beta.304)", frozenset({1, 2})), {}, BLOCKS, id="vscode-images-off"),
         pytest.param(TerminalReport("XTerm(390)", _SIXEL), _WT, BLOCKS, id="xterm-started-from-wt"),
         pytest.param(TerminalReport("tmux 3.8", frozenset({1, 2, 4})), _WT, BLOCKS, id="tmux-in-wt"),
         pytest.param(TerminalReport("", _SIXEL), _WT, SIXEL, id="windows-terminal"),
@@ -61,6 +64,7 @@ def test_protocol_follows_the_terminal_that_answered(
 def test_placeholders_need_truecolor_to_name_their_image() -> None:
     assert choose_protocol(TerminalReport("ghostty 1.4.0"), {}, truecolor=False) is BLOCKS
     assert choose_protocol(TerminalReport("", _SIXEL), _WT, truecolor=False) is SIXEL
+    assert choose_protocol(TerminalReport("WezTerm 20240203-110809-5046fc22"), {}, truecolor=False) is ITERM
 
 
 @pytest.fixture
@@ -83,6 +87,7 @@ def queries(monkeypatch: pytest.MonkeyPatch) -> list[None]:
     [
         pytest.param({"TERM": "xterm-ghostty"}, True, id="ghostty"),
         pytest.param({"TERM": "xterm-256color"}, True, id="generic-xterm"),
+        pytest.param({"TERM": "wezterm"}, True, id="wezterm"),
         pytest.param({}, True, id="windows"),
         pytest.param({"TERM": "xterm-256color", "TMUX": ""}, True, id="empty-multiplexer-variable"),
         pytest.param({"TERM": "xterm-ghostty", "NO_COLOR": ""}, False, id="no-color"),

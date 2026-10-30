@@ -6,6 +6,9 @@
   protocol with Unicode placeholders, where the app writes 24-bit color (over SSH, only where the host
   sets ``COLORTERM``). Before 3.7.5, and in nightlies built before that fix, iTerm2 draws nothing for a
   placeholder that, like these, gives a row and a column but no third diacritic.
+- WezTerm, and VS Code's terminal (xterm.js) with images turned on, which then lists Sixel (``4``) in
+  its device attributes: iTerm2 inline images, one per cell row, drawn over the half-blocks as Sixel
+  is, in full color.
 - Windows Terminal, which answers no XTVERSION but sets ``WT_SESSION`` (also inside WSL), and lists
   Sixel (``4``) in its device attributes from 1.22: Sixel. A terminal started from a Windows Terminal
   shell inherits ``WT_SESSION``; one that names itself in XTVERSION or ``TERM_PROGRAM`` is not taken
@@ -13,7 +16,7 @@
 - Anything else, and any terminal not asked: half-blocks. The terminal is asked only when the setting
   is on, Textual draws to a real terminal, colors are on, no multiplexer sits between (tmux, screen
   and zellij hide the terminal outside them, and placeholders would need passthrough), and ``TERM`` is
-  unset (Windows) or an xterm one, as every terminal above sets it.
+  unset (Windows) or an xterm one, as every terminal above sets it (WezTerm may set its own).
 """
 
 from __future__ import annotations
@@ -40,8 +43,10 @@ and, for nightlies, which number their third part by build date (``iTerm2 3.7.20
 oldest nightly."""
 _BUILD_DATE: Final = 10_000_000
 """A third version part this large is a build date."""
+_WEZTERM: Final = "WezTerm "
+_XTERM_JS: Final = "xterm.js("
 _SIXEL_ATTRIBUTE: Final = 4
-_ASKED_TERM_PREFIX: Final = "xterm"
+_ASKED_TERM_PREFIXES: Final = ("xterm", "wezterm")
 _MULTIPLEXER_VARIABLES: Final = ("TMUX", "STY", "ZELLIJ")
 _LEADING_VERSION = re.compile(r"\d+(?:\.\d+)*")
 
@@ -55,6 +60,8 @@ class GraphicsProtocol(Enum):
     """Kitty graphics protocol with Unicode placeholders."""
     SIXEL = "sixel"
     """Sixel images drawn over the half-blocks after each frame."""
+    ITERM = "iterm"
+    """iTerm2 inline images (OSC 1337) drawn over the half-blocks after each frame."""
 
 
 def ask_terminal(env: Mapping[str, str], *, enabled: bool) -> TerminalReport | None:
@@ -68,7 +75,7 @@ def _worth_asking(env: Mapping[str, str]) -> bool:
     if "NO_COLOR" in env or any(env.get(name) for name in _MULTIPLEXER_VARIABLES):
         return False
     term = env.get("TERM", "")
-    return not term or term.startswith(_ASKED_TERM_PREFIX)
+    return not term or term.startswith(_ASKED_TERM_PREFIXES)
 
 
 def choose_protocol(report: TerminalReport | None, env: Mapping[str, str], *, truecolor: bool) -> GraphicsProtocol:
@@ -86,6 +93,10 @@ def choose_protocol(report: TerminalReport | None, env: Mapping[str, str], *, tr
             if truecolor and version >= oldest:
                 return GraphicsProtocol.KITTY
             return GraphicsProtocol.BLOCKS
+    if report.version.startswith(_WEZTERM) or (
+        report.version.startswith(_XTERM_JS) and _SIXEL_ATTRIBUTE in report.attributes
+    ):
+        return GraphicsProtocol.ITERM
     if (
         not report.version
         and env.get("WT_SESSION")

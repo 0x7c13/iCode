@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 _GHOSTTY = TerminalReport("ghostty 1.4.0", frozenset({62, 22, 52}), (16, 34))
 _WINDOWS_TERMINAL = TerminalReport("", frozenset({61, 4, 6, 22, 52}), (10, 20))
+_WEZTERM = TerminalReport("WezTerm 20240203-110809-5046fc22", frozenset({65, 4, 6, 18, 22}), (19, 38))
 
 
 def _start(
@@ -47,6 +48,7 @@ def _set_env(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
     [
         pytest.param(_GHOSTTY, {}, True, GraphicsProtocol.KITTY, id="ghostty"),
         pytest.param(_WINDOWS_TERMINAL, {"WT_SESSION": "abc"}, True, GraphicsProtocol.SIXEL, id="windows-terminal"),
+        pytest.param(_WEZTERM, {}, True, GraphicsProtocol.ITERM, id="wezterm"),
         pytest.param(_GHOSTTY, {}, False, None, id="setting-off"),
         pytest.param(TerminalReport("XTerm(390)", frozenset({4})), {}, True, None, id="unknown-terminal"),
         pytest.param(None, {"WT_SESSION": "abc"}, True, None, id="not-asked"),
@@ -72,13 +74,20 @@ async def test_graphics_start_for_known_terminals_when_enabled(
             assert manager.graphics_for(app) is None
 
 
-async def test_sixel_needs_the_textual_its_overlay_was_written_against(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("report", [_WINDOWS_TERMINAL, _WEZTERM], ids=["sixel", "iterm"])
+async def test_row_images_need_the_textual_their_overlay_was_written_against(
+    monkeypatch: pytest.MonkeyPatch, report: TerminalReport
+) -> None:
     _set_env(monkeypatch, {"WT_SESSION": "abc"})
-    monkeypatch.setattr(manager, "TEXTUAL_VERSION", "0.0.0")
     app = TerminalImagesApp(None)
     async with app.run_test(size=(40, 10)):
         app.console._color_system = ColorSystem.TRUECOLOR
-        assert _start(app, monkeypatch, enabled=True, report=_WINDOWS_TERMINAL) is None
+        graphics = _start(app, monkeypatch, enabled=True, report=report)
+        assert graphics is not None
+        await graphics.close()
+        monkeypatch.setattr(manager, "TEXTUAL_VERSION", "0.0.0")
+
+        assert _start(app, monkeypatch, enabled=True, report=report) is None
 
 
 async def test_headless_apps_draw_half_blocks() -> None:

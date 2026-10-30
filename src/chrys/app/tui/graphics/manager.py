@@ -3,7 +3,7 @@
 """Draw chat images with the terminal's own graphics, where it has a protocol for them.
 
 One ``TerminalGraphics`` per app holds the protocol chosen at start, what the terminal has been sent,
-the background jobs that build it, and, for Sixel, the overlay drawn after each frame. Image widgets
+the background jobs that build it, and, for row images, the overlay drawn after each frame. Image widgets
 find it with ``graphics_for(app)``; where there is none (tests, the web host, unknown terminals) they
 draw half-blocks.
 
@@ -14,12 +14,14 @@ drawn deleted first, and all are deleted on suspend and exit, while the app's sc
 terminal's: kitty and Ghostty keep each screen's images apart, so a delete sent after the app has
 left the alternate screen frees nothing.
 
-Sixel: the widget renders half-blocks and the overlay draws each image row over them inside the
-frame Textual writes (``ChrysApp._display``). Windows Terminal erases a cell's image whenever text is
-printed into that cell, and only there, so every repaint that prints into an image row takes the
+Row images (Sixel in Windows Terminal, iTerm2 inline images in WezTerm and VS Code): the widget
+renders half-blocks and the overlay draws each image row over them inside the frame Textual writes
+(``ChrysApp._display``), one image per cell row. These terminals erase a cell's image whenever text
+is printed into that cell, and only there, so every repaint that prints into an image row takes the
 image away there with no bookkeeping, and the overlay draws that row again: at once while the image
 stays put, or once it has stopped moving, since redrawing every frame of a scroll would flood the
-terminal.
+terminal. Nor is anything drawn while Textual's writer still holds output the terminal has not taken:
+a slow terminal would otherwise fill its queue and make the event loop wait.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ import weakref
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from queue import Queue
 from typing import TYPE_CHECKING, Final
 
 from PIL import Image, UnidentifiedImageError
@@ -43,7 +46,7 @@ from textual.geometry import Region
 
 from chrys.app.tui.graphics import kitty
 from chrys.app.tui.graphics.detect import GraphicsProtocol, choose_protocol
-from chrys.app.tui.graphics.payloads import kitty_png, sixel_rows
+from chrys.app.tui.graphics.payloads import iterm_rows, kitty_png, sixel_rows
 from chrys.app.tui.graphics.probe import terminal_cell_pixels
 from chrys.app.tui.graphics.sixel import EncodingStopped
 from chrys.app.tui.terminal.title import app_terminal_title_writer, running_under_textual_web_driver
@@ -61,16 +64,19 @@ logger = logging.getLogger(__name__)
 
 KITTY_BUDGET_BYTES: Final = 192 * 1024 * 1024
 """Decoded bytes kept in the terminal; Ghostty, kitty and iTerm2 start evicting at 320 MB."""
-SIXEL_BUDGET_CHARS: Final = 48 * 1024 * 1024
+ROWS_BUDGET_CHARS: Final = 48 * 1024 * 1024
 """Encoded rows kept for images not on screen."""
 FRAME_BUDGET_CHARS: Final = 192 * 1024
-"""Sixel written per frame: Textual's writer queues 30 writes and Windows splits a frame into 8 KB
+"""Image rows written per frame: Textual's writer queues 30 writes and Windows splits a frame into 8 KB
 writes, so a larger frame would make the event loop wait for the terminal."""
 SETTLE_SECONDS: Final = 0.12
-"""How long a moving image waits, after it last moved, before Sixel is drawn again."""
-SIXEL_TEXTUAL_VERSION: Final = "8.2.7"
-"""The Textual whose private frame path (``App._display``, compositor updates and visible-widget map)
-the overlay was written against; any other draws half-blocks instead of Sixel."""
+"""How long a moving image waits, after it last moved, before its rows are drawn again."""
+BACKLOG_SECONDS: Final = 0.02
+"""How long rows wait before trying again while Textual's writer has output queued."""
+OVERLAY_TEXTUAL_VERSION: Final = "8.2.7"
+"""The Textual whose private frame path (``App._display``, compositor updates, visible-widget map and
+writer thread) the overlay was written against; any other draws half-blocks instead of row images."""
+_ROW_PROTOCOLS: Final = frozenset({GraphicsProtocol.SIXEL, GraphicsProtocol.ITERM})
 _DEFAULT_CELL_PIXELS: Final = (10, 20)
 _DECODE_ERRORS = (binascii.Error, Image.DecompressionBombError, OSError, UnidentifiedImageError, ValueError)
 _registry: weakref.WeakKeyDictionary[App, TerminalGraphics] = weakref.WeakKeyDictionary()
@@ -84,8 +90,9 @@ class ImageSlot:
     kitty_id: int = 0
     """The transmitted image's id, or 0."""
     kitty_box: ImageBox | None = None
-    sixel: tuple[str, ...] = ()
-    sixel_box: ImageBox | None = None
+    rows: tuple[str, ...] = ()
+    """One encoded image per cell row, for the overlay."""
+    rows_box: ImageBox | None = None
     pending: ImageBox | None = None
     """The box a job is building a payload for."""
     failed: ImageBox | None = None
@@ -105,7 +112,7 @@ def start_terminal_graphics(app: App, *, enabled: bool, report: TerminalReport |
     protocol = choose_protocol(report, os.environ, truecolor=app.console.color_system == "truecolor")
     if protocol is GraphicsProtocol.BLOCKS:
         return None
-    if protocol is GraphicsProtocol.SIXEL and TEXTUAL_VERSION != SIXEL_TEXTUAL_VERSION:
+    if protocol in _ROW_PROTOCOLS and TEXTUAL_VERSION != OVERLAY_TEXTUAL_VERSION:
         return None
     # Placeholder images are sized by the cell: its pixels where the terminal sets them on the tty (not on
     # Windows, nor over SSH clients that leave them 0), else the size it answered.
@@ -116,7 +123,7 @@ def start_terminal_graphics(app: App, *, enabled: bool, report: TerminalReport |
 
 
 class TerminalGraphics:
-    """The app's terminal images: payload jobs, kitty ids, and the Sixel overlay."""
+    """The app's terminal images: payload jobs, kitty ids, and the row overlay."""
 
     def __init__(
         self,
@@ -139,7 +146,7 @@ class TerminalGraphics:
         self._jobs: deque[_Job] = deque()
         self._runner: asyncio.Task[None] | None = None
         self._closed = False
-        self.overlay = SixelOverlay(app, self) if protocol is GraphicsProtocol.SIXEL else None
+        self.overlay = RowOverlay(app, self) if protocol in _ROW_PROTOCOLS else None
         _registry[app] = self
         # Never unsubscribed: unsubscribing is per node and would drop the app's other subscriptions.
         # Immediate: a covered screen must stop placing images before the modal's first frame, and
@@ -177,7 +184,7 @@ class TerminalGraphics:
         self._drop(slot)
 
     def frame(self, renderable: RenderableType | None) -> RenderableType | None:
-        """What ``App._display`` should write for ``renderable``: a frame is followed by its Sixel."""
+        """What ``App._display`` should write for ``renderable``: a frame is followed by its image rows."""
         if self.overlay is None or not isinstance(renderable, CompositorUpdate):
             return renderable
         return self.overlay.wrap(renderable)
@@ -196,12 +203,12 @@ class TerminalGraphics:
             self._request(view, slot, box)
         return 0
 
-    def sixel_rows(self, view: TerminalImages, slot: ImageSlot, box: ImageBox) -> tuple[str, ...]:
-        """One Sixel string per cell row of ``slot`` in ``box``, or () while they are being built."""
-        if slot.sixel and slot.sixel_box == box:
+    def image_rows(self, view: TerminalImages, slot: ImageSlot, box: ImageBox) -> tuple[str, ...]:
+        """One encoded image per cell row of ``slot`` in ``box``, or () while they are being built."""
+        if slot.rows and slot.rows_box == box:
             self._slots.move_to_end(slot)
-            return slot.sixel
-        if slot.sixel:
+            return slot.rows
+        if slot.rows:
             self._drop(slot)
         self._request(view, slot, box)
         return ()
@@ -249,7 +256,8 @@ class TerminalGraphics:
         def wanted() -> bool:
             return not self._closed and slot.pending == box
 
-        return lambda: sixel_rows(
+        encode = iterm_rows if self.protocol is GraphicsProtocol.ITERM else sixel_rows
+        return lambda: encode(
             data_uri, columns=box.columns, rows=box.rows, pixel_height=box.pixel_height, wanted=wanted
         )
 
@@ -262,9 +270,9 @@ class TerminalGraphics:
             cost = _kitty_cost(box, self._cell_pixels() or _DEFAULT_CELL_PIXELS)
             budget = KITTY_BUDGET_BYTES
         else:
-            slot.sixel, slot.sixel_box = payload, box
+            slot.rows, slot.rows_box = payload, box
             cost = sum(len(row) for row in payload)
-            budget = SIXEL_BUDGET_CHARS
+            budget = ROWS_BUDGET_CHARS
         self._slots[slot] = cost
         self._spent += cost
         self._evict(budget, keep=slot)
@@ -303,7 +311,7 @@ class TerminalGraphics:
         if slot.kitty_id:
             self._write(kitty.delete_command(slot.kitty_id))
         slot.kitty_id, slot.kitty_box = 0, None
-        slot.sixel, slot.sixel_box = (), None
+        slot.rows, slot.rows_box = (), None
 
     def _drop_after_frame(self, slot: ImageSlot) -> None:
         image_id = slot.kitty_id
@@ -400,8 +408,8 @@ _Painted = dict[int, list[tuple[int, int]]] | None
 """The cells a frame prints into, as column ranges by screen row; None for every cell."""
 
 
-class SixelOverlay:
-    """Draws Sixel image rows over the half-blocks of the frames Textual writes."""
+class RowOverlay:
+    """Draws image rows over the half-blocks of the frames Textual writes."""
 
     def __init__(self, app: App, graphics: TerminalGraphics) -> None:
         self._app = app
@@ -412,8 +420,12 @@ class SixelOverlay:
         self._closed = False
 
     def wrap(self, update: CompositorUpdate) -> _OverlaidUpdate:
-        """``update`` followed by the image rows it erased, and any still owed."""
-        return _OverlaidUpdate(update, self)
+        """``update`` followed by the image rows it erased, and any still owed.
+
+        The writer is asked about a backlog here, before Textual writes anything of the frame: it
+        queues the frame's synchronized-update start before rendering the frame.
+        """
+        return _OverlaidUpdate(update, self, backlog=_writer_backlog(self._app))
 
     def forget(self, view: TerminalImages) -> None:
         """Stop drawing ``view``; its cells are repainted as it is removed."""
@@ -447,6 +459,11 @@ class SixelOverlay:
             self._settle_handle.cancel()
         self._settle_handle = asyncio.get_running_loop().call_later(SETTLE_SECONDS, self._settled)
 
+    def _request_later_frame(self) -> None:
+        """Draw in ``BACKLOG_SECONDS``, unless a frame is already due later."""
+        if not self._closed and self._settle_handle is None:
+            self._settle_handle = asyncio.get_running_loop().call_later(BACKLOG_SECONDS, self._settled)
+
     def _settled(self) -> None:
         self._settle_handle = None
         self._overlay_frame()
@@ -460,10 +477,15 @@ class SixelOverlay:
             # Inside a batch the compositor can be ahead of the screen; draw once it is painted.
             self._request_settled_frame()
             return
+        if _writer_backlog(app):
+            # Even a frame with nothing to draw adds writes to the queue.
+            self._request_later_frame()
+            return
         app._display(app.screen, _OverlayFrame())
 
-    def frame_suffix(self, update: CompositorUpdate) -> str:
-        """The Sixel to write after ``update``: rows it erased, and rows not drawn yet."""
+    def frame_suffix(self, update: CompositorUpdate, *, backlog: bool = False) -> str:
+        """The image rows to write after ``update``: rows it erased, and rows not drawn yet; none while
+        ``backlog`` says the writer held output from before the frame."""
         if self._closed:
             return ""
         screen = self._app.screen
@@ -504,19 +526,20 @@ class SixelOverlay:
                 if other_region.overlaps(content)
             ]
             for index, (slot, box) in enumerate(view.image_cells(content.width)):
-                for row, text in enumerate(self._graphics.sixel_rows(view, slot, box)):
+                for row, text in enumerate(self._graphics.image_rows(view, slot, box)):
                     key = (index, row, box)
                     if key in state.drawn:
                         continue
                     cells = Region(content.x + box.x, content.y + row, box.columns, 1)
-                    # A row's last band reaches into the next row: on the last screen row it would scroll.
+                    # A Sixel row's last band reaches into the next row, and a terminal that ignored
+                    # doNotMoveCursor would move below an image: on the last screen row either scrolls.
                     if (
                         cells.bottom >= height
                         or not clip.contains_region(cells)
                         or any(cover.overlaps(cells) for cover in covers)
                     ):
                         continue
-                    if spent and spent + len(text) > FRAME_BUDGET_CHARS:
+                    if backlog or (spent and spent + len(text) > FRAME_BUDGET_CHARS):
                         owed = True
                         break
                     out.append(f"\x1b[{cells.y + 1};{cells.x + 1}H{text}")
@@ -561,16 +584,17 @@ def _prints_into(painted: _Painted, y: int, x1: int, x2: int) -> bool:
 
 
 class _OverlaidUpdate(CompositorUpdate):
-    """A compositor update followed by the Sixel rows to draw over it."""
+    """A compositor update followed by the image rows to draw over it."""
 
-    def __init__(self, update: CompositorUpdate, overlay: SixelOverlay) -> None:
+    def __init__(self, update: CompositorUpdate, overlay: RowOverlay, *, backlog: bool) -> None:
         self._update = update
         self._overlay = overlay
+        self._backlog = backlog
 
     def render_segments(self, console: Console) -> str:
         frame = self._update.render_segments(console)
         try:
-            suffix = self._overlay.frame_suffix(self._update)
+            suffix = self._overlay.frame_suffix(self._update, backlog=self._backlog)
         except Exception:
             # Inside Textual's frame write an error would end the app; the half-blocks stay instead.
             logger.exception("Could not draw terminal images")
@@ -583,11 +607,18 @@ class _OverlaidUpdate(CompositorUpdate):
 
 
 class _OverlayFrame(CompositorUpdate):
-    """A frame with nothing of Textual's to paint, written to draw Sixel that is owed."""
+    """A frame with nothing of Textual's to paint, written to draw image rows that are owed."""
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         _ = console, options
         yield from ()
+
+
+def _writer_backlog(app: App) -> bool:
+    """Whether Textual's writer thread holds writes it has not started on: the terminal lags behind."""
+    writer = getattr(app._driver, "_writer_thread", None)
+    queue = getattr(writer, "_queue", None)
+    return isinstance(queue, Queue) and queue.qsize() > 0
 
 
 def _kitty_cost(box: ImageBox, cell_pixels: tuple[int, int]) -> int:

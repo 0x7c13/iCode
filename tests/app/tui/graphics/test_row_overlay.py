@@ -1,17 +1,24 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Chat images drawn as Sixel over the half-blocks of each frame Textual writes."""
+"""Chat images drawn row by row (Sixel, iTerm2 inline images) over the half-blocks of each frame
+Textual writes."""
 
 from __future__ import annotations
 
+import base64
+import io
 import logging
 import re
 import threading
 from typing import TYPE_CHECKING
 
 import pytest
+from PIL import Image
 from rich.cells import cell_len
+from textual._compositor import CompositorUpdate
+from textual.app import App
 from textual.containers import Horizontal, VerticalScroll
+from textual.drivers._writer_thread import WriterThread
 from textual.geometry import Region
 from textual.screen import ModalScreen
 from textual.widgets import Static
@@ -26,18 +33,43 @@ from tests.support.waiting import wait_for, wait_until
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-_DRAW = re.compile(r"\x1b\[(\d+);(\d+)H(\x1bP0;1;0q.*?\x1b\\)", re.DOTALL)
-_TOKEN = re.compile(r"\x1bP.*?\x1b\\|\x1b\[([0-9;?<>=]*)([@-~])|\x1b.|(\n)|([^\x1b\n]+)", re.DOTALL)
+    from rich.console import RenderableType
+    from textual.screen import Screen
+
+_DRAW = re.compile(r"\x1b\[(\d+);(\d+)H(\x1bP0;1;0q.*?\x1b\\|\x1b\]1337;File=.*?\x1b\\)", re.DOTALL)
+_TOKEN = re.compile(r"\x1bP.*?\x1b\\|\x1b\].*?\x1b\\|\x1b\[([0-9;?<>=]*)([@-~])|\x1b.|(\n)|([^\x1b\n]+)", re.DOTALL)
 _RASTER_WIDTH = re.compile(r'"1;1;(\d+);')
+_ITERM_WIDTH = re.compile(r";width=(\d+);")
+
+
+@pytest.fixture(params=[GraphicsProtocol.SIXEL, GraphicsProtocol.ITERM], ids=["sixel", "iterm"])
+def protocol(request: pytest.FixtureRequest) -> GraphicsProtocol:
+    return request.param
 
 
 def _draws(frame: str) -> list[tuple[int, int]]:
-    """Each Sixel row a frame draws, as its screen (row, column)."""
+    """Each image row a frame draws, as its screen (row, column)."""
     return [(int(row) - 1, int(column) - 1) for row, column, _ in _DRAW.findall(frame)]
 
 
+def _columns(image: str) -> int:
+    """How many cells a row image spans."""
+    if image.startswith("\x1bP"):
+        (width,) = _RASTER_WIDTH.findall(image)
+        return int(width) // 10
+    (columns,) = _ITERM_WIDTH.findall(image)
+    return int(columns)
+
+
+def _png_size(image: str) -> tuple[int, int]:
+    """The pixel size of an iTerm2 inline image's PNG."""
+    data = base64.b64decode(image.rpartition(":")[2].removesuffix("\x1b\\"))
+    with Image.open(io.BytesIO(data), formats=("PNG",)) as png:
+        return png.size
+
+
 def _printed_cells(frame: str) -> set[tuple[int, int]]:
-    """The cells a frame prints text into, as (row, column); Sixel and other escapes print none."""
+    """The cells a frame prints text into, as (row, column); images and other escapes print none."""
     cells: set[tuple[int, int]] = set()
     y = x = 0
     for match in _TOKEN.finditer(frame):
@@ -56,10 +88,10 @@ def _printed_cells(frame: str) -> set[tuple[int, int]]:
 
 
 def _on_screen(frames: list[str]) -> set[tuple[int, int]]:
-    """Replay ``frames`` as Windows Terminal would: printing into a cell erases the image there.
+    """Replay ``frames`` as the terminal would: printing into a cell erases the image there.
 
-    A frame's text comes before the Sixel appended to it. Fails on a row drawn again while all of it
-    is still on screen: that is output for nothing.
+    A frame's text comes before the image rows appended to it. Fails on a row drawn again while all of
+    it is still on screen: that is output for nothing.
     """
     shown: dict[tuple[int, int], int] = {}
     for frame in frames:
@@ -69,11 +101,10 @@ def _on_screen(frames: list[str]) -> set[tuple[int, int]]:
             for (y, x), columns in shown.items()
             if not any((y, column) in printed for column in range(x, x + columns))
         }
-        for row, column, sixel in _DRAW.findall(frame):
+        for row, column, image in _DRAW.findall(frame):
             draw = (int(row) - 1, int(column) - 1)
             assert draw not in shown, f"{draw} drawn again with nothing printed over it"
-            (width,) = _RASTER_WIDTH.findall(sixel)
-            shown[draw] = int(width) // 10
+            shown[draw] = _columns(image)
     return set(shown)
 
 
@@ -94,8 +125,8 @@ async def _all_drawn(app: TerminalImagesApp, view: TerminalImages, pilot: object
     await wait_for(drawn, pilot=pilot, description="every image row was drawn")
 
 
-async def test_each_row_is_drawn_where_the_half_blocks_are_and_only_when_erased() -> None:
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+async def test_each_row_is_drawn_where_the_half_blocks_are_and_only_when_erased(protocol: GraphicsProtocol) -> None:
+    app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 24)) as pilot:
         await app.mount(Static("above"))
         view = TerminalImages(image_previews((40, 20)))
@@ -103,12 +134,16 @@ async def test_each_row_is_drawn_where_the_half_blocks_are_and_only_when_erased(
         await _all_drawn(app, view, pilot)
 
         assert _on_screen(app.frames) == {(row, 0) for row in range(1, 11)}
-        first = next(_DRAW.finditer("".join(app.frames)))
-        assert decode_sixel(first[3]).raster == (1, 1, 400, 20)
+        first = next(_DRAW.finditer("".join(app.frames)))[3]
+        if protocol is GraphicsProtocol.SIXEL:
+            assert decode_sixel(first).raster == (1, 1, 400, 20)
+        else:
+            assert ";width=40;height=1;" in first
+            assert _png_size(first) == (400, 20)
 
 
-async def test_images_side_by_side_are_each_drawn_at_their_own_column() -> None:
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+async def test_images_side_by_side_are_each_drawn_at_their_own_column(protocol: GraphicsProtocol) -> None:
+    app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 24)) as pilot:
         view = TerminalImages(image_previews((20, 20), (20, 20)))
         await app.mount(view)
@@ -119,8 +154,8 @@ async def test_images_side_by_side_are_each_drawn_at_their_own_column() -> None:
         assert _on_screen(app.frames) == expected
 
 
-async def test_a_repaint_of_one_row_draws_that_row_again() -> None:
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+async def test_a_repaint_of_one_row_draws_that_row_again(protocol: GraphicsProtocol) -> None:
+    app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 24)) as pilot:
         view = TerminalImages(image_previews((40, 20)))
         await app.mount(view)
@@ -133,9 +168,9 @@ async def test_a_repaint_of_one_row_draws_that_row_again() -> None:
         assert _drawn_since(app, mark) == [(4, 0)]
 
 
-async def test_a_widget_beside_the_image_repainting_draws_nothing_again() -> None:
+async def test_a_widget_beside_the_image_repainting_draws_nothing_again(protocol: GraphicsProtocol) -> None:
     """Windows Terminal erases an image only in the cells text is printed into."""
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+    app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 24)) as pilot:
         view = TerminalImages(image_previews((40, 20)))
         view.styles.width = 50
@@ -153,22 +188,30 @@ async def test_a_widget_beside_the_image_repainting_draws_nothing_again() -> Non
         assert _on_screen(app.frames) == _image_rows(view)
 
 
-async def test_rows_no_longer_wanted_stop_being_encoded(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_rows_no_longer_wanted_stop_being_encoded(
+    monkeypatch: pytest.MonkeyPatch, protocol: GraphicsProtocol
+) -> None:
     """A tall image takes seconds to encode: unmounting it frees the job for the next image."""
     started, release = threading.Event(), threading.Event()
     answers: list[bool] = []
 
-    def held_sixel_rows(
+    name, encode = (
+        ("sixel_rows", payloads.sixel_rows)
+        if protocol is GraphicsProtocol.SIXEL
+        else ("iterm_rows", payloads.iterm_rows)
+    )
+
+    def held_rows(
         data_uri: str, *, columns: int, rows: int, pixel_height: int, wanted: Callable[[], bool] | None
     ) -> tuple[str, ...]:
         if not started.is_set():
             started.set()
             release.wait(timeout=10)
             answers.append(wanted())
-        return payloads.sixel_rows(data_uri, columns=columns, rows=rows, pixel_height=pixel_height, wanted=wanted)
+        return encode(data_uri, columns=columns, rows=rows, pixel_height=pixel_height, wanted=wanted)
 
-    monkeypatch.setattr(manager, "sixel_rows", held_sixel_rows)
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+    monkeypatch.setattr(manager, name, held_rows)
+    app = TerminalImagesApp(protocol)
     try:
         async with app.run_test(size=(80, 24)) as pilot:
             tall = TerminalImages(image_previews((40, 200)))
@@ -182,13 +225,13 @@ async def test_rows_no_longer_wanted_stop_being_encoded(monkeypatch: pytest.Monk
             await app.mount(after)
             await _all_drawn(app, after, pilot)
             assert answers == [False]
-            assert (slot.sixel, slot.failed) == ((), None)
+            assert (slot.rows, slot.failed) == ((), None)
     finally:
         release.set()
 
 
-async def test_a_moving_image_is_drawn_again_once_it_settles() -> None:
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+async def test_a_moving_image_is_drawn_again_once_it_settles(protocol: GraphicsProtocol) -> None:
+    app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 24)) as pilot:
         view = TerminalImages(image_previews((40, 20)))
         scroll = VerticalScroll(Static("\n".join(["above"] * 4)), view, Static("\n".join(["below"] * 40)))
@@ -205,8 +248,8 @@ async def test_a_moving_image_is_drawn_again_once_it_settles() -> None:
         assert _on_screen(app.frames) == {(row, 0) for row in range(2, 12)}
 
 
-async def test_rows_under_a_widget_above_them_are_left_as_half_blocks() -> None:
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+async def test_rows_under_a_widget_above_them_are_left_as_half_blocks(protocol: GraphicsProtocol) -> None:
+    app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 24)) as pilot:
         view = TerminalImages(image_previews((40, 20)))
         cover = Static("toast")
@@ -215,7 +258,7 @@ async def test_rows_under_a_widget_above_them_are_left_as_half_blocks() -> None:
         cover.styles.width = 10
         cover.styles.offset = (20, 3)
         await app.mount(view, cover)
-        await wait_for(lambda: view.slots[0].sixel, pilot=pilot, description="the rows were encoded")
+        await wait_for(lambda: view.slots[0].rows, pilot=pilot, description="the rows were encoded")
         cover_region = app.screen.find_widget(cover).region
         expected = {(y, x) for y, x in _image_rows(view) if not cover_region.overlaps(Region(x, y, 40, 1))}
         await wait_for(lambda: expected <= set(_drawn_since(app, 0)), pilot=pilot, description="uncovered rows drawn")
@@ -224,8 +267,8 @@ async def test_rows_under_a_widget_above_them_are_left_as_half_blocks() -> None:
         assert set(_drawn_since(app, 0)) == expected
 
 
-async def test_rows_a_scroll_container_clips_are_not_drawn() -> None:
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+async def test_rows_a_scroll_container_clips_are_not_drawn(protocol: GraphicsProtocol) -> None:
+    app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 24)) as pilot:
         view = TerminalImages(image_previews((20, 20)))
         clip = VerticalScroll(view)
@@ -244,8 +287,8 @@ async def test_rows_a_scroll_container_clips_are_not_drawn() -> None:
         assert set(_drawn_since(app, scrolled)) == in_view
 
 
-async def test_a_row_on_the_last_screen_line_is_not_drawn() -> None:
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+async def test_a_row_on_the_last_screen_line_is_not_drawn(protocol: GraphicsProtocol) -> None:
+    app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 10)) as pilot:
         view = TerminalImages(image_previews((20, 20)))
         await app.mount(view)
@@ -256,13 +299,15 @@ async def test_a_row_on_the_last_screen_line_is_not_drawn() -> None:
         assert set(_drawn_since(app, 0)) == above_last
 
 
-async def test_a_frame_draws_at_most_its_budget_and_the_rest_follows(monkeypatch: pytest.MonkeyPatch) -> None:
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+async def test_a_frame_draws_at_most_its_budget_and_the_rest_follows(
+    monkeypatch: pytest.MonkeyPatch, protocol: GraphicsProtocol
+) -> None:
+    app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 24)) as pilot:
         view = TerminalImages(image_previews((40, 20)))
         await app.mount(view)
-        await wait_for(lambda: view.slots[0].sixel, pilot=pilot, description="the rows were encoded")
-        monkeypatch.setattr(manager, "FRAME_BUDGET_CHARS", 3 * len(view.slots[0].sixel[0]))
+        await wait_for(lambda: view.slots[0].rows, pilot=pilot, description="the rows were encoded")
+        monkeypatch.setattr(manager, "FRAME_BUDGET_CHARS", 3 * len(view.slots[0].rows[0]))
         mark = len(app.frames)
 
         view.refresh()
@@ -273,8 +318,8 @@ async def test_a_frame_draws_at_most_its_budget_and_the_rest_follows(monkeypatch
         assert sum(per_frame) == 10
 
 
-async def test_nothing_is_drawn_while_a_modal_covers_the_screen() -> None:
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+async def test_nothing_is_drawn_while_a_modal_covers_the_screen(protocol: GraphicsProtocol) -> None:
+    app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 24)) as pilot:
         view = TerminalImages(image_previews((40, 20)))
         await app.mount(view)
@@ -293,9 +338,9 @@ async def test_nothing_is_drawn_while_a_modal_covers_the_screen() -> None:
 
 
 async def test_a_failing_overlay_still_writes_the_frame(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, protocol: GraphicsProtocol
 ) -> None:
-    app = TerminalImagesApp(GraphicsProtocol.SIXEL)
+    app = TerminalImagesApp(protocol)
     async with app.run_test(size=(80, 24)) as pilot:
         await app.mount(Static("text"))
         assert app.graphics is not None
@@ -313,6 +358,89 @@ async def test_a_failing_overlay_still_writes_the_frame(
 
         assert "text" in app.frames[-1]
         assert "Could not draw terminal images" in caplog.text
+
+
+async def test_rows_wait_while_the_terminal_has_not_taken_earlier_output(
+    monkeypatch: pytest.MonkeyPatch, protocol: GraphicsProtocol
+) -> None:
+    """Drawing behind a backlog would fill Textual's write queue and make the event loop wait."""
+    app = TerminalImagesApp(protocol)
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = TerminalImages(image_previews((40, 20)))
+        await app.mount(view)
+        await _all_drawn(app, view, pilot)
+        overlay = app.graphics.overlay if app.graphics is not None else None
+        assert overlay is not None
+        # The frame due after the image first moved into place, which would draw for the retry under test.
+        await wait_for(lambda: overlay._settle_handle is None, pilot=pilot, description="no overlay frame is due")
+        # Never started: what it is handed stays queued, as behind a terminal that has stopped reading.
+        writer = WriterThread(io.StringIO())
+        monkeypatch.setattr(app._driver, "_writer_thread", writer, raising=False)
+        writer.write("output the terminal has not taken")
+        mark = len(app.frames)
+
+        view.refresh()
+        await wait_for(lambda: len(app.frames) > mark, pilot=pilot, description="the image was painted over")
+        painted = len(app.frames)
+        # No rows, nor any frame of the overlay's own, which would add writes to the queue.
+        assert not await wait_until(
+            lambda: _drawn_since(app, mark) or len(app.frames) > painted, pilot=pilot, timeout=0.3
+        )
+
+        writer._queue.get_nowait()
+        # Without the pilot, whose pauses paint frames: the overlay draws once the queue is empty.
+        await _all_drawn(app, view, None, mark)
+        assert _on_screen(app.frames) == _image_rows(view)
+
+
+async def test_a_backlog_with_no_rows_owed_writes_nothing_more(
+    monkeypatch: pytest.MonkeyPatch, protocol: GraphicsProtocol
+) -> None:
+    app = TerminalImagesApp(protocol)
+    async with app.run_test(size=(80, 24)) as pilot:
+        text = Static("text")
+        await app.mount(text)
+        writer = WriterThread(io.StringIO())  # never started: the test plays the writer
+        monkeypatch.setattr(app._driver, "_writer_thread", writer, raising=False)
+        writer.write("output the terminal has not taken")
+        mark = len(app.frames)
+        text.update("more text")
+        await wait_for(lambda: len(app.frames) > mark, pilot=pilot, description="the text was painted")
+        painted = len(app.frames)
+
+        writer._queue.get_nowait()
+        # Without the pilot, whose pauses paint frames.
+        assert not await wait_until(lambda: len(app.frames) > painted, timeout=0.3)
+
+
+class _SynchronizedApp(TerminalImagesApp):
+    """Queues each frame's synchronized-update start on its writer before rendering the frame, as
+    Textual's ``App._display`` does, and has the writer take it once the frame is written."""
+
+    def __init__(self, protocol: GraphicsProtocol) -> None:
+        super().__init__(protocol)
+        self.writer = WriterThread(io.StringIO())  # never started: the test plays the writer
+
+    def _display(self, screen: Screen, renderable: RenderableType | None) -> None:
+        framed = renderable if self.graphics is None else self.graphics.frame(renderable)
+        if framed is not renderable and isinstance(framed, CompositorUpdate):
+            self.writer.write("\x1b[?2026h")
+            self.frames.append(framed.render_segments(self.console))
+            self.writer._queue.get_nowait()
+        App._display(self, screen, framed)
+
+
+async def test_a_frame_is_not_held_back_by_its_own_synchronized_update_start(
+    monkeypatch: pytest.MonkeyPatch, protocol: GraphicsProtocol
+) -> None:
+    app = _SynchronizedApp(protocol)
+    async with app.run_test(size=(80, 24)) as pilot:
+        monkeypatch.setattr(app._driver, "_writer_thread", app.writer, raising=False)
+        view = TerminalImages(image_previews((40, 20)))
+        await app.mount(view)
+        await _all_drawn(app, view, pilot)
+
+        assert _on_screen(app.frames) == _image_rows(view)
 
 
 class _Modal(ModalScreen[None]):

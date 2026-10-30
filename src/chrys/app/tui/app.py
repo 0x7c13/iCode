@@ -575,7 +575,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         self.app_focus = False
 
     def _display(self, screen: Screen, renderable: RenderableType | None) -> None:
-        """Have the Sixel overlay draw images over a frame, inside Textual's own write of it.
+        """Have the row overlay draw images over a frame, inside Textual's own write of it.
 
         Appending to the frame keeps Textual's synchronized update, cursor restore and Windows
         chunking around the images; a frame Textual skips or fails to render draws none.
