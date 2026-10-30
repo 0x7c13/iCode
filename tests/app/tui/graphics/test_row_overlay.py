@@ -309,7 +309,9 @@ async def test_a_frame_draws_at_most_its_budget_and_the_rest_follows(
         # Drawn first: rows owed from before, drawn under the budget and then erased by the repaint,
         # would be drawn twice.
         await _all_drawn(app, view, pilot)
-        monkeypatch.setattr(manager, "FRAME_BUDGET_CHARS", 3 * len(view.slots[0].rows[0]))
+        # Three rows, each with the cursor move before it.
+        budget = 3 * len("\x1b[10;1H" + view.slots[0].rows[0])
+        monkeypatch.setattr(manager, "FRAME_BUDGET_CHARS", budget)
         mark = len(app.frames)
 
         view.refresh()
@@ -317,7 +319,49 @@ async def test_a_frame_draws_at_most_its_budget_and_the_rest_follows(
 
         per_frame = [len(_draws(frame)) for frame in app.frames[mark:] if _draws(frame)]
         assert max(per_frame) == 3
+        # The repaint's own text counts: Windows Terminal is written a frame in 8 KB pieces, which
+        # Textual's 30-write queue must hold.
+        assert all(len(frame) <= budget for frame in app.frames[mark:] if _draws(frame))
         assert _on_screen(app.frames) == _image_rows(view)
+
+
+async def test_an_image_with_a_row_too_long_for_a_frame_keeps_its_half_blocks(
+    monkeypatch: pytest.MonkeyPatch, protocol: GraphicsProtocol
+) -> None:
+    monkeypatch.setattr(manager, "MAX_ROW_CHARS", 10)
+    app = TerminalImagesApp(protocol)
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = TerminalImages(image_previews((40, 20)))
+        await app.mount(view)
+        await wait_for(lambda: view.slots[0].failed, pilot=pilot, description="the rows were refused")
+
+        assert view.slots[0].rows == ()
+        assert _drawn_since(app, 0) == []
+
+
+async def test_a_moved_image_waits_to_settle_while_other_widgets_repaint(
+    monkeypatch: pytest.MonkeyPatch, protocol: GraphicsProtocol
+) -> None:
+    """A conversation that streams while it scrolls must not draw the image at each step."""
+    app = TerminalImagesApp(protocol)
+    async with app.run_test(size=(80, 24)) as pilot:
+        view = TerminalImages(image_previews((40, 20)))
+        ticker = Static("tick 0")
+        scroll = VerticalScroll(Static("\n".join(["above"] * 4)), view, Static("\n".join(["below"] * 40)))
+        await app.mount(ticker, scroll)
+        await _all_drawn(app, view, pilot)
+        overlay = app.graphics.overlay if app.graphics is not None else None
+        assert overlay is not None
+        await wait_for(lambda: overlay._settle_handle is None, pilot=pilot, description="no overlay frame is due")
+        monkeypatch.setattr(manager, "SETTLE_SECONDS", 60)  # still moving for the rest of the test
+        mark = len(app.frames)
+
+        scroll.scroll_to(y=2, animate=False, immediate=True)
+        await wait_for(lambda: len(app.frames) > mark, pilot=pilot, description="the scroll was painted")
+        ticker.update("tick 1")
+        await wait_for(lambda: "tick 1" in "".join(app.frames[mark:]), pilot=pilot, description="ticked")
+
+        assert _drawn_since(app, mark) == []
 
 
 async def test_nothing_is_drawn_while_a_modal_covers_the_screen(protocol: GraphicsProtocol) -> None:

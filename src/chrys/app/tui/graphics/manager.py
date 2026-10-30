@@ -67,8 +67,12 @@ KITTY_BUDGET_BYTES: Final = 192 * 1024 * 1024
 ROWS_BUDGET_CHARS: Final = 48 * 1024 * 1024
 """Encoded rows kept for images not on screen."""
 FRAME_BUDGET_CHARS: Final = 192 * 1024
-"""Image rows written per frame: Textual's writer queues 30 writes and Windows splits a frame into 8 KB
-writes, so a larger frame would make the event loop wait for the terminal."""
+"""What a frame with image rows writes, Textual's text included: Textual's writer queues 30 writes and
+Windows splits a frame into 8 KB writes, so a larger frame would make the event loop wait for the
+terminal."""
+MAX_ROW_CHARS: Final = 128 * 1024
+"""A longer encoded row would not fit a frame of its own within ``FRAME_BUDGET_CHARS``: its image keeps
+its half-blocks (only wide, noisy images, in wide terminals, come near it)."""
 SETTLE_SECONDS: Final = 0.12
 """How long a moving image waits, after it last moved, before its rows are drawn again."""
 BACKLOG_SECONDS: Final = 0.02
@@ -257,9 +261,15 @@ class TerminalGraphics:
             return not self._closed and slot.pending == box
 
         encode = iterm_rows if self.protocol is GraphicsProtocol.ITERM else sixel_rows
-        return lambda: encode(
-            data_uri, columns=box.columns, rows=box.rows, pixel_height=box.pixel_height, wanted=wanted
-        )
+
+        def build_rows() -> tuple[str, ...]:
+            rows = encode(data_uri, columns=box.columns, rows=box.rows, pixel_height=box.pixel_height, wanted=wanted)
+            if any(len(row) > MAX_ROW_CHARS for row in rows):
+                msg = "an image row is too long to draw"
+                raise ValueError(msg)
+            return rows
+
+        return build_rows
 
     def _land(self, view: TerminalImages, slot: ImageSlot, box: ImageBox, payload: bytes | tuple[str, ...]) -> None:
         self._drop(slot)
@@ -402,6 +412,8 @@ class _ViewState:
     """The view's content region in the last frame."""
     drawn: set[tuple[int, int, ImageBox]] = field(default_factory=set)
     """Rows on screen now, as (image index, row, box)."""
+    settling: bool = False
+    """Moved within the last ``SETTLE_SECONDS``: no rows are drawn, whatever else repaints."""
 
 
 _Painted = dict[int, list[tuple[int, int]]] | None
@@ -466,6 +478,10 @@ class RowOverlay:
 
     def _settled(self) -> None:
         self._settle_handle = None
+        # Every move re-arms the settle timer in place of any retry, so whichever fires, nothing has
+        # moved for SETTLE_SECONDS.
+        for state in self._states.values():
+            state.settling = False
         self._overlay_frame()
 
     def _overlay_frame(self) -> None:
@@ -483,9 +499,10 @@ class RowOverlay:
             return
         app._display(app.screen, _OverlayFrame())
 
-    def frame_suffix(self, update: CompositorUpdate, *, backlog: bool = False) -> str:
+    def frame_suffix(self, update: CompositorUpdate, *, backlog: bool = False, written: int = 0) -> str:
         """The image rows to write after ``update``: rows it erased, and rows not drawn yet; none while
-        ``backlog`` says the writer held output from before the frame."""
+        ``backlog`` says the writer held output from before the frame. ``written`` is the length of the
+        frame's own text, which counts toward its budget."""
         if self._closed:
             return ""
         screen = self._app.screen
@@ -494,7 +511,7 @@ class RowOverlay:
         visible = screen._compositor.visible_widgets
         order = list(visible)
         out: list[str] = []
-        spent = 0
+        spent = written
         moving = owed = False
         for view in list(self._graphics.views):
             state = self._states.setdefault(view, _ViewState())
@@ -516,7 +533,7 @@ class RowOverlay:
                 # Moving: drawing each step of a scroll would flood the terminal.
                 state.region = content
                 state.drawn.clear()
-                moving = True
+                state.settling = moving = True
                 continue
             if owed:
                 continue
@@ -526,7 +543,12 @@ class RowOverlay:
                 if other_region.overlaps(content)
             ]
             for index, (slot, box) in enumerate(view.image_cells(content.width)):
-                for row, text in enumerate(self._graphics.image_rows(view, slot, box)):
+                rows = self._graphics.image_rows(view, slot, box)
+                if state.settling:
+                    # Encoded meanwhile, drawn once it settles: another widget repainting between the
+                    # steps of a scroll would otherwise draw it at each.
+                    continue
+                for row, text in enumerate(rows):
                     key = (index, row, box)
                     if key in state.drawn:
                         continue
@@ -539,11 +561,14 @@ class RowOverlay:
                         or any(cover.overlaps(cells) for cover in covers)
                     ):
                         continue
-                    if backlog or (spent and spent + len(text) > FRAME_BUDGET_CHARS):
+                    piece = f"\x1b[{cells.y + 1};{cells.x + 1}H{text}"
+                    # A frame with nothing in it yet takes its first row whatever its length, so a frame
+                    # of the overlay's own always draws something.
+                    if backlog or (spent and spent + len(piece) > FRAME_BUDGET_CHARS):
                         owed = True
                         break
-                    out.append(f"\x1b[{cells.y + 1};{cells.x + 1}H{text}")
-                    spent += len(text)
+                    out.append(piece)
+                    spent += len(piece)
                     state.drawn.add(key)
                 if owed:
                     break
@@ -594,7 +619,7 @@ class _OverlaidUpdate(CompositorUpdate):
     def render_segments(self, console: Console) -> str:
         frame = self._update.render_segments(console)
         try:
-            suffix = self._overlay.frame_suffix(self._update, backlog=self._backlog)
+            suffix = self._overlay.frame_suffix(self._update, backlog=self._backlog, written=len(frame))
         except Exception:
             # Inside Textual's frame write an error would end the app; the half-blocks stay instead.
             logger.exception("Could not draw terminal images")
