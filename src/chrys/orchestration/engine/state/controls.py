@@ -36,6 +36,7 @@ from chrys.foundation.i18n.formatting import format_message
 from chrys.foundation.models.workspace import Workspace
 from chrys.foundation.platform import safe_getcwd
 from chrys.foundation.platform.files import surrogate_safe_text
+from chrys.orchestration.engine.state.active_session import session_pin_overrides
 from chrys.orchestration.engine.state.lifecycle_permits import RebuildControlToken, RebuildPermit, RebuildPermitDenied
 from chrys.service.approval.policy import ApprovalMode
 
@@ -221,8 +222,10 @@ class RuntimeControls:
         permit = await self._permits.acquire_rebuild_permit(token)
         if isinstance(permit, RebuildPermitDenied):
             if await self._publish_profile_satisfied_or_denied(event.profile_name, permit, token.session_id):
+                self._record_agent_switch(event, self._session.agent_profile)
                 return
             return
+        before = self._session.agent_profile
         try:
             if (
                 self._current.loaded is not None
@@ -234,10 +237,27 @@ class RuntimeControls:
             if self._current.loaded is None:
                 await self._lifecycle.start_with_rebuild_permit(permit, new_profile, operation="switch")
                 await self._bus.publish(self._profile_switched_snapshot(permit.token.session_id))
-                return
-            await self._lifecycle.reload_with_rebuild_permit(permit, new_profile, operation="switch")
+            else:
+                await self._lifecycle.reload_with_rebuild_permit(permit, new_profile, operation="switch")
         finally:
-            self._permits.release_rebuild_permit(permit)
+            try:
+                # Recorded whenever the agent is in place, also when a later step failed or was
+                # cancelled: a session-scoped switch that went live must still end with its session.
+                current = self._session.agent_profile
+                if current is not None and current.name == new_profile.name:
+                    self._record_agent_switch(event, before)
+            finally:
+                self._permits.release_rebuild_permit(permit)
+
+    def _record_agent_switch(self, event: AgentProfileSwitch, before: AgentProfile | None) -> None:
+        """Remember the agent a session-scoped switch replaced; the user's own switch forgets it."""
+        switch = self._session.session_switch
+        if not event.session_scoped:
+            switch.agent_before = None
+        elif switch.agent_before is None and before is not None:
+            current = self._session.agent_profile
+            if current is None or current.name != before.name:
+                switch.agent_before = before
 
     async def _publish_profile_satisfied_or_denied(
         self,
@@ -278,15 +298,25 @@ class RuntimeControls:
             )
         )
 
-    def _pin_session_model_profile(self, profile_id: str) -> None:
-        self._settings_handle.install(
-            self._settings_handle.loaded.overlay(
+    def _pin_session_model_profile(self, profile_id: str, *, session_scoped: bool = False) -> None:
+        if session_scoped:
+            # Only the session's selected model: an agent's own model still wins.
+            overlay = self._settings_handle.loaded.overlay(Source.SESSION, model_profile=profile_id)
+        else:
+            overlay = self._settings_handle.loaded.overlay(
                 Source.SESSION,
                 model_profile=profile_id,
                 model_profile_override=profile_id,
                 model_profile_override_sub_agents=False,
-            ),
-        )
+            )
+        self._settings_handle.install(overlay)
+        switch = self._session.session_switch
+        if not session_scoped:
+            # A pin that is not session-scoped replaces one that was.
+            switch.model = False
+        elif not self._session.model_profile_pinned:
+            # A pin the caller owns (headless ``--model``, ACP) stays theirs.
+            switch.model = True
         self._session.model_profile_pinned = True
 
     async def _publish_workspace_updated_snapshot(
@@ -308,14 +338,15 @@ class RuntimeControls:
 
     async def _publish_model_satisfied_or_denied(
         self,
-        profile_id: str,
+        event: SetModelProfile,
         denied: RebuildPermitDenied,
         session_id: str | None,
     ) -> None:
+        profile_id = event.profile_id
         if _denial_allows_already_satisfied_success(denied) and (
             self._current.manifest.active_profile is not None and self._current.manifest.active_profile.id == profile_id
         ):
-            self._pin_session_model_profile(profile_id)
+            self._pin_session_model_profile(profile_id, session_scoped=event.session_scoped)
             await self._publish_model_switched_snapshot(profile_id, session_id)
             return
         await self._publish_rebuild_denied(denied, session_id)
@@ -384,51 +415,35 @@ class RuntimeControls:
         token = self._permits.capture_control_token()
         permit = await self._permits.acquire_rebuild_permit(token)
         if isinstance(permit, RebuildPermitDenied):
-            await self._publish_model_satisfied_or_denied(event.profile_id, permit, token.session_id)
+            await self._publish_model_satisfied_or_denied(event, permit, token.session_id)
             return
 
         old_loaded = self._settings_handle.loaded
         old_pinned = self._session.model_profile_pinned
+        old_scoped_model = self._session.session_switch.model
+        old_runtime = self._current.loaded
 
         try:
             try:
-                self._pin_session_model_profile(event.profile_id)
+                self._pin_session_model_profile(event.profile_id, session_scoped=event.session_scoped)
                 await self._start_or_restart_with_permit(permit, self._session.agent_profile, operation="model_switch")
-            except Exception:
-                # Rebuild failed (AgentLoadFailed already published). Restore the pin/settings
-                # so the still-running executor stays consistent with session state.
-                self._settings_handle.install(old_loaded)
-                self._session.model_profile_pinned = old_pinned
+            except BaseException:
+                # The rebuild failed or was cancelled (a failure already published AgentLoadFailed).
+                # While no new runtime went live, restore the pin and settings so the running
+                # executor stays consistent with session state. One that did was built on the new
+                # model: restoring then would name a model the executor was not built with.
+                if self._current.loaded is old_runtime:
+                    self._settings_handle.install(old_loaded)
+                    self._session.model_profile_pinned = old_pinned
+                    self._session.session_switch.model = old_scoped_model
                 raise
             await self._publish_model_switched_snapshot(event.profile_id, token.session_id)
         finally:
             self._permits.release_rebuild_permit(permit)
 
     def _session_pin_overrides(self) -> dict[str, Any]:
-        """Snapshot the per-session pins every re-load must carry.
-
-        Per-session overrides injected into ``Settings`` (not the environment) are
-        carried across only when pinned, so unpinned sessions still pick up a
-        changed env value on the next load:
-
-        * ``model_profile`` / ``model_profile_override`` — pinned by a per-session
-          model switch.
-        * ``ask_user_timeout_seconds`` — pinned when ACP owns the ask_user
-          lifetime (set via dataclasses.replace at launch — see app/cli/acp.py).
-        * ``frontend_default_max_transient_retries`` — launch-mode policy; travels
-          as the :func:`_reload_eval_context` instead, and the separate
-          env-derived override is deliberately re-read.
-        """
-        overrides: dict[str, Any] = {}
-        if self._session.ask_user_timeout_pinned:
-            overrides["ask_user_timeout_seconds"] = self._settings_handle.settings.ask_user_timeout_seconds
-        if self._session.model_profile_pinned:
-            overrides["model_profile"] = self._settings_handle.settings.model_profile
-            overrides["model_profile_override"] = self._settings_handle.settings.model_profile_override
-            overrides["model_profile_override_sub_agents"] = (
-                self._settings_handle.settings.model_profile_override_sub_agents
-            )
-        return overrides
+        """Snapshot the per-session pins every re-load must carry (:func:`session_pin_overrides`)."""
+        return session_pin_overrides(self._session, self._settings_handle.settings)
 
     def _reload_eval_context(self) -> EvalContext:
         """The launch mode's retry policy, passed *into* the load.
@@ -446,7 +461,7 @@ class RuntimeControls:
         workspace = self._session.workspace
         return Path(workspace.primary_cwd) if workspace is not None else Path(safe_getcwd())
 
-    async def on_settings_reload(self, _event: SettingsReload) -> None:
+    async def on_settings_reload(self, event: SettingsReload) -> None:
         """Handle settings reload — reload Settings from disk and env, then rebuild."""
         token = self._permits.capture_control_token()
         # Taken even with nothing built yet. A host that has not built — startup
@@ -461,6 +476,7 @@ class RuntimeControls:
             return
 
         old_loaded = self._settings_handle.loaded
+        released_pin = event.release_session_scoped_model and self._session.release_scoped_model()
         try:
             try:
                 # Re-read settings from env (matches TUI behavior, which persists
@@ -555,6 +571,16 @@ class RuntimeControls:
             else:
                 self._settings_handle.install(loaded)
             await self._publish_settings_reloaded()
+        except BaseException:
+            # Nothing reloaded went live: the session keeps the model it was pinned to.
+            # Deliberately only then: once the rebuild committed the reloaded settings,
+            # the executor runs on them without the pin, so the user's release stands
+            # even if a later step fails; restoring the pin would name a model the
+            # executor was not built with.
+            if released_pin and self._settings_handle.loaded is old_loaded:
+                self._session.model_profile_pinned = True
+                self._session.session_switch.model = True
+            raise
         finally:
             self._permits.release_rebuild_permit(permit)
 

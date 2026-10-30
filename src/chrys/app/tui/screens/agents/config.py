@@ -26,11 +26,11 @@ from textual.widgets.option_list import Option, OptionDoesNotExist
 from chrys.app.tui.binding_display import CANCEL_BINDING, localized_binding
 from chrys.app.tui.i18n import render_str, widget_locale_controller, widget_localizer
 from chrys.app.tui.screens.agents.agent_draft_store import AgentDraftStore, mcp_draft_errors_by_server
-from chrys.app.tui.screens.agents.panels.config_card import CardListChanged
 from chrys.app.tui.screens.agents.validation_messages import FIX_VALIDATION_ERRORS
 from chrys.app.tui.screens.dialogs.base import BaseDialog
 from chrys.app.tui.widgets import Checkbox
 from chrys.app.tui.widgets import EnhancedInput as Input
+from chrys.app.tui.widgets.config_card import CardListChanged
 from chrys.foundation.i18n import DisplayBlock, MessageDef, MessageRef, msg
 
 if TYPE_CHECKING:

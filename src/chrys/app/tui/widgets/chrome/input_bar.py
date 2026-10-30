@@ -12,12 +12,16 @@ When the agent is running, the button becomes Stop to interrupt.
 from __future__ import annotations
 
 import asyncio
+import re
 import unicodedata
+from bisect import bisect_right
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from itertools import accumulate
 from pathlib import Path
 from secrets import token_hex
-from time import time
-from typing import TYPE_CHECKING, Any, Literal
+from time import monotonic, time
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from rich.text import Text
 from textual.containers import Horizontal
@@ -25,13 +29,15 @@ from textual.content import Content
 from textual.css.scalar import Scalar
 from textual.geometry import Spacing
 from textual.message import Message
+from textual.notifications import Notification, Notify
 from textual.reactive import reactive
 from textual.strip import Strip
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Button, TextArea
+from textual.widgets.text_area import Document, Edit, EditResult, Location, Selection
 
-from chrys.app.tui.i18n import render_content, render_str
+from chrys.app.tui.i18n import render_content, render_str, widget_localizer
 from chrys.app.tui.support.prompt_history import (
     DEFAULT_MAX_ENTRIES,
     PromptHistoryWriter,
@@ -39,10 +45,11 @@ from chrys.app.tui.support.prompt_history import (
     load_history,
     prompt_history_enabled,
 )
+from chrys.app.tui.toasts import dismiss_toast
 from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.util.visibility import resync_compositor_regions
 from chrys.app.tui.widgets import EnhancedTextArea
-from chrys.app.tui.widgets.chrome.commands import is_slash_command_candidate
+from chrys.app.tui.widgets.chrome.commands import completion_token_start, is_slash_command_candidate
 from chrys.app.tui.widgets.chrome.image_paste import (
     convert_pasted_image_paths_to_mentions,
     save_clipboard_image_to_file,
@@ -76,6 +83,16 @@ _INPUT_NEWLINE_HINT = msg("tui.input.hint.newline", fallback="{shortcut} for new
 _INPUT_HISTORY_SEARCH_PLACEHOLDER = msg("tui.input.placeholder.history_search", fallback="Search prompt history")
 _INPUT_PLACEHOLDER_HISTORY_SELECT = msg("tui.input.placeholder.history_select", fallback="Select")
 _INPUT_PLACEHOLDER_HISTORY_CLOSE = msg("tui.input.placeholder.history_close", fallback="Close")
+_INPUT_PROMPT_FIELDS_PENDING_TITLE = msg("tui.input.title.prompt_fields_pending", fallback="Not sent")
+_INPUT_PROMPT_FIELDS_PENDING = msg(
+    "tui.input.prompt_fields_pending",
+    fallback="{count} highlighted placeholder is not filled in. Press Enter again to send as is.",
+    plural_fallback="{count} highlighted placeholders are not filled in. Press Enter again to send as is.",
+)
+_PROMPT_FIELDS_CONFIRM_SECONDS = 2.0
+"""A second Enter within this window sends a draft whose prompt fields are still unfilled."""
+_SLASH_QUERY_RE = re.compile(r"[/\uff0f]\S*")
+"""A one-line draft that is only a slash token: the suggestion list may reopen for it."""
 
 type InputLabel = MessageRef | str
 
@@ -201,8 +218,38 @@ class _HistoryBrowser:
                     self.index = max(0, self.index - overflow)
 
 
+type PromptField = tuple[int, int]
+"""``[start, end)`` code-point span of an unfilled prompt-shortcut placeholder in the draft."""
+
+
+def shift_prompt_fields(fields: Sequence[PromptField], start: int, end: int, inserted: int) -> tuple[PromptField, ...]:
+    """Return *fields* after ``[start, end)`` is replaced by *inserted* characters.
+
+    A field the edit touches stops being a field: once the user types into,
+    over or across a placeholder it is their text. Text inserted exactly at a
+    field's edge leaves the field as it was, moving it when the text lands
+    before it.
+    """
+    delta = inserted - (end - start)
+    kept: list[PromptField] = []
+    for field_start, field_end in fields:
+        if end <= field_start:
+            kept.append((field_start + delta, field_end + delta))
+        elif start >= field_end:
+            kept.append((field_start, field_end))
+    return tuple(kept)
+
+
 class _ChatTextArea(EnhancedTextArea):
     """Chat input with Enter-submit, explicit newline shortcuts and input history."""
+
+    COMPONENT_CLASSES: ClassVar[set[str]] = {"chat-input--prompt-field"}
+
+    DEFAULT_CSS = """
+    _ChatTextArea > .chat-input--prompt-field {
+        background: $accent 30%;
+    }
+    """
 
     _history: _HistoryBrowser
     _history_browsing: bool
@@ -238,6 +285,14 @@ class _ChatTextArea(EnhancedTextArea):
     class ModelTrigger(Message):
         """Posted when user types ``$`` at start of empty input."""
 
+    class DraftReplaced(Message):
+        """Posted when the whole draft is replaced rather than edited (history, editor, restore)."""
+
+        def __init__(self, *, keep_card: bool = False) -> None:
+            self.keep_card = keep_card
+            """True when the new draft still belongs to the shown prompt-shortcut card."""
+            super().__init__()
+
     def __init__(self, *args, **kwargs) -> None:
         kwargs.setdefault("max_paste_tokens", MESSAGE_EDITOR_PASTE_MAX_TOKENS)
         super().__init__(*args, **kwargs)
@@ -254,6 +309,166 @@ class _ChatTextArea(EnhancedTextArea):
         # Session restore/workspace updates replace this before normal use; this covers early paste during startup.
         self._paste_cwd: str = safe_getcwd()
         self._clipboard_image_dir: Path | None = None
+        self._prompt_fields: tuple[PromptField, ...] = ()
+        self._prompt_field_columns_of: tuple[PromptField, ...] | None = None
+        self._prompt_field_columns_cache: dict[int, list[tuple[int, int]]] = {}
+        # A snapshot of the initial setting: prompt fields turn the line highlight
+        # off while they show and restore this value, not one set later.
+        self._highlights_cursor_line = self.highlight_cursor_line
+
+    # -------------------------------------------------------------- #
+    # Prompt-shortcut fields
+    # -------------------------------------------------------------- #
+
+    @property
+    def prompt_fields(self) -> tuple[PromptField, ...]:
+        """Unfilled placeholders left by the last prompt-shortcut expansion."""
+        return self._prompt_fields
+
+    def set_prompt_fields(self, fields: Sequence[PromptField]) -> None:
+        """Highlight *fields* of the current text and select the first one."""
+        length = len(self.text)
+        self._prompt_fields = tuple(sorted((start, end) for start, end in fields if 0 <= start < end <= length))
+        self._repaint_prompt_fields()
+        if self._prompt_fields:
+            self._select_prompt_field(self._prompt_fields[0])
+
+    def _drop_prompt_fields(self) -> None:
+        if self._prompt_fields:
+            self._prompt_fields = ()
+            self._repaint_prompt_fields()
+
+    def _repaint_prompt_fields(self) -> None:
+        # The cursor line is styled over each line ``get_line`` returns, which
+        # would hide a field on the cursor's line: leave it unstyled while
+        # fields are shown.
+        self.highlight_cursor_line = self._highlights_cursor_line and not self._prompt_fields
+        # The rendered-line cache is keyed on text, cursor and theme, not on
+        # these spans: drop it so the next paint restyles the lines.
+        self._line_cache.clear()
+        self.refresh()
+
+    def _select_prompt_field(self, span: PromptField) -> None:
+        document = self.document
+        start, end = span
+        self.selection = Selection(document.get_location_from_index(start), document.get_location_from_index(end))
+
+    def select_next_prompt_field(self) -> bool:
+        """Select the field after the current selection, wrapping around; False with none left."""
+        fields = self._prompt_fields
+        if not fields:
+            return False
+        document = self.document
+        first, last = sorted(self.selection)
+        start = document.get_index_from_location(first)
+        end = document.get_index_from_location(last)
+        if (start, end) in fields:
+            following = fields[(fields.index((start, end)) + 1) % len(fields)]
+        else:
+            following = next((span for span in fields if span[0] >= start), fields[0])
+        self._select_prompt_field(following)
+        return True
+
+    def edit(self, edit: Edit) -> EditResult:
+        if not self._prompt_fields:
+            return super().edit(edit)
+        document = self.document
+        start = document.get_index_from_location(edit.top)
+        end = document.get_index_from_location(edit.bottom)
+        # Shift before the base edit posts Changed and repaints.
+        self._prompt_fields = shift_prompt_fields(self._prompt_fields, start, end, len(edit.text))
+        if not self._prompt_fields:
+            self.highlight_cursor_line = self._highlights_cursor_line
+        return super().edit(edit)
+
+    # Undo and redo replay a batch of recorded edits straight on the document,
+    # not through ``edit()`` (Textual 8.2.7 ``TextArea._undo_batch`` /
+    # ``_redo_batch``). Each recorded edit knows the exact span it changed, so
+    # the fields move across those spans; telling them apart by comparing the
+    # text before and after would misplace a change next to a field whose
+    # characters match it.
+
+    def _undo_batch(self, edits: Sequence[Edit]) -> None:
+        if self._prompt_fields and edits:
+            steps: list[tuple[Location, Location, str] | None] = []
+            for recorded in reversed(edits):
+                # The span the edit wrote, and the text it replaced there.
+                done = recorded._edit_result
+                steps.append(None if done is None else (recorded.top, done.end_location, done.replaced_text))
+            self._replay_prompt_fields(steps)
+        super()._undo_batch(edits)
+
+    def _redo_batch(self, edits: Sequence[Edit]) -> None:
+        if self._prompt_fields and edits:
+            self._replay_prompt_fields([(recorded.top, recorded.bottom, recorded.text) for recorded in edits])
+        super()._redo_batch(edits)
+
+    def _replay_prompt_fields(self, steps: Sequence[tuple[Location, Location, str] | None]) -> None:
+        """Move the fields across *steps*, replacements applied in order to the current text.
+
+        Each step is ``(top, bottom, text)`` against the text the step before
+        it left; a scratch copy of the document turns each into offsets, as
+        ``edit()`` does on the live one. A step that cannot be placed drops
+        every field: a field is only highlighted where it is known to be.
+        """
+        scratch = Document(self.text)
+        fields = self._prompt_fields
+        for step in steps:
+            if step is None:
+                fields = ()
+                break
+            top, bottom, text = step
+            start = scratch.get_index_from_location(top)
+            end = scratch.get_index_from_location(bottom)
+            written = scratch.replace_range(top, bottom, text)
+            fields = shift_prompt_fields(
+                fields, start, end, scratch.get_index_from_location(written.end_location) - start
+            )
+        self._prompt_fields = fields
+        self._repaint_prompt_fields()
+
+    def load_text(self, text: str) -> None:
+        self._drop_prompt_fields()
+        super().load_text(text)
+
+    def get_line(self, line_index: int) -> Text:
+        line = super().get_line(line_index)
+        if not self._prompt_fields:
+            return line
+        spans = self._prompt_field_columns().get(line_index)
+        if spans:
+            style = self.get_component_rich_style("chat-input--prompt-field", partial=False)
+            for start, end in spans:
+                line.stylize(style, start, end)
+        return line
+
+    def _prompt_field_columns(self) -> dict[int, list[tuple[int, int]]]:
+        """The columns each line's fields cover, worked out once per change of the fields.
+
+        Every change of the text makes new fields (``edit()``, undo, redo,
+        ``load_text``), so the fields themselves key this. Paint asks line by
+        line, and a line's offset in the text costs a walk over every line
+        above it: done per painted line, a long draft paints slowly.
+        """
+        fields = self._prompt_fields
+        if self._prompt_field_columns_of is not fields:
+            document = self.document
+            lines = document.lines
+            newline = len(document.newline)
+            line_starts = list(accumulate((len(text) + newline for text in lines), initial=0))
+            columns: dict[int, list[tuple[int, int]]] = {}
+            for start, end in fields:
+                first = bisect_right(line_starts, start) - 1
+                last = min(bisect_right(line_starts, end) - 1, len(lines) - 1)
+                for row in range(first, last + 1):
+                    line_start = line_starts[row]
+                    left = max(start, line_start) - line_start
+                    right = min(end, line_start + len(lines[row])) - line_start
+                    if left < right:
+                        columns.setdefault(row, []).append((left, right))
+            self._prompt_field_columns_cache = columns
+            self._prompt_field_columns_of = fields
+        return self._prompt_field_columns_cache
 
     def set_right_placeholder(self, text: str) -> None:
         """Set literal placeholder text rendered against the input's right edge."""
@@ -291,6 +506,7 @@ class _ChatTextArea(EnhancedTextArea):
 
     def _set_text(self, text: str) -> None:
         """Replace textarea content with *text* and move cursor to end."""
+        self.post_message(self.DraftReplaced())
         self.clear()
         if text:
             self.insert(text)
@@ -454,6 +670,10 @@ class _ChatTextArea(EnhancedTextArea):
             event.stop()
             event.prevent_default()
             self.post_message(self.EditorRequested())
+            return
+        if event.key == "tab" and not self._suggestions_active and self.select_next_prompt_field():
+            event.stop()
+            event.prevent_default()
             return
         # Shell mode trigger: "!" or fullwidth "!" (U+FF01) at start of empty input
         if (
@@ -628,6 +848,9 @@ class InputBar(Widget):
     retry_pending: reactive[bool] = reactive(False)
     _retry_label: InputLabel
 
+    DraftReplaced = _ChatTextArea.DraftReplaced
+    """Re-exported: the text area is private, the message is not."""
+
     class UserSubmitted(Message):
         """Posted when the user submits text."""
 
@@ -655,6 +878,13 @@ class InputBar(Widget):
 
     class EditorRequested(Message):
         """Posted when the user requests the full-screen message editor."""
+
+    class SlashQueryChanged(Message):
+        """Posted when the draft becomes ``/name`` (no whitespace) while no suggestion list is open."""
+
+        def __init__(self, text: str) -> None:
+            self.text = text
+            super().__init__()
 
     class NewSessionRequested(Message):
         """Posted when the user clicks New."""
@@ -726,6 +956,9 @@ class InputBar(Widget):
         self._retry_label = INPUT_CONTINUE.bind()
         self._inject_placeholder = _build_inject_placeholder(self._localizer())
         self._history_search_placeholder = _build_history_search_placeholder(self._localizer())
+        self._slash_typed = False
+        # When the unfilled-fields warning was shown, for which draft revision, and its toast.
+        self._prompt_fields_warned: tuple[float, int, Notification] | None = None
         super().__init__(**kwargs)
 
     def set_suggestions_active(self, active: bool, mode: str = "") -> None:
@@ -1047,6 +1280,8 @@ class InputBar(Widget):
         event.stop()
         if self.locked or self.shell_mode:
             return
+        # The "/" keystroke's own Changed must not ask to reopen a list this message opens.
+        self._slash_typed = True
         self.post_message(self.SlashTriggered())
 
     def on__chat_text_area_file_trigger(self, event: _ChatTextArea.FileTrigger) -> None:
@@ -1087,6 +1322,8 @@ class InputBar(Widget):
                 self.post_message(self.SuggestionSelect(execute=True))
                 return
             self.post_message(self.SuggestionDismiss())
+        if not self._confirm_unfilled_prompt_fields():
+            return
         # In retry_mode a plain Enter-submit (no slash command) is treated
         # the same as clicking Continue/Retry: the typed text rides along
         # as a mid-turn note rather than starting a brand-new turn.
@@ -1105,10 +1342,21 @@ class InputBar(Widget):
             self._refresh_interaction_state()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        """Forward text changes when suggestions are active."""
+        """Forward text changes when suggestions are active, or offer a closed list a ``/name`` draft."""
         self._draft_revision += 1
+        text = event.text_area.text
+        slash_typed, self._slash_typed = self._slash_typed, False
         if self._suggestions_active:
-            self.post_message(self.TextChanged(event.text_area.text))
+            self.post_message(self.TextChanged(text))
+        elif (
+            not slash_typed
+            and not self.locked
+            and not self.shell_mode
+            and not self.query_one("#chat-input", _ChatTextArea)._history_browsing
+            and _SLASH_QUERY_RE.fullmatch(text)
+        ):
+            # Deleting back from "/name args" (or after the list closed) brings the list back, as in opencode.
+            self.post_message(self.SlashQueryChanged(text))
         self._refresh_interaction_state()
 
     def on_key(self, event) -> None:
@@ -1152,7 +1400,11 @@ class InputBar(Widget):
             # In retry mode the button always resumes the current turn.
             # Any text the user typed rides along as a mid-turn note;
             # the engine will use it as the continuation prompt in place
-            # of the default ``"continue"`` placeholder.
+            # of the default ``"continue"`` placeholder. Unfilled shortcut
+            # fields are checked as for Enter.
+            typed = self.query_one("#chat-input", _ChatTextArea).text.strip()
+            if typed and not self._confirm_unfilled_prompt_fields():
+                return
             self.post_message(self.RetryRequested(text=self.consume_retry_text()))
         else:
             self._do_submit()
@@ -1166,11 +1418,54 @@ class InputBar(Widget):
             return
         ta = self.query_one("#chat-input", _ChatTextArea)
         text = ta.text.strip()
+        if text and not self._confirm_unfilled_prompt_fields():
+            return
         if text:
             ta._reset_history_browsing()
             self.post_message(self.UserSubmitted(text))
             ta.clear()
         self._refresh_interaction_state()
+
+    def _confirm_unfilled_prompt_fields(self) -> bool:
+        """Return whether a submit may go ahead with the draft's prompt fields.
+
+        With fields left unfilled the first submit only warns; a second one on
+        the same draft within :data:`_PROMPT_FIELDS_CONFIRM_SECONDS` sends it as is.
+        """
+        count = len(self.query_one("#chat-input", _ChatTextArea).prompt_fields)
+        if not count:
+            if self._prompt_fields_warned is not None:
+                dismiss_toast(self.app, self._prompt_fields_warned[2])
+            self._prompt_fields_warned = None
+            return True
+        now = monotonic()
+        warned = self._prompt_fields_warned
+        if (
+            warned is not None
+            and warned[1] == self._draft_revision
+            and now - warned[0] <= _PROMPT_FIELDS_CONFIRM_SECONDS
+        ):
+            self._prompt_fields_warned = None
+            # The draft is going out: the "Not sent" warning no longer holds.
+            dismiss_toast(self.app, warned[2])
+            return True
+        localizer = widget_localizer(self)
+        notification = Notification(
+            render_str(localizer, _INPUT_PROMPT_FIELDS_PENDING.bind(count=count)),
+            title=render_str(localizer, _INPUT_PROMPT_FIELDS_PENDING_TITLE.bind()),
+            severity="warning",
+            timeout=_PROMPT_FIELDS_CONFIRM_SECONDS + 1,
+            markup=False,
+        )
+        self._prompt_fields_warned = (now, self._draft_revision, notification)
+        self.app.post_message(Notify(notification))
+        return False
+
+    def expand_prompt(self, text: str, fields: Sequence[PromptField]) -> None:
+        """Replace the draft with an expanded prompt shortcut and highlight its unfilled *fields*."""
+        self.replace_draft(text, keep_card=True)
+        self.query_one("#chat-input", _ChatTextArea).set_prompt_fields(fields)
+        self.focus_input()
 
     def _lock(self, label: InputLabel, *, stop_style: bool, spin_prompt: bool = True) -> None:
         """Lock the input bar — text stays visible, input becomes read-only."""
@@ -1226,7 +1521,7 @@ class InputBar(Widget):
         """Return the monotonic generation of the underlying chat draft."""
         return self._draft_revision
 
-    def restore_draft(self, text: str) -> bool:
+    def restore_draft(self, text: str, *, keep_card: bool = False) -> bool:
         """Hand *text* back to an empty composer; return whether it was written.
 
         Every caller reaches this from a path that already consumed the draft —
@@ -1243,13 +1538,14 @@ class InputBar(Widget):
             return False
         if self.query_one("#chat-input", _ChatTextArea).text:
             return False
-        self.replace_draft(text)
+        self.replace_draft(text, keep_card=keep_card)
         return True
 
-    def replace_draft(self, text: str) -> None:
+    def replace_draft(self, text: str, *, keep_card: bool = False) -> None:
         """Replace the draft, move its cursor to the end, and refresh controls."""
         self._draft_revision += 1
         text_area = self.query_one("#chat-input", _ChatTextArea)
+        text_area.post_message(_ChatTextArea.DraftReplaced(keep_card=keep_card))
         text_area._reset_history_browsing()
         text_area.clear()
         if text:
@@ -1303,25 +1599,25 @@ class InputBar(Widget):
         return True
 
     def replace_trigger_text(self, trigger: str, replacement: str) -> None:
-        """Replace the trigger token (e.g. ``/query`` or ``@query``) with *replacement*.
+        """Replace the token an open suggestion list completes (``/query``, ``@query``) with *replacement*.
 
-        Finds the last occurrence of *trigger* character in the text and replaces
-        everything from that position to the cursor with *replacement*.
-        Also checks for fullwidth CJK equivalents (e.g. U+FF20 for ``@``).
+        The token is the span the list filtered on, from its trigger to the
+        end of the text (:func:`completion_token_start`), wherever the cursor
+        is. Text before it, and the prompt fields there, stay.
         """
         ta = self.query_one("#chat-input", _ChatTextArea)
-        text = ta.text
-        idx = text.rfind(trigger)
-        # Check fullwidth variant for CJK keyboard support (ASCII+0xFEE0)
-        if idx < 0 and len(trigger) == 1 and 0x21 <= ord(trigger) <= 0x7E:
-            idx = text.rfind(chr(ord(trigger) + 0xFEE0))
-        if idx < 0:
+        document = ta.document
+        start = completion_token_start(ta.text, trigger)
+        if start is None:
             return
-        before = text[:idx]
-        ta.clear()
-        new_text = before + replacement
-        if new_text:
-            ta.insert(new_text)
+        # One edit, so the prompt fields shift with it (``_ChatTextArea.edit``).
+        result = ta.replace(replacement, document.get_location_from_index(start), document.end)
+        ta.move_cursor(result.end_location)
+
+    @property
+    def draft_has_focus(self) -> bool:
+        """Whether the chat input itself has focus, not one of the bar's buttons."""
+        return self.query_one("#chat-input", _ChatTextArea).has_focus
 
     @property
     def value(self) -> str:

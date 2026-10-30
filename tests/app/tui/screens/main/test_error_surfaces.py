@@ -916,11 +916,14 @@ class _RestorableDraftFake:
 
     value = ""
 
-    def restore_draft(self, text: str) -> bool:
+    def restore_draft(self, text: str, *, keep_card: bool = False) -> bool:
         if not text or self.value:
             return False
         self.value = text
         return True
+
+    def replace_draft(self, text: str, *, keep_card: bool = False) -> None:
+        self.value = text
 
 
 @dataclass

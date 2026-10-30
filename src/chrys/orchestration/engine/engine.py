@@ -811,9 +811,10 @@ class AgentEngine:
         Headless ``--model`` lives only in this host's settings — it never
         parks the choice in the process pointer the way the TUI does — so
         without the pin one ``SettingsReload`` would silently revert the run
-        to the global default.
+        to the global default. The run owns it, so no session change releases it.
         """
         self._session.model_profile_pinned = True
+        self._session.session_switch.model = False
 
     async def _on_settings_reload(self, _event: SettingsReload) -> None:
         """Handle settings reload — recreate Settings from env and rebuild agent."""

@@ -77,7 +77,7 @@ def _handler(
         def unlock_and_keep(self) -> None:
             self.locked = False
 
-        def restore_draft(self, _text: str) -> bool:
+        def restore_draft(self, _text: str, *, keep_card: bool = False) -> bool:
             return False
 
     class _FakeChatPanel:

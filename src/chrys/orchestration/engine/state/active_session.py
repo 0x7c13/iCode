@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.models.workspace import Workspace
@@ -16,11 +17,60 @@ from chrys.service.approval.policy import ApprovalMode
 from chrys.service.session.runtime_metadata import SessionRuntimeMetadata
 
 if TYPE_CHECKING:
+    from chrys.foundation.config.settings import Settings
     from chrys.orchestration.engine.build.construction import StagedBuild
     from chrys.service.mutations.tracker import MutationTracker
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.session.persistence import SessionPersistence
     from chrys.service.todos.tracker import TodoTracker
+
+
+@dataclass
+class SessionScopedSwitch:
+    """Agent and model switches that belong to this session only (a TUI prompt shortcut card).
+
+    A new session, or another session restored, starts as if they never
+    happened; the user's own agent or model choice ends the matching half.
+    Other per-session pins (an ACP client's model, headless ``--model``) are
+    not session-scoped and are never recorded here.
+    """
+
+    agent_before: AgentProfile | None = None
+    """The agent in use before a session-scoped agent switch; None when there was none."""
+    model: bool = False
+    """The session's model pin was set by a session-scoped model switch."""
+
+    @property
+    def active(self) -> bool:
+        return self.agent_before is not None or self.model
+
+
+def session_pin_overrides(
+    session: ActiveSession, settings: Settings, *, with_scoped_model: bool = True
+) -> dict[str, Any]:
+    """Snapshot the per-session pins every re-load of *session*'s settings must carry.
+
+    Pins travel only while pinned, so an unpinned session picks up a changed
+    env value on its next load:
+
+    * ``model_profile`` / ``model_profile_override`` — pinned by a per-session
+      model switch (ACP, a prompt shortcut card) or a caller that owns the model.
+      *with_scoped_model* False leaves out a session-scoped one, for a load that
+      starts or restores another session.
+    * ``ask_user_timeout_seconds`` — pinned when ACP owns the ask_user lifetime
+      (set via dataclasses.replace at launch — see app/cli/acp.py).
+    * ``frontend_default_max_transient_retries`` — launch-mode policy; travels
+      as the reload eval context instead, and the separate env-derived override
+      is deliberately re-read.
+    """
+    overrides: dict[str, Any] = {}
+    if session.ask_user_timeout_pinned:
+        overrides["ask_user_timeout_seconds"] = settings.ask_user_timeout_seconds
+    if session.model_profile_pinned and (with_scoped_model or not session.session_switch.model):
+        overrides["model_profile"] = settings.model_profile
+        overrides["model_profile_override"] = settings.model_profile_override
+        overrides["model_profile_override_sub_agents"] = settings.model_profile_override_sub_agents
+    return overrides
 
 
 class ActiveSession(SessionResources[SessionRuntimeMetadata]):
@@ -49,12 +99,14 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         self.shutting_down: bool = False
         self.turn_number: int = 0
         self.todo_tracker: TodoTracker | None = None
-        # Set only by a per-session ACP model switch (SetModelProfile). When True,
-        # SettingsReload keeps the live ``settings.model_profile`` instead of
-        # reverting to the global env default. The TUI never sets this (it persists
-        # CHRYS_MODEL_PROFILE to .env and relies on SettingsReload re-reading env),
-        # so its behavior is unchanged.
+        # Set by a per-session model switch (SetModelProfile: ACP, or a TUI prompt
+        # shortcut card) or by a caller that owns the model (headless ``--model``).
+        # When True, SettingsReload keeps the live ``settings.model_profile``
+        # instead of reverting to the global default.
         self.model_profile_pinned: bool = False
+        # What a prompt shortcut card switched for this session only; released
+        # in one place when the session ends (``SessionLifecycle``).
+        self.session_switch: SessionScopedSwitch = SessionScopedSwitch()
         # Set via ``pin_ask_user_timeout`` when the caller owns
         # ``ask_user_timeout_seconds`` out-of-band (ACP injects it via
         # dataclasses.replace at launch, not env). When True, SettingsReload
@@ -117,6 +169,14 @@ class ActiveSession(SessionResources[SessionRuntimeMetadata]):
         self.mutation_coordinator = None
         self.todo_tracker = None
         self.recovered_from_sidecar = False
+
+    def release_scoped_model(self) -> bool:
+        """Drop the model pin a session-scoped switch set; return whether there was one."""
+        if not (self.model_profile_pinned and self.session_switch.model):
+            return False
+        self.model_profile_pinned = False
+        self.session_switch.model = False
+        return True
 
     def adopt_restore_identity(self, *, session_id: str, recovered_from_sidecar: bool) -> None:
         """Adopt the restore identity before hydrating its state."""

@@ -106,8 +106,21 @@
       "_cancel_subprocess_wait": [
         ["timeout", "await asyncio.wait_for(task, timeout=_PROCESS_WAIT_CLEANUP_TIMEOUT)", "unresolved"]
       ],
+      "_create_owned_subprocess": [
+        ["shield", "await asyncio.shield(spawn)", "unresolved"],
+        ["wrapper", "await finish_close(asyncio.create_task(_end_started_child(spawn, kwargs)))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
+      "_end_child_tree": [
+        ["wrapper", "await kill_windows_process_tree(proc.pid)", "unresolved", "chrys.foundation.platform.process.kill_windows_process_tree"],
+        ["timeout", "await asyncio.wait_for(proc.wait(), timeout=_PROCESS_WAIT_CLEANUP_TIMEOUT)", "unresolved"],
+        ["subprocess", "proc.wait()", "unresolved"]
+      ],
+      "_end_started_child": [
+        ["multi_wait", "await asyncio.wait({spawn}, timeout=_PROCESS_WAIT_CLEANUP_TIMEOUT)", "unresolved"],
+        ["wrapper", "await _end_child_tree(spawn.result(), kwargs)", "unresolved", "chrys.foundation.platform.process._end_child_tree"]
+      ],
       "_managed_subprocess_gen": [
-        ["awaitable", "await asyncio.create_subprocess_exec(*args, **kwargs)", "unresolved"],
+        ["wrapper", "await _create_owned_subprocess(*args, **kwargs)", "unresolved", "chrys.foundation.platform.process._create_owned_subprocess"],
         ["wrapper", "await kill_windows_process_tree(proc.pid)", "unresolved", "chrys.foundation.platform.process.kill_windows_process_tree"],
         ["timeout", "await asyncio.wait_for(proc.wait(), timeout=_PROCESS_WAIT_CLEANUP_TIMEOUT)", "unresolved"],
         ["subprocess", "proc.wait()", "unresolved"]
@@ -141,7 +154,7 @@
       ],
       "spawn_managed_stdio_process": [
         ["wrapper", "await _spawn_windows_managed_stdio_process(command, args, cwd=cwd, env=env, limit=limit, parent_env=parent_env)", "unresolved", "chrys.foundation.platform.process._spawn_windows_managed_stdio_process"],
-        ["awaitable", "await asyncio.create_subprocess_exec(command, *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd, env=env, limit=limit, start_new_session=True)", "unresolved"],
+        ["wrapper", "await _create_owned_subprocess(command, *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd, env=env, limit=limit, start_new_session=True)", "unresolved", "chrys.foundation.platform.process._create_owned_subprocess"],
         ["sync_primitive", "await process.wait()", "unresolved"]
       ],
       "wait_for_subprocess": [
@@ -1465,6 +1478,9 @@
         ["awaitable", "await self._bus.publish(SessionRestored(session_id=event.session_id, agent_profile=profile_name, display_name=profile.display_name if profile else '', initial_agent_profile=meta.agent_profile_history[0] if meta is not None and meta.agent_profile_history else profile.display_name if profile else profile_name, message_count=meta.message_count if meta else 0, cwd_warning=cwd_warning, primary_cwd=target_cwd, recovered_from_sidecar=recovered_from_sidecar, working_dirs=[working_dir.path for working_dir in self._session.workspace.working_dirs] if self._session.workspace is not None else []))", "unresolved"],
         ["wrapper", "await self._fire_session_restored_hook(restored_session_id=event.session_id, profile_name=profile_name)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._fire_session_restored_hook"]
       ],
+      "SessionLifecycle._load_without_scoped_model": [
+        ["thread_pool", "await asyncio.to_thread(load_settings, project_root=Path(workspace.primary_cwd) if workspace is not None else Path(safe_getcwd()), eval_context=self._reload_eval_context(), **overrides)", "unresolved"]
+      ],
       "SessionLifecycle._publish_session_fork_error": [
         ["awaitable", "await self._bus.publish(Error(code=code, message=message, session_id=session_id, display_message=display_message))", "unresolved"]
       ],
@@ -1480,8 +1496,9 @@
         ["wrapper", "await self.start(profile, operation='reset_failed')", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"]
       ],
       "SessionLifecycle._start_fresh_session": [
+        ["wrapper", "await self._load_without_scoped_model()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._load_without_scoped_model"],
         ["wrapper", "await self.close_session()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"],
-        ["wrapper", "await self.start(profile, operation='new_session')", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"]
+        ["wrapper", "await self.start(profile, operation='new_session', staged_loaded=staged_loaded)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"]
       ],
       "SessionLifecycle._start_locked": [
         ["awaitable", "await self._bus.publish(Error(code='session_in_use', message=message, session_id=self._session.session_id))", "unresolved"],
@@ -1573,7 +1590,7 @@
         ["awaitable", "await self._bus.publish(Error(code='requested_agent_profile_unresolved', message=f\"Requested agent profile '{event.profile_name}' could not be resolved; session restore was stopped.\", display_message=_RESTORE_REQUESTED_AGENT_PROFILE_UNRESOLVED.bind(profile=event.profile_name), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='saved_agent_profile_unresolved', message=f\"Saved agent profile id '{saved_profile_id}' for '{saved_profile_name}' could not be uniquely resolved, and no current profile is active.\", display_message=_RESTORE_AGENT_PROFILE_UNRESOLVED.bind(saved=saved_display), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._permits.prepare_session_transition('restore')", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(load_settings, project_root=Path(target_cwd), eval_context=self._reload_eval_context(), **self._session_pin_overrides())", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(load_settings, project_root=Path(target_cwd), eval_context=self._reload_eval_context(), **self._session_pin_overrides(with_scoped_model=not drops_scoped_model))", "unresolved"],
         ["wrapper", "await self.close_session_in_place()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session_in_place"],
         ["wrapper", "await self.close_session()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"],
         ["wrapper", "await self._hydrate_restored_session(event=event, state=state, meta=meta, profile=profile, profile_name=profile_name, profile_switch=profile_switch, profile_resolution_warning=profile_resolution_warning, recovered_from_sidecar=recovered_from_sidecar, cwd_warning=cwd_warning, target_cwd=target_cwd, staged_loaded=staged_loaded)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._hydrate_restored_session"],
@@ -1666,7 +1683,7 @@
       "RuntimeControls.on_set_model_profile": [
         ["awaitable", "await self._bus.publish(Error(code='runtime_mutation_not_ready', message='No active agent \u2014 cannot switch model', display_message=_CONTROLS_MODEL_SWITCH_NOT_READY.bind(), session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._permits.acquire_rebuild_permit(token)", "unresolved"],
-        ["wrapper", "await self._publish_model_satisfied_or_denied(event.profile_id, permit, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_model_satisfied_or_denied"],
+        ["wrapper", "await self._publish_model_satisfied_or_denied(event, permit, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_model_satisfied_or_denied"],
         ["wrapper", "await self._start_or_restart_with_permit(permit, self._session.agent_profile, operation='model_switch')", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._start_or_restart_with_permit"],
         ["wrapper", "await self._publish_model_switched_snapshot(event.profile_id, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_model_switched_snapshot"]
       ],
@@ -4642,6 +4659,19 @@
         ["thread_pool", "await loop.run_in_executor(None, _track_file_mutation_before, tracker, tool_name, args, call_id, workspace_cwd, tool_operation_id)", "unresolved"],
         ["wrapper", "await _track_git_capture_before(tracker, args, workspace_cwd)", "unresolved", "chrys.service.mutations.pipeline._track_git_capture_before"],
         ["thread_pool", "await loop.run_in_executor(None, _track_shell_scan_before, tracker, args, workspace_cwd)", "unresolved"]
+      ]
+    },
+    "chrys.service.prompt_shortcuts.shell": {
+      "interpolate_shell": [
+        ["async_context", "async with asyncio.TaskGroup()", "unresolved"]
+      ],
+      "interpolate_shell.run": [
+        ["async_context", "async with limit", "unresolved"],
+        ["wrapper", "await run_shell_command(command, cwd=cwd)", "unresolved", "chrys.service.prompt_shortcuts.shell.run_shell_command"]
+      ],
+      "run_shell_command": [
+        ["async_context", "async with managed_subprocess(*_shell_argv(command), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd)", "unresolved"],
+        ["wrapper", "await wait_for_subprocess(drain_process_pipes(proc, stdout, stderr), timeout=SHELL_TIMEOUT_SECONDS, process_group_id=proc.pid if sys.platform != 'win32' else None)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"]
       ]
     },
     "chrys.service.session.persistence": {
