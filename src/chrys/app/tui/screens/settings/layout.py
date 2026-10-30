@@ -68,6 +68,14 @@ _HINT_UI_CHAT_FOLD_FINISHED_TURNS = msg(
     "tui.settings.hint.ui.chat.fold_finished_turns",
     fallback="Fold activity after successful replies. Applies to future completed turns and sessions opened afterwards; existing folds keep their state.",
 )
+_HINT_UI_CHAT_IMAGE_GRAPHICS = msg(
+    "tui.settings.hint.ui.chat.image_graphics",
+    fallback=(
+        "Show images in full color in Ghostty, kitty, iTerm2 3.7.5 or later, WezTerm, VS Code with terminal images "
+        "on and Windows Terminal 1.22 or later, asking the terminal at startup which one it is. When off, or in "
+        "other terminals, images are drawn with colored blocks."
+    ),
+)
 _HINT_APP_UPDATE_CHECK = msg(
     "tui.settings.hint.app.update_check",
     fallback="Once a day at startup, look up the newest version and show it on the welcome screen. Sends no personal data.",
@@ -328,6 +336,7 @@ TABS: tuple[SettingsTab, ...] = (
                     SettingRowSpec("ui.chat.show_thinking", hint=_HINT_UI_CHAT_THINKING_EXPANDED),
                     SettingRowSpec("ui.chat.tool_groups_expanded", hint=_HINT_UI_CHAT_TOOL_GROUPS_EXPANDED),
                     SettingRowSpec("ui.chat.fold_finished_turns", hint=_HINT_UI_CHAT_FOLD_FINISHED_TURNS),
+                    SettingRowSpec("ui.chat.image_graphics", hint=_HINT_UI_CHAT_IMAGE_GRAPHICS),
                 ),
             ),
             SettingsSection(

@@ -60,6 +60,7 @@ def test_the_chat_display_preferences_sit_together_right_after_the_appearance_ro
         "ui.chat.show_thinking",
         "ui.chat.tool_groups_expanded",
         "ui.chat.fold_finished_turns",
+        "ui.chat.image_graphics",
     ]
     assert "ui.chat.tool_groups_expanded" not in {row.key for section in tools.sections for row in section.rows}
 

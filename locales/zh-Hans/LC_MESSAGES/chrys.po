@@ -1360,6 +1360,12 @@ msgstr "内联文件快照上限（字符）"
 msgid "settings.ui.chat.fold_finished_turns.label"
 msgstr "自动折叠已完成轮次"
 
+#. English: Full-color images
+#. chrys-meta={"fingerprint":"f7bdad3865459dc049b6b8babf8b6cfd87fb48b926019174798e5cfabd5cb35b","multiline":false,"placeholders":[]}
+#: src/chrys/foundation/config/settings.py
+msgid "settings.ui.chat.image_graphics.label"
+msgstr "全彩图片"
+
 #. English: Expand thinking by default
 #. chrys-meta={"fingerprint":"3d187e34709e9b4d6156cc40d0b44cb6e74930750947e596a8c9d11dc9f5a349","multiline":false,"placeholders":[]}
 #: src/chrys/foundation/config/settings.py
@@ -10713,6 +10719,15 @@ msgstr "JSON 列表，列出网络搜索可以访问的私有网络或本地网�
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.hint.ui.chat.fold_finished_turns"
 msgstr "成功回复后折叠执行过程。适用于之后完成的轮次和之后打开的会话；已有折叠块保持当前状态。"
+
+#. English: Show images in full color in Ghostty, kitty, iTerm2 3.7.5 or later,
+#. WezTerm, VS Code with terminal images on and Windows Terminal 1.22 or later,
+#. asking the terminal at startup which one it is. When off, or in other
+#. terminals, images are drawn with colored blocks.
+#. chrys-meta={"fingerprint":"5c545554ef6729a1c740b6e9cbd8a4f2f57fb3e2fa449b522fd7e61aa0b635a6","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/settings/layout.py
+msgid "tui.settings.hint.ui.chat.image_graphics"
+msgstr "在 Ghostty、kitty、iTerm2 3.7.5 及以上版本、WezTerm、开启了终端图片的 VS Code 和 Windows Terminal 1.22 及以上版本中以全彩显示图片，为此启动时会询问终端类型。关闭此项或在其他终端中，图片以彩色色块绘制。"
 
 #. English: Show new thinking expanded while the model writes it. When off, it
 #. stays on one line, its newest words running along it. Either way it folds to

@@ -696,6 +696,7 @@ _LABEL_UI_CHAT_THINKING_EXPANDED = msg("settings.ui.chat.show_thinking.label", f
 _LABEL_UI_CHAT_FOLD_FINISHED_TURNS = msg(
     "settings.ui.chat.fold_finished_turns.label", fallback="Automatically fold completed turns"
 )
+_LABEL_UI_CHAT_IMAGE_GRAPHICS = msg("settings.ui.chat.image_graphics.label", fallback="Full-color images")
 _LABEL_UI_EDITOR_KEYMAP = msg("settings.ui.editor.keymap.label", fallback="Editor keymap")
 _LABEL_WORKSPACE_MRU_MAX_ENTRIES = msg("settings.workspace.mru_max_entries.label", fallback="Recent workspaces to keep")
 _LABEL_APPROVAL_TIMEOUT_SECONDS = msg(
@@ -1541,6 +1542,22 @@ class Settings:
             label=_LABEL_UI_CHAT_FOLD_FINISHED_TURNS,
             coerce=bool_coercer(),
             apply=Apply.LIVE,
+            group="ui",
+            kind=Kind.BOOL,
+            project_merge=ProjectMerge.DENY,
+        ),
+    )
+
+    # Whether chat images use the terminal's own graphics (kitty protocol, Sixel) where the terminal
+    # is known to have them; off, every terminal shows the half-block approximation. Read once, when
+    # the TUI starts: what the terminal already holds is not redrawn.
+    chat_image_graphics: bool = field(
+        default=True,
+        metadata=spec(
+            key="ui.chat.image_graphics",
+            label=_LABEL_UI_CHAT_IMAGE_GRAPHICS,
+            coerce=bool_coercer(),
+            apply=Apply.RESTART,
             group="ui",
             kind=Kind.BOOL,
             project_merge=ProjectMerge.DENY,
