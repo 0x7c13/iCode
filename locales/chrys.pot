@@ -1132,24 +1132,6 @@ msgstr ""
 msgid "settings.project_skills_dormant"
 msgstr ""
 
-#. English: Load prompt shortcuts from user folder (if present)
-#. chrys-meta={"fingerprint":"8d7fc3eda138f3c007d352e8974233786a1f954a4503abf6726a330a03bc436b","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.prompt_shortcuts.load_user_folder.label"
-msgstr ""
-
-#. English: Load prompt shortcuts from working folder (if present)
-#. chrys-meta={"fingerprint":"d2d2aad3aac344bfad2debaa39d11063f7207fc2cc4aa726465042771b713503","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.prompt_shortcuts.load_working_folder.label"
-msgstr ""
-
-#. English: Prompt shortcut directories
-#. chrys-meta={"fingerprint":"ab757d9771b99fd5b00412e488f413da1f89e5ca8b2dea4109783336aa82426b","multiline":false,"placeholders":[]}
-#: src/chrys/foundation/config/settings.py
-msgid "settings.prompt_shortcuts.paths.label"
-msgstr ""
-
 #. English: Ignoring {source}={raw}: expected a boolean.
 #. chrys-meta={"fingerprint":"f804369b50e63015f7f5a7096b0d54c6de66e96fd168736853c1690d0ad9c6e2","multiline":false,"placeholders":["raw","source"]}
 #: src/chrys/foundation/config/warnings.py
@@ -7696,10 +7678,10 @@ msgid "tui.man.sessions.body"
 msgstr ""
 
 #. English: Open the Settings panel (F10), optionally on a tab.      Tabs:
-#. general, models, security, sessions, tools, shortcuts, notifications.
-#. Changes are saved as you make them; the panel says when each     one takes
-#. effect (immediately, on close, or after a restart).
-#. chrys-meta={"fingerprint":"a4284198afe8b7b1683a09f5e322b143a0576252d9c26c5ca25369d408977158","multiline":true,"placeholders":[]}
+#. general, models, security, sessions, tools, notifications.     Changes are
+#. saved as you make them; the panel says when each     one takes effect
+#. (immediately, on close, or after a restart).
+#. chrys-meta={"fingerprint":"2b21b292bfa8fe449d092f675cb2e23fad6d0607e94377403171d53efc617d23","multiline":true,"placeholders":[]}
 #: src/chrys/app/tui/screens/main/commands.py
 msgid "tui.man.settings.body"
 msgstr ""
@@ -9641,9 +9623,8 @@ msgstr ""
 msgid "tui.runtime_details.empty.preconfigured_files"
 msgstr ""
 
-#. English: No prompt shortcuts loaded. Choose the folders to read in Settings
-#. → Shortcuts.
-#. chrys-meta={"fingerprint":"ce3c05a4b55ec0cd3018dd75b5f574f32142df448ab27756fa550677a6f8bc82","multiline":false,"placeholders":[]}
+#. English: No prompt shortcuts loaded.
+#. chrys-meta={"fingerprint":"578a8ee937691c16e3dbcf81ece1d9bfa2d9cc8b8ed0ac51757e2d7de1778114","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/dialogs/runtime_details.py
 msgid "tui.runtime_details.empty.shortcuts"
 msgstr ""
@@ -10891,91 +10872,6 @@ msgstr ""
 msgid "tui.settings.migrate.to"
 msgstr ""
 
-#. English: + Add
-#. chrys-meta={"fingerprint":"6ef2165c13c7ddb9d75eea643ddc7fb9c83bc3db81aaa0b56f4f9ef5dbac73bd","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.add"
-msgstr ""
-
-#. English: Configure where the / list reads prompt shortcuts from. Only
-#. Markdown (.md) files are supported for now.
-#. chrys-meta={"fingerprint":"c39a8c70c24dc5f444a37b6df39892d6dd305c6d83ef923bf92b53e64999842c","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.description"
-msgstr ""
-
-#. English: Prompt Shortcut Directory
-#. chrys-meta={"fingerprint":"1654425c05db84176bfa38c7cf94dd837d924943ef5399654a5f49a5327a5aab","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.directory"
-msgstr ""
-
-#. English: No other folders added
-#. chrys-meta={"fingerprint":"f39d0a7d9cd5806bc5b180d299c88da5b9484072b749f01207c58fc3f5e43b1d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.empty"
-msgstr ""
-
-#. English: How to write shortcuts →
-#. chrys-meta={"fingerprint":"310868f7f382d06c1108661aa5edcfd31348f9eda061eb16777d82e5dc041f44","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.guide_link"
-msgstr ""
-
-#. English: Load prompt shortcuts from user folder (if present)
-#. chrys-meta={"fingerprint":"8d7fc3eda138f3c007d352e8974233786a1f954a4503abf6726a330a03bc436b","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.load_user_folder"
-msgstr ""
-
-#. English: Load prompt shortcuts from working folder (if present)
-#. chrys-meta={"fingerprint":"d2d2aad3aac344bfad2debaa39d11063f7207fc2cc4aa726465042771b713503","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.load_working_folder"
-msgstr ""
-
-#. English: /home/you/prompts
-#. chrys-meta={"fingerprint":"1ccce9d94d718d259dcb4f137c61b76930267765059969a4ee691bcbda7d845d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.absolute_linux"
-msgstr ""
-
-#. English: /Users/you/prompts
-#. chrys-meta={"fingerprint":"785ae804bc36f8dd68180a95cc2bce08051e3e418082b38bfbb6bc3ad73b2b6a","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.absolute_macos"
-msgstr ""
-
-#. English: C:\path\to\prompts
-#. chrys-meta={"fingerprint":"892bf7be1799bb920391ecc4fd1b94ef45468300ee2a1ea406ca4c70434afd23","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.absolute_windows"
-msgstr ""
-
-#. English: relative/path/to/prompts
-#. chrys-meta={"fingerprint":"aadc05521dd4acdf473f44138baeede13c8d3ecffa0f031636cafe3d3f3898a3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.relative_posix"
-msgstr ""
-
-#. English: relative\path\to\prompts
-#. chrys-meta={"fingerprint":"6bf3cb36074b6f8201319e1c1833899a7618fd17ea305c98b7f99717ca38e8b9","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.placeholder.relative_windows"
-msgstr ""
-
-#. English: Prompt Shortcut Directories
-#. chrys-meta={"fingerprint":"b3d0313a1ef5b7d17bc04b15467854ec17f1e5539114877ec7485881bcf1879d","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.title"
-msgstr ""
-
-#. English: {path} and its parent folders up to the repository root
-#. chrys-meta={"fingerprint":"0395569648aa949d99d45133636ae0ad130a55cb7312fd1440be927d7b2325ae","multiline":false,"placeholders":["path"]}
-#: src/chrys/app/tui/screens/settings/panes/prompt_shortcuts.py
-msgid "tui.settings.prompt_shortcuts.working_folder_scope"
-msgstr ""
-
 #. English: Set for this session by a command-line option; the saved value
 #. applies at the next launch.
 #. chrys-meta={"fingerprint":"f89ac50748913b5d202c345d1472421caac20f9a29fffea5990ced8d98274e29","multiline":false,"placeholders":[]}
@@ -11101,12 +10997,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"9aaa1b2e975dfd31550ed0cab60b9cbd0c5524d4c5aee59ed034bc113d4b8d87","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.section.project_trust"
-msgstr ""
-
-#. English: Prompt shortcuts
-#. chrys-meta={"fingerprint":"e42b5a105027ac8a210a098574b218a5dc99b06f0e487b6934d9483b084ff3be","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.section.prompt_shortcuts"
 msgstr ""
 
 #. English: Rollback
@@ -11238,12 +11128,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"5f9613eca6168e7455a54ba84c1cbfdd774ed97b6c19c46acdd6adb568569d90","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/screens/settings/layout.py
 msgid "tui.settings.tab.notifications"
-msgstr ""
-
-#. English: Shortcuts
-#. chrys-meta={"fingerprint":"85a8e1c1cc90a21e40d54ae7f6a87925bb1028e151d567aa10f3b9c7c35005d2","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/settings/layout.py
-msgid "tui.settings.tab.prompt_shortcuts"
 msgstr ""
 
 #. English: Security
