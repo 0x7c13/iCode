@@ -153,6 +153,8 @@ class PromptShortcutsPane(VerticalGroup):
         self._ports = ports
         self._workspace = ports.workspace_cwd()
         self._paths = self._saved_paths()
+        # Per row, the folder last saved for it ("" if none): what the row keeps saved while invalid.
+        self._row_saved = list(self._paths)
         self._rebuilding = False
         self._ready = False
 
@@ -232,13 +234,21 @@ class PromptShortcutsPane(VerticalGroup):
         return [card.get_path() for card in cards]
 
     def _save_paths(self) -> None:
-        """Save the folder rows once every non-blank row is valid; an invalid row shows why in its preview."""
+        """Save every row as it stands: a valid row its folder, a blank row nothing.
+
+        A row being fixed (invalid, showing why in its preview) keeps the folder
+        last saved for it, or nothing if it never had one, so a row removed or
+        edited elsewhere is saved meanwhile and an invalid row never drops what
+        it held.
+        """
         if not self._ready or self._rebuilding:
             return
         entries = [card.entry() for card in self._cards()]
-        if any(entry is None for entry in entries):
+        if len(entries) != len(self._row_saved):
             return
-        paths = [entry for entry in entries if entry]
+        kept = [saved if entry is None else entry for entry, saved in zip(entries, self._row_saved, strict=True)]
+        self._row_saved = kept
+        paths = [path for path in kept if path]
         if paths == self._saved_paths():
             # Closing, a language switch or a blur with nothing changed writes nothing.
             return
@@ -272,6 +282,7 @@ class PromptShortcutsPane(VerticalGroup):
         event.stop()
         self._paths = self._collect()
         self._paths.insert(0, "")
+        self._row_saved.insert(0, "")
         await self._rebuild_dirs()
 
     @on(DirectoryPathCard.Removed)
@@ -280,6 +291,7 @@ class PromptShortcutsPane(VerticalGroup):
         self._paths = self._collect()
         if 0 <= event.index < len(self._paths):
             self._paths.pop(event.index)
+            self._row_saved.pop(event.index)
             await self._rebuild_dirs()
             self._save_paths()
 
@@ -299,6 +311,7 @@ class PromptShortcutsPane(VerticalGroup):
         # Blank rows are not saved: they stay until the folders themselves differ.
         if saved != [path for path in self._collect() if path]:
             self._paths = saved
+            self._row_saved = list(saved)
             self.call_later(self._rebuild_dirs)
 
     def refresh_localization(self) -> None:

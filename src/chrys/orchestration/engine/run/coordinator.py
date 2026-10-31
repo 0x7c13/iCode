@@ -44,12 +44,14 @@ from chrys.orchestration.engine.run.attachments import (
     discover_image_mentions,
     discover_image_references,
     load_image_attachments,
+    with_message_text,
 )
 from chrys.orchestration.engine.run.finalizer import TurnFinalizer, _expire_current_run_scope
 from chrys.orchestration.engine.run.prompt_content import PromptContentPreparer
 from chrys.orchestration.engine.run.retry import RetryCoordinator
 from chrys.orchestration.engine.run.runner import TurnRunner
 from chrys.orchestration.engine.run.runtime_skills import RuntimeSkillRefresher
+from chrys.orchestration.engine.run.shortcut_commands import ShortcutCommands
 from chrys.orchestration.engine.run.turn_hooks import PromptSubmitGate, TurnHookDispatcher
 from chrys.orchestration.engine.run.turn_state import CurrentTurnInput, TurnRuntimeState
 from chrys.orchestration.engine.run.working_dir import refuse_while_working_dir_missing
@@ -86,6 +88,10 @@ _COORDINATOR_ENGINE_NOT_STARTED = msg(
 _COORDINATOR_INTERRUPT_IGNORED_LOADING = msg(
     "coordinator.interrupt_ignored_loading",
     fallback="Interrupt ignored while agent infrastructure is loading.",
+)
+_COORDINATOR_PROMPT_SHORTCUT_BUSY = msg(
+    "coordinator.prompt_shortcut_busy",
+    fallback="A shortcut's prompt that runs commands is not added to a running task. Send it when the task ends.",
 )
 _COORDINATOR_PROMPT_ADMISSION_CONFLICT = msg(
     "coordinator.prompt_admission_conflict",
@@ -154,6 +160,12 @@ class TurnCoordinator:
         )
         self._skills = RuntimeSkillRefresher(
             current=self._current, loader=self._loader, session=self._session, bus=self._bus
+        )
+        self._shortcut_commands = ShortcutCommands(
+            bus=self._bus,
+            session=self._session,
+            settings_handle=self._settings_handle,
+            lease=lambda: self._turn_state.lease,
         )
         self._injector = ActiveTurnInjector(
             turn_state=self._turn_state,
@@ -278,6 +290,7 @@ class TurnCoordinator:
         admission_preparation: PreparationTrace | None = None,
         binding_failure: Exception | None = None,
         user_message_id: str | None = None,
+        typed_text: str | None = None,
     ) -> None:
         """Execute a fresh agent pass against the current engine state."""
 
@@ -290,6 +303,7 @@ class TurnCoordinator:
             admission_preparation=admission_preparation,
             binding_failure=binding_failure,
             user_message_id=user_message_id,
+            typed_text=typed_text,
         )
 
     async def run_retry(
@@ -406,6 +420,8 @@ class TurnCoordinator:
             # also inject only has to be added to
             # :meth:`EngineStateMachine.is_running` to be covered here.
             if self._fsm.is_running():
+                if await self._refuse_shortcut_injection(event, preparation):
+                    return False
                 return await self._injector.inject(
                     event.text,
                     created_at=event.timestamp,
@@ -422,6 +438,8 @@ class TurnCoordinator:
             if self._turn_state.lease.run_task is not None and not self._turn_state.lease.run_task.done():
                 if self._current.loaded.bindings.state.running:
                     # TurnBindings is actively running (not just cleaning up) — inject
+                    if await self._refuse_shortcut_injection(event, preparation):
+                        return False
                     return await self._injector.inject(
                         event.text,
                         created_at=event.timestamp,
@@ -530,6 +548,28 @@ class TurnCoordinator:
                 if preparation is not None:
                     await preparation.finished(outcome=PreparationOutcome.OWNER_CHANGED)
                 return False
+            # A prompt shortcut's commands: the last step that can refuse with no side
+            # effects left behind it — the hooks and the images were checked first.
+            expanded = await self._shortcut_commands.expand(
+                event,
+                operation,
+                admission=admission,
+                preparation=preparation,
+                should_publish=self._publication_guard_for_admission(admission),
+            )
+            if expanded.text is None:
+                if preparation is not None:
+                    await preparation.finished(outcome=expanded.outcome)
+                return False
+            send_text = expanded.text
+            if send_text != event.text:
+                # Only a message whose commands ran says something else; the rest keep their contents.
+                contents = with_message_text(contents, send_text)
+                event.prepared_contents = contents
+            if not self._admission_owner_is_current(admission):
+                if preparation is not None:
+                    await preparation.finished(outcome=PreparationOutcome.OWNER_CHANGED)
+                return False
 
             # Final cancel check after all awaited preparation; task creation
             # below is synchronous, so a cancel can no longer interleave.
@@ -579,16 +619,17 @@ class TurnCoordinator:
                 self._fsm.try_transition(Trigger.USER_MESSAGE)
                 self._turn_state.lease.run_task = asyncio.create_task(
                     self.run_and_save(
-                        event.text,
+                        send_text,
                         created_at=event.timestamp,
                         contents=contents,
                         admission_preparation=preparation,
                         user_message_id=event.client_message_id,
+                        typed_text=event.text,
                     )
                 )
                 # Record the opener synchronously with its task: a Stop followed by
                 # Retry must find it even before preparation has populated history.
-                self._turn_state.set_current_input(event.text, contents, event.timestamp)
+                self._turn_state.set_current_input(send_text, contents, event.timestamp)
                 self._queue_prompt_hook_reminders(decision, injected=False)
                 event.started_turn = True
                 return True
@@ -599,13 +640,14 @@ class TurnCoordinator:
                 reminder_scope=reminder_scope,
                 make_task=lambda scope, window: asyncio.create_task(
                     self.run_and_save(
-                        event.text,
+                        send_text,
                         created_at=event.timestamp,
                         contents=contents,
                         run_scope=scope,
                         injection_window=window,
                         admission_preparation=preparation,
                         user_message_id=event.client_message_id,
+                        typed_text=event.text,
                     )
                 ),
             )
@@ -621,7 +663,7 @@ class TurnCoordinator:
             admission_released = True
             # Record the opener synchronously with its task: a Stop followed by
             # Retry must find it even before preparation has populated history.
-            self._turn_state.set_current_input(event.text, contents, event.timestamp)
+            self._turn_state.set_current_input(send_text, contents, event.timestamp)
             self._fsm.try_transition(Trigger.USER_MESSAGE)
             self._queue_prompt_hook_reminders(decision, injected=False)
             event.started_turn = True
@@ -630,6 +672,10 @@ class TurnCoordinator:
             self._turn_state.input_operations.discard(operation)
             if admission is not None and not admission_released:
                 self._turn_state.lease.release_prompt_admission(admission)
+            if admission is not None:
+                # After the turn started (or the message was refused): the execution
+                # goes from the commands straight to the turn, never through idle.
+                self._turn_state.lease.end_prompt_commands(admission)
 
     async def on_user_interrupt(self, _event: UserInterrupt) -> None:
         """Handle user interrupt.
@@ -770,6 +816,27 @@ class TurnCoordinator:
                 session_id=self._session.session_id,
             )
         )
+
+    async def _refuse_shortcut_injection(self, event: UserMessage, preparation: PreparationTrace | None) -> bool:
+        """Refuse a message carrying a prompt shortcut that would join the running turn; False for any other.
+
+        Its commands run before a turn of its own, never into one that is
+        already running (the frontend keeps such a draft; this covers a turn that
+        started while the message was on its way).
+        """
+        if event.prompt_shortcut is None:
+            return False
+        await self._bus.publish(
+            Error(
+                code="prompt_shortcut_busy",
+                message="A message running prompt shortcut commands cannot join a running turn",
+                display_message=_COORDINATOR_PROMPT_SHORTCUT_BUSY.bind(),
+                session_id=self._session.session_id,
+            )
+        )
+        if preparation is not None:
+            await preparation.finished(outcome=PreparationOutcome.REJECTED)
+        return True
 
     async def _abandon_cancelled_injection_submit(self, event: UserMessage) -> bool:
         """Publish an abandoned result and return True for a cancelled locked submit."""
@@ -970,6 +1037,7 @@ class TurnCoordinator:
         injection_window: CurrentRunInjectionWindow | None = None,
         admission_preparation: PreparationTrace | None = None,
         user_message_id: str | None = None,
+        typed_text: str | None = None,
     ) -> None:
         """Execute the agent and auto-save the session afterward."""
         task = asyncio.current_task()
@@ -997,6 +1065,7 @@ class TurnCoordinator:
                 admission_preparation=admission_preparation,
                 binding_failure=binding_failure,
                 user_message_id=user_message_id,
+                typed_text=typed_text,
             )
         finally:
             if unbind is not None:

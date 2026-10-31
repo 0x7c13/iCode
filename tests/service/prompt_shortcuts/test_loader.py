@@ -146,6 +146,30 @@ def test_empty_bodies_broken_frontmatter_and_bad_names_are_skipped(config_dir: P
     assert names == ["good"]
 
 
+@pytest.mark.parametrize(
+    "value",
+    ["2024-02-30", "!!int 'abc'", "!!float 'x'", "!!timestamp 'nope'"],
+    ids=["no-such-day", "bad-int", "bad-float", "bad-timestamp"],
+)
+def test_a_frontmatter_value_yaml_cannot_build_skips_only_its_file(
+    config_dir: Path, caplog: pytest.LogCaptureFixture, value: str
+) -> None:
+    """YAML that parses but cannot be built into a value breaks one file, never the whole list."""
+    root = config_dir / "shortcuts"
+    _write(root / "good.md", "---\ndescription: fine\n---\nGood")
+    bad = _write(root / "bad.md", f"---\ndescription: {value}\n---\nBad")
+
+    with caplog.at_level(logging.WARNING, logger=loader_module.__name__):
+        first = load_prompt_shortcuts(config_dir=config_dir, workspace=None)
+        second = load_prompt_shortcuts(config_dir=config_dir, workspace=None)
+
+    assert [c.name for c in first] == ["good"]
+    assert [c.name for c in second] == ["good"]
+    # Skipped like any other broken file: warned once, until the file changes.
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and os.fspath(bad) in r.getMessage()]
+    assert len(warnings) == 1
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows file names cannot hold control characters")
 def test_names_with_control_characters_are_skipped(config_dir: Path) -> None:
     root = config_dir / "shortcuts"

@@ -20,10 +20,10 @@ import pytest
 from chrys.app.tui.i18n import LocaleController
 from chrys.app.tui.screens.dialogs.confirm import ConfirmDialog
 from chrys.app.tui.screens.dialogs.file_picker import FilePicker, FilePickerMode
-from chrys.app.tui.screens.main.ports import InputRestore
 from chrys.app.tui.screens.main.session_handlers import RestoreRequest, SessionHandler
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.main.workspace_actions import MissingDirReason, WorkspaceCallbacks, WorkspaceController
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
 from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import Error, SessionRestore, WorkspaceChange
@@ -520,7 +520,8 @@ class _Composer:
     def unlock_and_keep(self) -> None:
         self.locked = False
 
-    def restore_draft(self, text: str, *, keep_card: bool = False) -> bool:
+    def restore_draft(self, draft: str | ChatDraft) -> bool:
+        text = draft.text if isinstance(draft, ChatDraft) else draft
         if not text or self.value:
             return False
         self.value = text
@@ -583,47 +584,6 @@ async def test_refused_submit_restores_the_draft_then_asks_for_a_folder(
     # The refusal is the message's: no run started, and none ends.
     assert running == []
     assert debug == [("Error", "[working_dir_missing] Working directory no longer exists: /gone")]
-
-
-@pytest.mark.parametrize(("came_back", "expected_reason"), [(True, "submit"), (False, "turn_end")])
-async def test_refused_prepared_send_gives_back_through_its_own_give_back_then_asks_for_a_folder(
-    came_back: bool, expected_reason: str
-) -> None:
-    composer = _Composer("")
-
-    def query_one(cls: type) -> object:
-        if cls.__name__ == "InputBar":
-            return composer
-        raise AssertionError(f"a refused submit shows no {cls.__name__} error")
-
-    given: list[str] = []
-
-    def give_back() -> InputRestore | None:
-        # The prepared send's own give-back (a prompt shortcut's: its draft as written, with its card),
-        # handing back the proof of its restore, or None when nothing came back.
-        given.append("given")
-        return InputRestore(generation=1, text="check !`git status`") if came_back else None
-
-    state = MainScreenState()
-    state.submit.begin("check !`git status`", give_back=give_back, still_valid=lambda: True)
-    state.submit.publish_from_current_task()
-    screen = SimpleNamespace(
-        _state=state,
-        _set_agent_running=lambda _running: None,
-        query_one=query_one,
-        _debug=lambda *_args: None,
-    )
-    handler = make_backend_handler(screen)
-    prompts: list[str] = []
-    handler._callbacks = dataclasses.replace(handler._callbacks, prompt_missing_working_dir=prompts.append)
-
-    await handler.on_error(_working_dir_missing_error())
-
-    # Whether the send's own give-back brought the draft back decides the prompt; no plain restore happens.
-    assert given == ["given"]
-    assert prompts == [expected_reason]
-    assert composer.value == ""
-    assert state.submit.blocked is True
 
 
 async def test_working_dir_error_outside_a_submit_leaves_the_prompt_to_the_turn_end() -> None:

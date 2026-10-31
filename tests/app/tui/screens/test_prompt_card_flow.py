@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,20 +12,23 @@ from textual import events
 from textual.widgets import Button
 
 import chrys.app.tui.i18n as tui_i18n
-import chrys.app.tui.screens.main.prompt_card as prompt_card_module
 from chrys.app.tui.app import ChrysApp
 from chrys.app.tui.screens.dialogs.editor import EditorDialog, EditorDialogResult
 from chrys.app.tui.screens.main.screen import MainScreen
-from chrys.app.tui.widgets.chrome.input_bar import InputBar, _ChatTextArea
-from chrys.app.tui.widgets.chrome.prompt_card import CardChoice, CardState, PromptCard
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar, _ChatTextArea
+from chrys.app.tui.widgets.chrome.prompt_card import CardState, PromptCard
+from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AgentProfileSwitch,
     AgentRuntimeDetails,
     AgentRuntimeUpdated,
     ProfileSwitched,
+    PromptShortcutRef,
     RuntimeSkillDetails,
+    SessionOnlySwitch,
     SetModelProfile,
     UserMessage,
 )
@@ -35,7 +37,7 @@ from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile
 from tests.support.pilot_barrier import screen_is_settled
-from tests.support.tui_app_harness import make_chrys_app
+from tests.support.tui_app_harness import SessionGenerationEngine, make_chrys_app
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 
@@ -65,9 +67,12 @@ def _global_shortcut(name: str, text: str) -> None:
 class _Sent:
     def __init__(self) -> None:
         self.texts: list[str] = []
+        self.drafts: list[ChatDraft | None] = []
+        self.refs: list[PromptShortcutRef | None] = []
 
-    def __call__(self, text: str) -> None:
+    def __call__(self, text: str, draft: ChatDraft | None = None) -> None:
         self.texts.append(text)
+        self.drafts.append(draft)
 
 
 async def _ready(pilot: Pilot, monkeypatch: pytest.MonkeyPatch) -> tuple[MainScreen, _ChatTextArea, _Sent]:
@@ -126,6 +131,7 @@ async def _record_switches(bus: EventBus) -> _Switches:
     switches = _Switches()
     await bus.subscribe(AgentProfileSwitch, switches)
     await bus.subscribe(SetModelProfile, switches)
+    await bus.subscribe(SessionOnlySwitch, switches)
     return switches
 
 
@@ -159,7 +165,6 @@ async def test_replacing_the_draft_with_a_slash_command_runs_it_and_drops_the_ca
         await wait_for(lambda: dispatched == ["/help"], pilot=pilot, description="/help dispatched")
         await wait_for(lambda: _card(main).state is None, pilot=pilot, description="card gone")
         assert not main._prompt_card.active
-        assert not main._prompt_card.sending
         assert switches.events == []
         assert sent.texts == []
 
@@ -172,10 +177,9 @@ async def test_full_screen_editor_result_keeps_the_card(tmp_path: Path, monkeypa
         await _expand_with_card(pilot, main, chat, "zzqa", "Review this")
         before = _card(main).state
 
-        main._on_editor_result(
-            EditorDialogResult(accepted=True, text="Review this file instead", mode=main._editor_mode),
-            opened_with_card=True,
-        )
+        await pilot.press("ctrl+o")
+        await wait_for(lambda: isinstance(app.screen, EditorDialog), pilot=pilot, description="editor open")
+        app.screen.dismiss(EditorDialogResult(accepted=True, text="Review this file instead", mode=main._editor_mode))
 
         await wait_for(lambda: chat.text == "Review this file instead", pilot=pilot, description="editor text applied")
         await pilot.pause()
@@ -183,6 +187,55 @@ async def test_full_screen_editor_result_keeps_the_card(tmp_path: Path, monkeypa
         assert _card(main).state is not None
         assert before is not None
         assert _card(main).state.agent == before.agent  # type: ignore[union-attr]
+
+
+async def test_an_editor_left_unchanged_keeps_the_draft_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The editor returns the draft it opened on: unchanged, the draft stays as it was, its fields included."""
+    _global_shortcut("zzqa", "---\nagent: QA\n---\nReview $1 then $2")
+    app = make_chrys_app(tmp_path / "state", agent_registry=_two_agent_registry(tmp_path))
+    async with app.run_test(size=(120, 40)) as pilot:
+        main, chat, _sent = await _ready(pilot, monkeypatch)
+        await _type(pilot, "/zzqa x")
+        await pilot.press("tab")
+        await wait_for(lambda: chat.text.startswith("Review x then"), pilot=pilot, description="shortcut expanded")
+        await wait_for(lambda: _card(main).state is not None, pilot=pilot, description="card shown")
+        before = main.query_one(InputBar).draft()
+        assert before.fields
+        assert before.owner is not None
+
+        await pilot.press("ctrl+o")
+        await wait_for(lambda: isinstance(app.screen, EditorDialog), pilot=pilot, description="editor open")
+        app.screen.dismiss(EditorDialogResult(accepted=True, text=before.text, mode=main._editor_mode))
+        await wait_for(lambda: app.screen is main, pilot=pilot, description="editor closed")
+        await pilot.pause()
+
+        assert main.query_one(InputBar).draft() == before
+        assert _card(main).state is not None
+
+
+async def test_history_up_and_down_bring_the_draft_back_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stepping into prompt history and back out returns the draft as it left: text, fields and card."""
+    _global_shortcut("zzqa", "---\nagent: QA\n---\nReview $1 then $2")
+    app = make_chrys_app(tmp_path / "state", agent_registry=_two_agent_registry(tmp_path))
+    async with app.run_test(size=(120, 40)) as pilot:
+        main, chat, _sent = await _ready(pilot, monkeypatch)
+        main.query_one(InputBar).add_to_history("an earlier prompt")
+        await _type(pilot, "/zzqa x")
+        await pilot.press("tab")
+        await wait_for(lambda: chat.text.startswith("Review x then"), pilot=pilot, description="shortcut expanded")
+        await wait_for(lambda: _card(main).state is not None, pilot=pilot, description="card shown")
+        before = main.query_one(InputBar).draft()
+        assert before.fields
+        # The first field is selected, on the first line: Up steps into history.
+        await pilot.press("up")
+        await wait_for(lambda: chat.text == "an earlier prompt", pilot=pilot, description="history entry shown")
+        await wait_for(lambda: _card(main).state is None, pilot=pilot, description="history entry has no card")
+        assert main.query_one(InputBar).draft_owner is None
+
+        await pilot.press("down")
+        await wait_for(lambda: chat.text == before.text, pilot=pilot, description="draft back")
+        await wait_for(lambda: _card(main).state is not None, pilot=pilot, description="card back")
+        assert main.query_one(InputBar).draft() == before
 
 
 async def test_an_editor_opened_before_a_draft_came_back_overwrites_it_and_ends_its_card(
@@ -193,18 +246,17 @@ async def test_an_editor_opened_before_a_draft_came_back_overwrites_it_and_ends_
     app = make_chrys_app(tmp_path / "state", agent_registry=_two_agent_registry(tmp_path))
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, _sent = await _ready(pilot, monkeypatch)
-        # The input is empty, as while a send is in flight: the editor opens on no shortcut draft.
+        # The editor opens on an empty input: no shortcut draft.
         await pilot.press("ctrl+o")
         await wait_for(lambda: isinstance(app.screen, EditorDialog), pilot=pilot, description="editor open")
         editor = app.screen
         assert isinstance(editor, EditorDialog)
 
-        # The send fails meanwhile and gives its draft back with its card.
-        command = next(c for c in main._suggestions._known_shortcuts() if c.name == "zzqa")
-        given_back = "Review this !`git status`"
-        assert main.query_one(InputBar).restore_draft(given_back, keep_card=True)
-        main._prompt_card.attach(command, given_back)
-        assert main._prompt_card.active
+        # A shortcut's draft lands in the input meanwhile.
+        main.query_one(InputBar).set_draft(
+            ChatDraft("Review this !`git status`", owner=ShortcutIntent("zzqa", "QA", ""))
+        )
+        await wait_for(lambda: main._prompt_card.active, pilot=pilot, description="draft landed with its card")
 
         editor.dismiss(EditorDialogResult(accepted=True, text="Something else", mode=main._editor_mode))
         await wait_for(lambda: chat.text == "Something else", pilot=pilot, description="editor text applied")
@@ -308,7 +360,7 @@ async def test_dont_switch_button_shows_only_when_something_would_switch(
         main, chat, _sent = await _ready(pilot, monkeypatch)
         await _expand_with_card(pilot, main, chat, "zzqa", "Review this")
         button = _remove_button(main)
-        assert button.display
+        assert button.visible
         assert "Don't switch" in str(button.label)
 
         chat.clear()
@@ -318,18 +370,7 @@ async def test_dont_switch_button_shows_only_when_something_would_switch(
         assert state is not None
         assert state.agent is not None
         assert state.agent.value is None
-        assert not _remove_button(main).display
-
-        sending = CardState(
-            name="zzqa",
-            agent=CardChoice(value="QA", label="QA", current="Code"),
-            commands=1,
-            running=True,
-            in_progress=True,
-        )
-        _card(main).show_state(sending)
-        await pilot.pause()
-        assert not _remove_button(main).display
+        assert not _remove_button(main).visible
 
 
 async def test_the_card_hides_with_the_input_bar_and_comes_back_with_it(
@@ -414,27 +455,19 @@ async def test_editing_a_shown_card_repaints_it_only_when_the_command_count_chan
         assert layouts == []
 
 
-def _fake_shell(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Run ``!`echo X``` as X without a shell; every send's text is recorded."""
-    ran: list[str] = []
-
-    async def interpolate(text: str, *, cwd: str) -> str:
-        ran.append(text)
-        return re.sub(r"!`echo ([^`]*)`", r"\1", text)
-
-    monkeypatch.setattr(prompt_card_module, "interpolate_shell", interpolate)
-    return ran
-
-
 async def test_pasting_over_a_commands_only_draft_shows_the_pasted_command_before_it_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _global_shortcut("zzstatus", "Status: !`echo clean`")
     bus = EventBus()
-    app = make_chrys_app(tmp_path / "state", agent_registry=_two_agent_registry(tmp_path), event_bus=bus)
+    app = make_chrys_app(
+        tmp_path / "state",
+        agent_registry=_two_agent_registry(tmp_path),
+        event_bus=bus,
+        engine=SessionGenerationEngine(),
+    )
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, sent, _switches = await _ready_with_engine_echo(pilot, monkeypatch, bus)
-        ran = _fake_shell(monkeypatch)
         await _expand_with_card(pilot, main, chat, "zzstatus", "Status: !`echo clean`")
         assert _card(main).state is not None
 
@@ -447,8 +480,9 @@ async def test_pasting_over_a_commands_only_draft_shows_the_pasted_command_befor
         assert state is not None
         assert state.commands == 1
         await pilot.press("enter")
-        await wait_for(lambda: sent.texts == ["pasted"], pilot=pilot, description="sent with the command's output")
-        assert ran == ["!`echo pasted`"]
+        # Sent as typed, with its shortcut: the engine runs the pasted command (its own tests show it).
+        await wait_for(lambda: sent.texts == ["!`echo pasted`"], pilot=pilot, description="sent with its shortcut")
+        assert sent.refs[-1] is not None and sent.refs[-1].name == "zzstatus"
 
 
 async def test_a_command_broken_while_editing_runs_again_once_mended(
@@ -456,10 +490,14 @@ async def test_a_command_broken_while_editing_runs_again_once_mended(
 ) -> None:
     _global_shortcut("zzstatus", "Status: !`echo clean`")
     bus = EventBus()
-    app = make_chrys_app(tmp_path / "state", agent_registry=_two_agent_registry(tmp_path), event_bus=bus)
+    app = make_chrys_app(
+        tmp_path / "state",
+        agent_registry=_two_agent_registry(tmp_path),
+        event_bus=bus,
+        engine=SessionGenerationEngine(),
+    )
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, sent, _switches = await _ready_with_engine_echo(pilot, monkeypatch, bus)
-        ran = _fake_shell(monkeypatch)
         await _expand_with_card(pilot, main, chat, "zzstatus", "Status: !`echo clean`")
         closing = len("Status: !`echo clean")
 
@@ -476,8 +514,10 @@ async def test_a_command_broken_while_editing_runs_again_once_mended(
             description="the mended command shows again",
         )
         await pilot.press("enter")
-        await wait_for(lambda: sent.texts == ["Status: clean\n\nx"], pilot=pilot, description="sent with its output")
-        assert len(ran) == 1
+        await wait_for(
+            lambda: sent.texts == ["Status: !`echo clean`\n\nx"], pilot=pilot, description="sent with its command"
+        )
+        assert sent.refs[-1] is not None and sent.refs[-1].name == "zzstatus"
 
 
 async def test_locale_switch_repaints_a_showing_card(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -517,21 +557,27 @@ class _AgentSwitchEcho:
         self._bus = bus
         self._main = main
 
-    async def __call__(self, event: AgentProfileSwitch) -> None:
+    async def __call__(self, event: AgentProfileSwitch | SessionOnlySwitch) -> None:
+        target = event.profile_name if isinstance(event, AgentProfileSwitch) else event.agent
+        if isinstance(event, SessionOnlySwitch):
+            event.applied = True
+        if not target:
+            return
         current = self._main._state.runtime.profile_name
-        await self._bus.publish(
-            ProfileSwitched(from_profile=current, to_profile=event.profile_name, to_display_name=event.profile_name)
-        )
+        await self._bus.publish(ProfileSwitched(from_profile=current, to_profile=target, to_display_name=target))
 
 
 async def _ready_with_engine_echo(
     pilot: Pilot, monkeypatch: pytest.MonkeyPatch, bus: EventBus
 ) -> tuple[MainScreen, _ChatTextArea, _Sent, _Switches]:
     main, chat, sent = await _ready(pilot, monkeypatch)
+    # The real submit path this time: the input flow publishes the switch and the message.
+    monkeypatch.setattr(main, "_submit_user_text", MainScreen._submit_user_text.__get__(main, MainScreen))
 
-    # A card's send publishes under its own claim, not through the screen's plain submit: record what reaches the bus.
+    # A shortcut's send goes through the input flow: record what reaches the bus (no engine admits it here).
     async def published(event: UserMessage) -> None:
         sent(event.text)
+        sent.refs.append(event.prompt_shortcut)
 
     await bus.subscribe(UserMessage, published)
     # The harness has no usable model; every send, a card's included, would stop at the setup dialog.
@@ -539,20 +585,32 @@ async def _ready_with_engine_echo(
     # The screen now knows the session's agent is Code, as a SessionReady would have told it.
     main._refresh_model_indicator()
     switches = await _record_switches(bus)
-    await bus.subscribe(AgentProfileSwitch, _AgentSwitchEcho(bus, main))
+    echo = _AgentSwitchEcho(bus, main)
+    await bus.subscribe(AgentProfileSwitch, echo)
+    await bus.subscribe(SessionOnlySwitch, echo)
     return main, chat, sent, switches
 
 
 def _agent_switches(switches: _Switches) -> list[tuple[str, bool]]:
-    return [
-        (event.profile_name, event.session_scoped) for event in switches.events if isinstance(event, AgentProfileSwitch)
-    ]
+    """``(agent, for this session only)``: a shortcut's switch is the session's own, the user's pick is not."""
+    found: list[tuple[str, bool]] = []
+    for event in switches.events:
+        if isinstance(event, AgentProfileSwitch):
+            found.append((event.profile_name, False))
+        elif isinstance(event, SessionOnlySwitch) and event.agent:
+            found.append((event.agent, True))
+    return found
 
 
 async def test_users_own_agent_switch_drops_the_cards_switch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _global_shortcut("zzqa", "---\nagent: QA\n---\nReview this")
     bus = EventBus()
-    app = make_chrys_app(tmp_path / "state", agent_registry=_registry_with_other_agent(tmp_path), event_bus=bus)
+    app = make_chrys_app(
+        tmp_path / "state",
+        agent_registry=_registry_with_other_agent(tmp_path),
+        event_bus=bus,
+        engine=SessionGenerationEngine(),
+    )
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, sent, switches = await _ready_with_engine_echo(pilot, monkeypatch, bus)
         await _expand_with_card(pilot, main, chat, "zzqa", "Review this")
@@ -576,7 +634,12 @@ async def test_runtime_update_that_keeps_agent_and_model_keeps_the_card(
     """Positive control: only a change of the session's agent or model drops the card's switch."""
     _global_shortcut("zzqa", "---\nagent: QA\n---\nReview this")
     bus = EventBus()
-    app = make_chrys_app(tmp_path / "state", agent_registry=_two_agent_registry(tmp_path), event_bus=bus)
+    app = make_chrys_app(
+        tmp_path / "state",
+        agent_registry=_two_agent_registry(tmp_path),
+        event_bus=bus,
+        engine=SessionGenerationEngine(),
+    )
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, _sent, _switches = await _ready_with_engine_echo(pilot, monkeypatch, bus)
         await _expand_with_card(pilot, main, chat, "zzqa", "Review this")
@@ -602,7 +665,12 @@ async def test_the_cards_own_agent_switch_does_not_cancel_its_send(
 ) -> None:
     _global_shortcut("zzqa", "---\nagent: QA\n---\nReview this")
     bus = EventBus()
-    app = make_chrys_app(tmp_path / "state", agent_registry=_two_agent_registry(tmp_path), event_bus=bus)
+    app = make_chrys_app(
+        tmp_path / "state",
+        agent_registry=_two_agent_registry(tmp_path),
+        event_bus=bus,
+        engine=SessionGenerationEngine(),
+    )
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, sent, switches = await _ready_with_engine_echo(pilot, monkeypatch, bus)
         await _expand_with_card(pilot, main, chat, "zzqa", "Review this")
@@ -611,8 +679,8 @@ async def test_the_cards_own_agent_switch_does_not_cancel_its_send(
         await wait_for(lambda: sent.texts == ["Review this\n\nx"], pilot=pilot, description="sent after the switch")
         assert _agent_switches(switches) == [("QA", True)]
         assert main._state.runtime.profile_name == "QA"
-        await wait_for(lambda: not main._prompt_card.sending, pilot=pilot, description="send finished")
-        assert _card(main).state is None
+        # A switch alone carries no shortcut: there are no commands for the engine to run.
+        assert sent.refs == [None]
 
 
 # -- one submit path: Enter and Retry/Continue route a typed shortcut alike ----
@@ -685,7 +753,6 @@ async def test_typed_shortcut_expands_into_the_draft_and_is_not_sent(
         assert sent.texts == []
         assert retried.texts == []
         assert switches.events == []
-        assert not main._prompt_card.sending
 
 
 @pytest.mark.parametrize("retry", [False, True], ids=["normal", "retry-continue"])
@@ -717,7 +784,6 @@ async def test_typed_shortcut_over_a_card_replaces_it(
         assert state.agent.value == "Other"
         assert sent.texts == []
         assert retried.texts == []
-        assert not main._prompt_card.sending
 
 
 async def test_plain_text_in_retry_state_goes_to_the_retry_request(
@@ -741,7 +807,12 @@ async def test_a_session_side_agent_change_keeps_the_cards_declaration(
     """A switch the session makes itself (a restore, a reload) is no user pick: the card's switch stays."""
     _global_shortcut("zzqa", "---\nagent: QA\n---\nReview this")
     bus = EventBus()
-    app = make_chrys_app(tmp_path / "state", agent_registry=_registry_with_other_agent(tmp_path), event_bus=bus)
+    app = make_chrys_app(
+        tmp_path / "state",
+        agent_registry=_registry_with_other_agent(tmp_path),
+        event_bus=bus,
+        engine=SessionGenerationEngine(),
+    )
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, sent, switches = await _ready_with_engine_echo(pilot, monkeypatch, bus)
         await _expand_with_card(pilot, main, chat, "zzqa", "Review this")
@@ -764,7 +835,12 @@ async def test_the_card_shows_only_what_differs_from_the_session_now(
     """After a session-side agent change the card compares against the new agent: no "QA → QA" row."""
     _global_shortcut("zzqa", "---\nagent: QA\n---\nReview this")
     bus = EventBus()
-    app = make_chrys_app(tmp_path / "state", agent_registry=_registry_with_other_agent(tmp_path), event_bus=bus)
+    app = make_chrys_app(
+        tmp_path / "state",
+        agent_registry=_registry_with_other_agent(tmp_path),
+        event_bus=bus,
+        engine=SessionGenerationEngine(),
+    )
     async with app.run_test(size=(120, 40)) as pilot:
         main, chat, _sent, _switches = await _ready_with_engine_echo(pilot, monkeypatch, bus)
         await _expand_with_card(pilot, main, chat, "zzqa", "Review this")
@@ -823,3 +899,31 @@ async def test_the_cards_model_row_measures_against_the_model_that_runs(
             assert state.model.current == "Model A"
         else:
             assert state is None or state.model is None
+
+
+@pytest.mark.parametrize(("bound", "runs"), [("model-a", "model-a"), ("no-such-model", "model-p"), ("", "model-p")])
+async def test_the_cards_model_row_measures_against_what_the_target_agent_would_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bound: str, runs: str
+) -> None:
+    """An agent switch rebuilds: its model is the target agent's own when its profile names a registered
+    one, else the session's (a stale reference falls back to it), as the engine resolves it."""
+    agents = tmp_path / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    model = f"model:\n  profile_id: {bound}\n" if bound else ""
+    (agents / "Bound.yaml").write_text(
+        f'name: Bound\ndescription: "A main agent"\n{model}instructions: |\n  Be helpful.\n', encoding="utf-8"
+    )
+    agent_registry = AgentProfileRegistry()
+    agent_registry.load_all(user_dir=agents)
+    model_registry = ModelProfileRegistry()
+    for profile_id in ("model-a", "model-b", "model-p"):
+        model_registry.register(ModelProfile(id=profile_id, name=profile_id, model_id=f"{profile_id}-wire"))
+    app = make_chrys_app(
+        tmp_path / "state",
+        settings=Settings(model_profile="model-p"),
+        agent_registry=agent_registry,
+        model_registry=model_registry,
+    )
+    async with app.run_test(size=(120, 40)) as pilot:
+        main, _chat, _sent = await _ready(pilot, monkeypatch)
+        assert main._prompt_card_current_model("Bound")[0] == runs

@@ -660,6 +660,9 @@
       "AgentEngine._on_session_fork": [
         ["wrapper", "await self._session_operation('fork the session', lambda: self._lifecycle.on_session_fork(event))", "unresolved", "chrys.orchestration.engine.engine.AgentEngine._session_operation"]
       ],
+      "AgentEngine._on_session_only_switch": [
+        ["awaitable", "await self._controls.on_session_only_switch(event)", "unresolved"]
+      ],
       "AgentEngine._on_set_approval_mode": [
         ["awaitable", "await self._controls.on_set_approval_mode(event, persist_approval_mode_fn=persist_approval_mode)", "unresolved"]
       ],
@@ -730,6 +733,7 @@
         ["awaitable", "await self._bus.subscribe(SettingsReload, self._on_settings_reload)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(SetApprovalMode, self._on_set_approval_mode)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(SetModelProfile, self._on_set_model_profile)", "unresolved"],
+        ["awaitable", "await self._bus.subscribe(SessionOnlySwitch, self._on_session_only_switch)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(BackgroundTaskStop, self._on_background_task_stop)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(InvocationRetryRequested, self._on_sub_agent_retry)", "unresolved"],
         ["awaitable", "await self._bus.subscribe(InvocationAbortRequested, self._on_sub_agent_abort)", "unresolved"],
@@ -805,7 +809,7 @@
         ["awaitable", "await old_prepared.aclose()", "unresolved"]
       ],
       "AgentLoader.build": [
-        ["wrapper", "await construction.build_agent(self._profile_with_mcp_overlay(profile), staged=staged, preserved_history=preserved_history, build_agent_fn=self._build_agent_fn, session=self._session, settings_handle=self._settings_handle, persistence=self._persistence, bus=self._bus, agent_registry=self._agent_registry, model_registry=self._model_registry, workspace_change_tracker=self._workspace_change_tracker, turn_state=self._turn_state, turn_context=self._turn_context, mcp_cache=self._mcp_cache, allow_user_interaction=self._allow_user_interaction, checkpoints=self._checkpoints, usage_publisher=self._usage_publisher, fire_pre_compact=self._hooks.fire_pre_compact, publish_load_progress=self.publish_load_progress, hold_injection_notification=self.hold_injection_notification)", "unresolved", "chrys.orchestration.engine.build.construction.build_agent"]
+        ["wrapper", "await construction.build_agent(self._profile_with_mcp_overlay(profile), staged=staged, preserved_history=preserved_history, build_agent_fn=self._build_agent_fn, session=self._session, persistence=self._persistence, bus=self._bus, agent_registry=self._agent_registry, model_registry=self._model_registry, workspace_change_tracker=self._workspace_change_tracker, turn_state=self._turn_state, turn_context=self._turn_context, mcp_cache=self._mcp_cache, allow_user_interaction=self._allow_user_interaction, checkpoints=self._checkpoints, usage_publisher=self._usage_publisher, fire_pre_compact=self._hooks.fire_pre_compact, publish_load_progress=self.publish_load_progress, hold_injection_notification=self.hold_injection_notification)", "unresolved", "chrys.orchestration.engine.build.construction.build_agent"]
       ],
       "AgentLoader.build_hook_manager": [
         ["awaitable", "await SessionHookFactory(self._bus, confirmations=self._hook_confirmations)(project_root=project_root, project_hooks_enabled=project_hooks_enabled, session_id=resolved_session_id)", "unresolved"]
@@ -1063,7 +1067,9 @@
         ["wrapper", "await self._wait_for_pre_admission_gate(self._turn_state.lease.wait_for_prompt_admission_open, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
         ["awaitable", "await self._bus.publish(Error(code='not_ready', message='Engine not started', display_message=_COORDINATOR_ENGINE_NOT_STARTED.bind(), session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.NOT_READY)", "unresolved"],
+        ["wrapper", "await self._refuse_shortcut_injection(event, preparation)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._refuse_shortcut_injection"],
         ["awaitable", "await self._injector.inject(event.text, created_at=event.timestamp, route='fsm_active', reject_images_without_target=True, injection_id=event.injection_id, preparation=preparation, preparation_tracker=preparation_tracker)", "unresolved"],
+        ["wrapper", "await self._refuse_shortcut_injection(event, preparation)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._refuse_shortcut_injection"],
         ["awaitable", "await self._injector.inject(event.text, created_at=event.timestamp, route='executor_fallback', reject_images_without_target=True, injection_id=event.injection_id, preparation=preparation, preparation_tracker=preparation_tracker)", "unresolved"],
         ["wrapper", "await self._wait_for_pre_admission_gate(self._wait_for_existing_run_task, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
         ["wrapper", "await self._wait_for_pre_admission_gate(self._turn_state.lease.wait_for_prompt_admission_open, preparation_tracker)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._wait_for_pre_admission_gate"],
@@ -1085,6 +1091,9 @@
         ["wrapper", "await self.prepare_user_contents(event.text, admission=admission, event_session_id=admission_session_id)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.prepare_user_contents"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.PREPARATION_FAILED)", "unresolved"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.OWNER_CHANGED)", "unresolved"],
+        ["awaitable", "await self._shortcut_commands.expand(event, operation, admission=admission, preparation=preparation, should_publish=self._publication_guard_for_admission(admission))", "unresolved"],
+        ["awaitable", "await preparation.finished(outcome=expanded.outcome)", "unresolved"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.OWNER_CHANGED)", "unresolved"],
         ["wrapper", "await self._abandon_cancelled_injection_submit(event)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._abandon_cancelled_injection_submit"],
         ["awaitable", "await preparation.finished(outcome=PreparationOutcome.CANCELLED)", "unresolved"],
         ["wrapper", "await self._publish_prompt_admission_conflict()", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator._publish_prompt_admission_conflict"],
@@ -1100,6 +1109,10 @@
       ],
       "TurnCoordinator._publish_prompt_admission_conflict": [
         ["awaitable", "await self._bus.publish(Error(code='prompt_admission_conflict', message='Prompt could not be admitted because another turn started.', display_message=_COORDINATOR_PROMPT_ADMISSION_CONFLICT.bind(), session_id=self._session.session_id))", "unresolved"]
+      ],
+      "TurnCoordinator._refuse_shortcut_injection": [
+        ["awaitable", "await self._bus.publish(Error(code='prompt_shortcut_busy', message='A message running prompt shortcut commands cannot join a running turn', display_message=_COORDINATOR_PROMPT_SHORTCUT_BUSY.bind(), session_id=self._session.session_id))", "unresolved"],
+        ["awaitable", "await preparation.finished(outcome=PreparationOutcome.REJECTED)", "unresolved"]
       ],
       "TurnCoordinator._start_pre_admission_preparation": [
         ["awaitable", "await preparation.started()", "unresolved"]
@@ -1160,10 +1173,10 @@
         ["wrapper", "await self.run_retry(additional_text, created_at=created_at, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.run_retry"]
       ],
       "TurnCoordinator.run_and_save": [
-        ["wrapper", "await self.run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure, user_message_id=user_message_id)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.run_fresh"]
+        ["wrapper", "await self.run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure, user_message_id=user_message_id, typed_text=typed_text)", "unresolved", "chrys.orchestration.engine.run.coordinator.TurnCoordinator.run_fresh"]
       ],
       "TurnCoordinator.run_fresh": [
-        ["awaitable", "await self._runner().run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure, user_message_id=user_message_id)", "unresolved"]
+        ["awaitable", "await self._runner().run_fresh(text, created_at=created_at, contents=contents, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure, user_message_id=user_message_id, typed_text=typed_text)", "unresolved"]
       ],
       "TurnCoordinator.run_retry": [
         ["awaitable", "await self._runner().run_retry(additional_text, created_at=created_at, run_scope=run_scope, injection_window=injection_window, admission_preparation=admission_preparation, binding_failure=binding_failure)", "unresolved"]
@@ -1377,13 +1390,13 @@
         ["wrapper", "await self.pre_run(reset_batch_id=True, user_message_id=user_message_id, preparation_scope_operation_id=self._preparation_operation_id(admission_preparation))", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner.pre_run"],
         ["awaitable", "await admission_preparation.finished(outcome=PreparationOutcome.FRESH_TURN)", "unresolved"],
         ["awaitable", "await preamble.started()", "unresolved"],
-        ["wrapper", "await self._fire_before_turn(text, target_operation_id=preamble.operation_id if preamble is not None and preamble.start_committed else None)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._fire_before_turn"],
+        ["wrapper", "await self._fire_before_turn(typed, target_operation_id=preamble.operation_id if preamble is not None and preamble.start_committed else None)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._fire_before_turn"],
         ["wrapper", "await self._compute_workspace_notice(is_retry=False)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._compute_workspace_notice"],
         ["awaitable", "await self._content.shrink_history_images()", "unresolved"],
         ["thread_pool", "await asyncio.to_thread(write_rollback_snapshot)", "unresolved"],
         ["wrapper", "await self._refresh_runtime_skills(update_active_turn=False)", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner._refresh_runtime_skills"],
         ["awaitable", "await preamble.finished(outcome=PreparationOutcome.HANDOFF)", "unresolved"],
-        ["awaitable", "await self._current.require_loaded().bindings.backend.run(self._current.require_loaded().bindings.inputs.fresh_request(contents, created_at=created_at))", "unresolved"],
+        ["awaitable", "await self._current.require_loaded().bindings.backend.run(self._current.require_loaded().bindings.inputs.fresh_request(contents, created_at=created_at, typed_text=typed_text))", "unresolved"],
         ["wrapper", "await self.finalize_current_run()", "unresolved", "chrys.orchestration.engine.run.runner.TurnRunner.finalize_current_run"]
       ],
       "TurnRunner.run_retry": [
@@ -1413,6 +1426,30 @@
       ],
       "RuntimeSkillRefresher.stage_refresh": [
         ["awaitable", "await provider.stage_context_refresh()", "unresolved"]
+      ]
+    },
+    "chrys.orchestration.engine.run.shortcut_commands": {
+      "ShortcutCommands._deliver": [
+        ["wrapper", "await finish_close(asyncio.create_task(self._bus.publish(event)))", "unresolved", "chrys.foundation.util.once_close.finish_close"]
+      ],
+      "ShortcutCommands._run": [
+        ["multi_wait", "await asyncio.wait({task, invalidated}, return_when=asyncio.FIRST_COMPLETED)", "unresolved"],
+        ["wrapper", "await _drain(task, invalidated)", "unresolved", "chrys.orchestration.engine.run.shortcut_commands._drain"]
+      ],
+      "ShortcutCommands._still_loaded": [
+        ["thread_pool", "await asyncio.to_thread(load_prompt_shortcuts, **folders)", "unresolved"]
+      ],
+      "ShortcutCommands.expand": [
+        ["wrapper", "await self._still_loaded(ref, cwd)", "unresolved", "chrys.orchestration.engine.run.shortcut_commands.ShortcutCommands._still_loaded"],
+        ["awaitable", "await self._bus.publish(Error(code='prompt_shortcut_unavailable', message=f'Prompt shortcut /{ref.name} is not loaded for this working folder', display_message=_SHORTCUT_UNAVAILABLE.bind(name=ref.name), session_id=session_id))", "unresolved"],
+        ["awaitable", "await wait.started()", "unresolved"],
+        ["wrapper", "await self._deliver(PromptCommandsRunning(count=len(commands), injection_id=event.injection_id, session_id=session_id))", "unresolved", "chrys.orchestration.engine.run.shortcut_commands.ShortcutCommands._deliver"],
+        ["wrapper", "await self._run(event.text, cwd, operation)", "unresolved", "chrys.orchestration.engine.run.shortcut_commands.ShortcutCommands._run"],
+        ["wrapper", "await self._deliver(PromptCommandsEnded(outcome=outcome, injection_id=event.injection_id, session_id=session_id))", "unresolved", "chrys.orchestration.engine.run.shortcut_commands.ShortcutCommands._deliver"],
+        ["awaitable", "await self._bus.publish(_command_failed(failure, session_id))", "unresolved"]
+      ],
+      "_drain": [
+        ["multi_wait", "await asyncio.wait(pending)", "unresolved"]
       ]
     },
     "chrys.orchestration.engine.run.sub_agent_coordination": {
@@ -1470,16 +1507,13 @@
       "SessionLifecycle._hydrate_restored_session": [
         ["wrapper", "await self._reconcile_existing_spill_storage()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reconcile_existing_spill_storage"],
         ["awaitable", "await self._session.todo_tracker.restore(state.get('chrys_todos'))", "unresolved"],
-        ["wrapper", "await self.start(profile, operation='restore', staged_loaded=staged_loaded)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"],
+        ["wrapper", "await self.start(profile, operation='restore', staged_loaded=staged_loaded, session=session)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"],
         ["awaitable", "await self._bus.publish(replace(warning, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Warning(code='service_session_incompatible', message=f'This session was saved with an OpenAI Responses service session. The active agent/model profile, workspace, service endpoint, or storage mode is not compatible, so {APP_DISPLAY_NAME} will continue from local history only.', display_message=_RESTORE_SERVICE_SESSION_INCOMPATIBLE.bind(app=APP_DISPLAY_NAME), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Warning(code='sub_agents_reload_discarded', message=f'{len(paused_records)} paused sub-agent(s) from a previous session were discarded: {tool_names}', display_message=_RESTORE_SUB_AGENTS_DISCARDED.bind(discarded=len(paused_records), names=DisplaySequence(tuple(discarded_tools))), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._writer.save_current_session(raise_on_error=bool(paused_records))", "unresolved"],
         ["awaitable", "await self._bus.publish(SessionRestored(session_id=event.session_id, agent_profile=profile_name, display_name=profile.display_name if profile else '', initial_agent_profile=meta.agent_profile_history[0] if meta is not None and meta.agent_profile_history else profile.display_name if profile else profile_name, message_count=meta.message_count if meta else 0, cwd_warning=cwd_warning, primary_cwd=target_cwd, recovered_from_sidecar=recovered_from_sidecar, working_dirs=[working_dir.path for working_dir in self._session.workspace.working_dirs] if self._session.workspace is not None else []))", "unresolved"],
         ["wrapper", "await self._fire_session_restored_hook(restored_session_id=event.session_id, profile_name=profile_name)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._fire_session_restored_hook"]
-      ],
-      "SessionLifecycle._load_without_scoped_model": [
-        ["thread_pool", "await asyncio.to_thread(load_settings, project_root=Path(workspace.primary_cwd) if workspace is not None else Path(safe_getcwd()), eval_context=self._reload_eval_context(), **overrides)", "unresolved"]
       ],
       "SessionLifecycle._publish_session_fork_error": [
         ["awaitable", "await self._bus.publish(Error(code=code, message=message, session_id=session_id, display_message=display_message))", "unresolved"]
@@ -1488,7 +1522,7 @@
         ["thread_pool", "await asyncio.to_thread(reconcile_spill_storage, session_dir, self._session.spill_quota)", "unresolved"]
       ],
       "SessionLifecycle._reload_locked": [
-        ["awaitable", "await self._loader.reload(new_profile, workspace, operation=operation, staged_loaded=staged_loaded)", "unresolved"]
+        ["awaitable", "await self._loader.reload(new_profile, workspace, operation=operation, staged_loaded=staged_loaded, session=session)", "unresolved"]
       ],
       "SessionLifecycle._restart_after_failed_reset": [
         ["wrapper", "await self._reconcile_existing_spill_storage()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reconcile_existing_spill_storage"],
@@ -1496,14 +1530,13 @@
         ["wrapper", "await self.start(profile, operation='reset_failed')", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"]
       ],
       "SessionLifecycle._start_fresh_session": [
-        ["wrapper", "await self._load_without_scoped_model()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._load_without_scoped_model"],
         ["wrapper", "await self.close_session()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"],
-        ["wrapper", "await self.start(profile, operation='new_session', staged_loaded=staged_loaded)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"]
+        ["wrapper", "await self.start(self._session.agent_profile or profile, operation='new_session')", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"]
       ],
       "SessionLifecycle._start_locked": [
         ["awaitable", "await self._bus.publish(Error(code='session_in_use', message=message, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._loader.stage_hook_manager(operation=operation, staged_loaded=staged_loaded, workspace=staged_workspace)", "unresolved"],
-        ["awaitable", "await self._loader.load(profile, operation=operation, staged_loaded=staged_loaded, workspace=staged_workspace, hook_manager=hook_manager, trajectory=trajectory, old_hook_manager=old_hook_manager)", "unresolved"]
+        ["awaitable", "await self._loader.load(profile, operation=operation, staged_loaded=staged_loaded, session=session, workspace=staged_workspace, hook_manager=hook_manager, trajectory=trajectory, old_hook_manager=old_hook_manager)", "unresolved"]
       ],
       "SessionLifecycle._start_locked._publish_background_tasks": [
         ["awaitable", "await self._bus.publish(BackgroundTasksChanged(session_id=session_id, tasks=tasks.views(), full=tasks.full))", "unresolved"]
@@ -1590,7 +1623,7 @@
         ["awaitable", "await self._bus.publish(Error(code='requested_agent_profile_unresolved', message=f\"Requested agent profile '{event.profile_name}' could not be resolved; session restore was stopped.\", display_message=_RESTORE_REQUESTED_AGENT_PROFILE_UNRESOLVED.bind(profile=event.profile_name), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='saved_agent_profile_unresolved', message=f\"Saved agent profile id '{saved_profile_id}' for '{saved_profile_name}' could not be uniquely resolved, and no current profile is active.\", display_message=_RESTORE_AGENT_PROFILE_UNRESOLVED.bind(saved=saved_display), session_id=event.session_id))", "unresolved"],
         ["awaitable", "await self._permits.prepare_session_transition('restore')", "unresolved"],
-        ["thread_pool", "await asyncio.to_thread(load_settings, project_root=Path(target_cwd), eval_context=self._reload_eval_context(), **self._session_pin_overrides(with_scoped_model=not drops_scoped_model))", "unresolved"],
+        ["thread_pool", "await asyncio.to_thread(load_settings, project_root=Path(target_cwd), eval_context=self._reload_eval_context(), **self._session_pin_overrides())", "unresolved"],
         ["wrapper", "await self.close_session_in_place()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session_in_place"],
         ["wrapper", "await self.close_session()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"],
         ["wrapper", "await self._hydrate_restored_session(event=event, state=state, meta=meta, profile=profile, profile_name=profile_name, profile_switch=profile_switch, profile_resolution_warning=profile_resolution_warning, recovered_from_sidecar=recovered_from_sidecar, cwd_warning=cwd_warning, target_cwd=target_cwd, staged_loaded=staged_loaded)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._hydrate_restored_session"],
@@ -1601,12 +1634,12 @@
         ["awaitable", "await self._writer.save_current_session()", "unresolved"]
       ],
       "SessionLifecycle.reload": [
-        ["wrapper", "await self._reload_locked(new_profile, workspace, operation=operation, staged_loaded=staged_loaded)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reload_locked"],
+        ["wrapper", "await self._reload_locked(new_profile, workspace, operation=operation, staged_loaded=staged_loaded, session=session)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reload_locked"],
         ["awaitable", "await self._permits.acquire_rebuild_permit(token)", "unresolved"],
-        ["wrapper", "await self._reload_locked(new_profile, workspace, operation=operation, staged_loaded=staged_loaded)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reload_locked"]
+        ["wrapper", "await self._reload_locked(new_profile, workspace, operation=operation, staged_loaded=staged_loaded, session=session)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._reload_locked"]
       ],
       "SessionLifecycle.reload_with_rebuild_permit": [
-        ["wrapper", "await self.reload(new_profile, workspace=workspace, operation=operation, staged_loaded=staged_loaded)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.reload"]
+        ["wrapper", "await self.reload(new_profile, workspace=workspace, operation=operation, staged_loaded=staged_loaded, session=session)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.reload"]
       ],
       "SessionLifecycle.reset_after_failed_startup_restore": [
         ["wrapper", "await self.close_session()", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.close_session"],
@@ -1626,12 +1659,12 @@
         ["wrapper", "await self._teardown(release_lock=True, close_mcp=True)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._teardown"]
       ],
       "SessionLifecycle.start": [
-        ["wrapper", "await self._start_locked(profile, operation=operation, staged_loaded=staged_loaded, workspace=workspace)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._start_locked"],
+        ["wrapper", "await self._start_locked(profile, operation=operation, staged_loaded=staged_loaded, session=session, workspace=workspace)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._start_locked"],
         ["awaitable", "await self._permits.acquire_rebuild_permit(token)", "unresolved"],
-        ["wrapper", "await self._start_locked(profile, operation=operation, staged_loaded=staged_loaded, workspace=workspace)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._start_locked"]
+        ["wrapper", "await self._start_locked(profile, operation=operation, staged_loaded=staged_loaded, session=session, workspace=workspace)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle._start_locked"]
       ],
       "SessionLifecycle.start_with_rebuild_permit": [
-        ["wrapper", "await self.start(profile, operation=operation, staged_loaded=staged_loaded, workspace=workspace)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"]
+        ["wrapper", "await self.start(profile, operation=operation, staged_loaded=staged_loaded, session=session, workspace=workspace)", "unresolved", "chrys.orchestration.engine.session_lifecycle.SessionLifecycle.start"]
       ]
     },
     "chrys.orchestration.engine.state.controls": {
@@ -1664,8 +1697,8 @@
         ["awaitable", "await self._bus.publish(WorkspaceUpdated(primary_cwd=resolved_primary_cwd, working_dirs=[d.path for d in workspace.working_dirs] if workspace is not None else [], reference_files=list(workspace.reference_files) if workspace is not None else [], session_id=session_id))", "unresolved"]
       ],
       "RuntimeControls._start_or_restart_with_permit": [
-        ["awaitable", "await self._lifecycle.start_with_rebuild_permit(permit, profile, operation=operation, staged_loaded=staged_loaded, workspace=workspace)", "unresolved"],
-        ["awaitable", "await self._lifecycle.reload_with_rebuild_permit(permit, profile, workspace=workspace, operation=operation, staged_loaded=staged_loaded)", "unresolved"]
+        ["awaitable", "await self._lifecycle.start_with_rebuild_permit(permit, profile, operation=operation, staged_loaded=staged_loaded, session=session, workspace=workspace)", "unresolved"],
+        ["awaitable", "await self._lifecycle.reload_with_rebuild_permit(permit, profile, workspace=workspace, operation=operation, staged_loaded=staged_loaded, session=session)", "unresolved"]
       ],
       "RuntimeControls.on_profile_switch": [
         ["awaitable", "await self._bus.publish(Error(code='no_registry', message='No profile registry configured \u2014 cannot switch profiles', display_message=_CONTROLS_NO_REGISTRY.bind(), session_id=self._session.session_id))", "unresolved"],
@@ -1677,14 +1710,24 @@
         ["awaitable", "await self._bus.publish(self._profile_switched_snapshot(permit.token.session_id))", "unresolved"],
         ["awaitable", "await self._lifecycle.reload_with_rebuild_permit(permit, new_profile, operation='switch')", "unresolved"]
       ],
+      "RuntimeControls.on_session_only_switch": [
+        ["awaitable", "await self._bus.publish(Error(code='profile_not_found', message=f\"Profile '{event.agent}' not found\", display_message=_CONTROLS_PROFILE_NOT_FOUND.bind(profile_name=event.agent), session_id=self._session.session_id))", "unresolved"],
+        ["awaitable", "await self._bus.publish(Error(code='model_profile_not_found', message=f\"Model profile '{event.model_profile}' not found\", display_message=_CONTROLS_MODEL_PROFILE_NOT_FOUND.bind(profile_id=event.model_profile), session_id=self._session.session_id))", "unresolved"],
+        ["awaitable", "await self._bus.publish(Error(code='runtime_mutation_not_ready', message='No active agent \u2014 cannot switch model', display_message=_CONTROLS_MODEL_SWITCH_NOT_READY.bind(), session_id=self._session.session_id))", "unresolved"],
+        ["awaitable", "await self._permits.acquire_rebuild_permit(token)", "unresolved"],
+        ["wrapper", "await self._publish_rebuild_denied(permit, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_rebuild_denied"],
+        ["wrapper", "await self._start_or_restart_with_permit(permit, target, operation='switch' if wants_agent else 'model_switch', session=session)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._start_or_restart_with_permit"],
+        ["awaitable", "await self._bus.publish(self._profile_switched_snapshot(token.session_id))", "unresolved"],
+        ["wrapper", "await self._publish_model_switched_snapshot(model.id, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_model_switched_snapshot"]
+      ],
       "RuntimeControls.on_set_approval_mode": [
         ["awaitable", "await self._bus.publish(ApprovalModeUpdated(mode=mode.value, session_id=self._session.session_id))", "unresolved"]
       ],
       "RuntimeControls.on_set_model_profile": [
         ["awaitable", "await self._bus.publish(Error(code='runtime_mutation_not_ready', message='No active agent \u2014 cannot switch model', display_message=_CONTROLS_MODEL_SWITCH_NOT_READY.bind(), session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._permits.acquire_rebuild_permit(token)", "unresolved"],
-        ["wrapper", "await self._publish_model_satisfied_or_denied(event, permit, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_model_satisfied_or_denied"],
-        ["wrapper", "await self._start_or_restart_with_permit(permit, self._session.agent_profile, operation='model_switch')", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._start_or_restart_with_permit"],
+        ["wrapper", "await self._publish_model_satisfied_or_denied(event.profile_id, permit, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_model_satisfied_or_denied"],
+        ["wrapper", "await self._start_or_restart_with_permit(permit, self._session.agent_profile, operation='model_switch', session={})", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._start_or_restart_with_permit"],
         ["wrapper", "await self._publish_model_switched_snapshot(event.profile_id, token.session_id)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_model_switched_snapshot"]
       ],
       "RuntimeControls.on_settings_reload": [
@@ -1693,7 +1736,7 @@
         ["awaitable", "await self._bus.publish(dataclasses.replace(warning, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Warning(code='settings_restart_required', message=format_message(display_message), display_message=display_message, session_id=self._session.session_id))", "unresolved"],
         ["awaitable", "await self._bus.publish(Error(code='settings_reload_failed', message=str(exc), session_id=self._session.session_id))", "unresolved"],
-        ["wrapper", "await self._start_or_restart_with_permit(permit, profile_for_restart, operation='settings_reload', staged_loaded=loaded)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._start_or_restart_with_permit"],
+        ["wrapper", "await self._start_or_restart_with_permit(permit, profile_for_restart, operation='settings_reload', staged_loaded=loaded, session=session)", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._start_or_restart_with_permit"],
         ["wrapper", "await self._publish_settings_reloaded()", "unresolved", "chrys.orchestration.engine.state.controls.RuntimeControls._publish_settings_reloaded"]
       ],
       "RuntimeControls.on_workspace_change": [
@@ -4670,7 +4713,7 @@
         ["wrapper", "await run_shell_command(command, cwd=cwd)", "unresolved", "chrys.service.prompt_shortcuts.shell.run_shell_command"]
       ],
       "run_shell_command": [
-        ["async_context", "async with managed_subprocess(*_shell_argv(command), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd)", "unresolved"],
+        ["async_context", "async with managed_subprocess(*_shell_argv(command), stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd, env=build_shell_subprocess_env())", "unresolved"],
         ["wrapper", "await wait_for_subprocess(drain_process_pipes(proc, stdout, stderr), timeout=SHELL_TIMEOUT_SECONDS, process_group_id=proc.pid if sys.platform != 'win32' else None)", "unresolved", "chrys.foundation.platform.process.wait_for_subprocess"]
       ]
     },

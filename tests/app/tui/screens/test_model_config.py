@@ -540,13 +540,13 @@ async def test_model_config_delete_runtime_effective_reloads_from_global_default
         assert registry.get(runtime_effective.id) is None
         assert get_global_default_profile_id() == global_default.id
         assert os.environ["CHRYS_MODEL_PROFILE"] == global_default.id
-        assert result == "switched"
+        assert result == "deleted"
 
     published = await _model_config_result_events(result, registry)
     assert len(published) == 1
 
 
-async def test_model_config_delete_global_default_leaves_other_runtime_untouched(
+async def test_model_config_delete_global_default_leaves_the_pointer_and_reloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from chrys.service.profiles.models.env_bridge import (
@@ -572,179 +572,11 @@ async def test_model_config_delete_global_default_leaves_other_runtime_untouched
         assert registry.get(global_default.id) is None
         assert get_global_default_profile_id() == promoted_default.id
         assert os.environ["CHRYS_MODEL_PROFILE"] == runtime_effective.id
-        assert result == ""
+        # Any deletion reloads: the engine drops whatever the session used that is gone.
+        assert result == "deleted"
 
     published = await _model_config_result_events(result, registry)
-    assert published == []
-
-
-async def test_model_config_delete_the_sessions_own_model_reloads_and_ends_its_switch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A prompt shortcut's model is the session's alone: deleting it reloads the
-    session onto the process pointer's model, which stays as it was."""
-    from chrys.service.profiles.models.env_bridge import set_global_default_profile_id
-
-    registry = ModelProfileRegistry()
-    pointer = ModelProfile(id="model-a", name="Model A", model_id="pointer-wire")
-    session_own = ModelProfile(id="model-b", name="Model B", model_id="session-wire")
-    registry.register(pointer)
-    registry.register(session_own)
-    set_global_default_profile_id(pointer.id)
-    monkeypatch.setenv("CHRYS_MODEL_PROFILE", pointer.id)
-
-    async with open_model_config(
-        registry, global_default_profile_id=pointer.id, session_selected_profile_id=session_own.id
-    ) as (
-        screen,
-        _pilot,
-    ):
-        await screen._do_delete(session_own.id)
-        result = screen._cancel_result()
-
-        assert registry.get(session_own.id) is None
-        assert os.environ["CHRYS_MODEL_PROFILE"] == pointer.id
-        assert result == "switched"
-
-    published = await _model_config_result_events(result, registry)
-    assert [event.release_session_scoped_model for event in published] == [True]
-
-
-async def test_model_config_delete_the_pointers_model_keeps_a_session_on_its_own(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Deleting the process pointer's profile repairs the pointer for the sessions
-    that start next; a session running a model of its own keeps it, unreloaded."""
-    from chrys.service.profiles.models.env_bridge import set_global_default_profile_id
-
-    registry = ModelProfileRegistry()
-    global_default = ModelProfile(id="model-a", name="Model A", model_id="default-wire")
-    pointer = ModelProfile(id="model-b", name="Model B", model_id="pointer-wire")
-    session_own = ModelProfile(id="model-c", name="Model C", model_id="session-wire")
-    for profile in (global_default, pointer, session_own):
-        registry.register(profile)
-    set_global_default_profile_id(global_default.id)
-    monkeypatch.setenv("CHRYS_MODEL_PROFILE", pointer.id)
-
-    async with open_model_config(
-        registry, global_default_profile_id=global_default.id, session_selected_profile_id=session_own.id
-    ) as (screen, _pilot):
-        await screen._do_delete(pointer.id)
-        result = screen._cancel_result()
-
-        assert os.environ["CHRYS_MODEL_PROFILE"] == global_default.id
-        assert registry.get(session_own.id) is session_own
-        assert result == ""
-
-    published = await _model_config_result_events(result, registry)
-    assert published == []
-
-
-async def test_model_config_delete_the_sessions_model_when_it_is_the_pointers_reloads_as_before(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """With no model of its own the session runs the pointer's: told so, the dialog acts as without being told."""
-    from chrys.service.profiles.models.env_bridge import set_global_default_profile_id
-
-    registry = ModelProfileRegistry()
-    global_default = ModelProfile(id="model-a", name="Model A", model_id="default-wire")
-    pointer = ModelProfile(id="model-b", name="Model B", model_id="pointer-wire")
-    registry.register(global_default)
-    registry.register(pointer)
-    set_global_default_profile_id(global_default.id)
-    monkeypatch.setenv("CHRYS_MODEL_PROFILE", pointer.name)
-
-    async with open_model_config(
-        registry, global_default_profile_id=global_default.id, session_selected_profile_id=pointer.id
-    ) as (screen, _pilot):
-        await screen._do_delete(pointer.id)
-        result = screen._cancel_result()
-
-        assert os.environ["CHRYS_MODEL_PROFILE"] == global_default.id
-        assert result == "switched"
-
-
-def _three_models() -> tuple[ModelProfileRegistry, ModelProfile, ModelProfile, ModelProfile]:
-    """The pointer's model, a shortcut's session-only model, and an agent's own model."""
-    from chrys.service.profiles.models.env_bridge import set_global_default_profile_id
-
-    registry = ModelProfileRegistry()
-    pointer = ModelProfile(id="model-p", name="Model P", model_id="pointer-wire")
-    shortcut = ModelProfile(id="model-s", name="Model S", model_id="shortcut-wire")
-    agent_own = ModelProfile(id="model-a", name="Model A", model_id="agent-wire")
-    for profile in (pointer, shortcut, agent_own):
-        registry.register(profile)
-    set_global_default_profile_id(pointer.id)
-    return registry, pointer, shortcut, agent_own
-
-
-@pytest.mark.parametrize("with_shortcut", [True, False], ids=["over-a-shortcut", "over-the-pointer"])
-async def test_model_config_delete_the_agents_own_running_model_reloads_and_keeps_the_sessions_choice(
-    monkeypatch: pytest.MonkeyPatch, with_shortcut: bool
-) -> None:
-    """The runtime may run an agent's own model while the session's choice waits underneath:
-    deleting it reloads, so nothing runs on a deleted profile, and the session's choice stays."""
-    registry, pointer, shortcut, agent_own = _three_models()
-    monkeypatch.setenv("CHRYS_MODEL_PROFILE", pointer.id)
-    selected = shortcut.id if with_shortcut else pointer.id
-
-    async with open_model_config(
-        registry,
-        global_default_profile_id=pointer.id,
-        session_selected_profile_id=selected,
-        session_running_profile_id=agent_own.id,
-    ) as (screen, _pilot):
-        await screen._do_delete(agent_own.id)
-        result = screen._cancel_result()
-
-        assert registry.get(agent_own.id) is None
-        assert os.environ["CHRYS_MODEL_PROFILE"] == pointer.id
-        assert result == "reloaded"
-
-    published = await _model_config_result_events(result, registry)
-    assert [event.release_session_scoped_model for event in published] == [False]
-
-
-async def test_model_config_delete_a_shortcuts_model_under_an_agents_own_ends_the_switch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The session's own choice is gone even while another model runs: the switch to it ends."""
-    registry, pointer, shortcut, agent_own = _three_models()
-    monkeypatch.setenv("CHRYS_MODEL_PROFILE", pointer.id)
-
-    async with open_model_config(
-        registry,
-        global_default_profile_id=pointer.id,
-        session_selected_profile_id=shortcut.id,
-        session_running_profile_id=agent_own.id,
-    ) as (screen, _pilot):
-        await screen._do_delete(shortcut.id)
-        result = screen._cancel_result()
-
-        assert os.environ["CHRYS_MODEL_PROFILE"] == pointer.id
-        assert result == "switched"
-
-    published = await _model_config_result_events(result, registry)
-    assert [event.release_session_scoped_model for event in published] == [True]
-
-
-async def test_model_config_a_save_outranks_deleting_the_running_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A Save is announced; its reload also takes care of the deleted running model."""
-    registry, pointer, shortcut, agent_own = _three_models()
-    monkeypatch.setenv("CHRYS_MODEL_PROFILE", pointer.id)
-
-    async with open_model_config(
-        registry,
-        global_default_profile_id=pointer.id,
-        session_selected_profile_id=pointer.id,
-        session_running_profile_id=agent_own.id,
-    ) as (screen, pilot):
-        screen._load_profile(shortcut.id)
-        await pilot.pause()
-        await screen._save_only()
-        await screen._do_delete(agent_own.id)
-
-        assert screen._cancel_result() == "updated"
+    assert len(published) == 1
 
 
 async def test_model_config_delete_recognizes_name_based_process_pointer(
@@ -768,7 +600,7 @@ async def test_model_config_delete_recognizes_name_based_process_pointer(
         result = screen._cancel_result()
 
         assert os.environ["CHRYS_MODEL_PROFILE"] == global_default.id
-        assert result == "switched"
+        assert result == "deleted"
 
 
 async def test_model_config_delete_global_default_promotes_first_selectable(
@@ -833,7 +665,7 @@ async def test_model_config_delete_runtime_effective_skips_unresolvable_file_def
         # deleted; the process pointer still lands on a usable profile.
         assert get_global_default_profile_id() == file_default_pointer
         assert os.environ["CHRYS_MODEL_PROFILE"] == selectable.id
-        assert result == "switched"
+        assert result == "deleted"
 
 
 async def test_model_config_delete_runtime_effective_clears_pointer_when_nothing_selectable(

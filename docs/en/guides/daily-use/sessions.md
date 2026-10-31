@@ -53,6 +53,8 @@ To find and resume another session, press **F1**, click `f1 Sessions`, or enter 
 - **Search sessions**: Enter a session ID, title, directory, or a prompt you previously entered in the search field at the bottom. The search covers only the current page.
 - **Resume a session**: Select a session and click "Resume". You can also double-click it, or select it with the up and down arrow keys and press Enter. iCode closes the current conversation view, loads the selected session, and switches the working directory to the session's saved primary working directory; the current session remains saved in the list. Before resuming, check the working directory that will be restored in the list's "Directory" column. If that directory no longer exists, iCode asks you to choose another folder; see [If the working directory is deleted or moved](workspaces.md#if-the-working-directory-is-deleted-or-moved).
 
+A resumed session continues on the agent and model it was saved with. That doesn't change the agent and model a new session (`/new`) starts on: the agent you last chose with `#` (or started with) and your default model.
+
 When you resume a long conversation, iCode shows its most recent part first so you can continue right away; earlier messages keep loading above it for a few seconds.
 
 A resumed conversation shows the model's saved thinking folded to one line above the reply it led to: **Thought:**, followed by how the thinking begins; click it to unfold it. If a reply was interrupted or failed, the thinking shown for the request that was cut off is not saved, so it does not appear.

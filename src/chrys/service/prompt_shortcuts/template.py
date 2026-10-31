@@ -6,8 +6,8 @@ The placeholder syntax is the subset opencode and Claude Code share:
 
 * ``$ARGUMENTS`` is everything typed after the command name;
 * ``$1``, ``$2``, … are the arguments split on whitespace, a quoted run
-  counting as one; the highest-numbered placeholder takes every remaining
-  argument;
+  that opens an argument counting as one; the highest-numbered placeholder
+  takes every remaining argument;
 * a template with no placeholder gets the typed arguments appended after a
   blank line.
 
@@ -25,8 +25,16 @@ from dataclasses import dataclass
 
 _ARGUMENT_RE = re.compile(r"\$(?:ARGUMENTS|([1-9]\d*))")
 _POSITIONAL_RE = re.compile(r"\$([1-9]\d*)")
-# A quoted run (a backslash escapes its own quote inside it), or a bare word.
-_ARGS_RE = re.compile(r"\"((?:\\.|[^\"\\])*)\"|'((?:\\.|[^'\\])*)'|([^\s\"']+)")
+_ARGS_RE = re.compile(
+    r"""
+    (?<!\S)"((?:\\.|[^"\\])*)"             # a quoted run that opens an argument; \" escapes its quote
+    | (?<!\S)"((?:\\.|[^"\\])*\\)"(?!\S)  # one closed only by a quote after its own backslash: "C:\dir\"
+    | (?<!\S)'((?:\\.|[^'\\])*)'
+    | (?<!\S)'((?:\\.|[^'\\])*\\)'(?!\S)
+    | ([^\s"']\S*)                          # a bare word: a quote after its first character is part of it
+    """,
+    re.VERBOSE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,13 +48,18 @@ class PromptExpansion:
 def parse_arguments(arguments: str) -> list[str]:
     """Split typed arguments on whitespace, keeping quoted runs together without their quotes.
 
+    A quote opens a quoted run only at the start of an argument: inside a word
+    it is part of the word, so ``it's broken`` is ``it's`` and ``broken``.
+
     As opencode's documentation shows, a quote inside a quoted argument is
     escaped with a backslash: ``"{ \\"key\\": \\"value\\" }"`` is ``{ "key": "value" }``.
     Any other backslash stays as typed, so a Windows path keeps its separators.
     """
     args: list[str] = []
     for match in _ARGS_RE.finditer(arguments):
-        double, single, bare = match.groups()
+        double, double_backslash_end, single, single_backslash_end, bare = match.groups()
+        double = double if double is not None else double_backslash_end
+        single = single if single is not None else single_backslash_end
         if double is not None:
             args.append(double.replace('\\"', '"'))
         elif single is not None:

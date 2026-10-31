@@ -91,6 +91,7 @@ async def run_and_save(
     run_scope=None,
     injection_window=None,
     user_message_id: str | None = None,
+    typed_text: str | None = None,
 ) -> None:
     await make_turn_runner(
         current=host.current,
@@ -117,6 +118,7 @@ async def run_and_save(
         run_scope=run_scope,
         injection_window=injection_window,
         user_message_id=user_message_id,
+        typed_text=typed_text,
     )
 
 
@@ -198,10 +200,10 @@ class _Executor:
     def record_pre_run_interrupt(self) -> None:
         self.was_interrupted = True
 
-    def begin_invocation(self) -> None:
+    def begin_invocation(self, *, typed_text: str | None = None) -> None:
         pass
 
-    def fresh_request(self, contents: list[Any], created_at: Any = None):
+    def fresh_request(self, contents: list[Any], created_at: Any = None, *, typed_text: str | None = None):
         return contents, created_at
 
     @asynccontextmanager
@@ -446,6 +448,7 @@ class _Host:
         run_scope=None,
         injection_window=None,
         user_message_id: str | None = None,
+        typed_text: str | None = None,
     ) -> None:
         await run_and_save(
             self,
@@ -456,6 +459,7 @@ class _Host:
             run_scope=run_scope,
             injection_window=injection_window,
             user_message_id=user_message_id,
+            typed_text=typed_text,
         )
 
     async def _post_run(self) -> None:

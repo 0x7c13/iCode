@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, create_autospec
@@ -114,11 +115,12 @@ async def test_restore_snapshots_settings_inside_the_transition_fence(
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         _ = start_profile, operation
         if staged_loaded is not None:
-            engine.settings_handle.install(staged_loaded)
+            engine.settings_handle.install_prepared(engine.settings_handle.prepare(staged_loaded, session=session))
         if workspace is not None:
             engine.session.workspace = workspace
 
@@ -466,6 +468,7 @@ async def test_session_restore_keeps_admission_closed_through_restored_event(
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         _ = start_profile, operation
@@ -501,6 +504,7 @@ async def test_new_session_keeps_admission_closed_through_restart(monkeypatch: p
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         _ = start_profile, operation

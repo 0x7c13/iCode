@@ -16,7 +16,32 @@ if TYPE_CHECKING:
     from chrys.foundation.i18n import MessageRef
 
 _SLASH_COMMAND_CANDIDATE_RE = re.compile(r"^[/\uff0f][A-Za-z][A-Za-z0-9_-]*(?:\s|$)")
-_SLASH_NAME_WITH_ARGUMENTS_RE = re.compile(r"[/\uff0f]\S+\s")
+_SLASH_DRAFT_RE = re.compile(r"[/\uff0f](\S*)(?:(\s+)(.*))?\Z", re.DOTALL)
+
+
+@dataclass(frozen=True, slots=True)
+class SlashDraft:
+    """A draft that starts with a slash token, parsed once for every reader of it."""
+
+    name: str
+    """Everything after the slash up to the first whitespace; may be empty (``/``)."""
+    arguments: str
+    """What follows that whitespace, as typed, lines included; empty when nothing does."""
+    bare: bool
+    """The draft is the token alone, nothing after it, not even whitespace: a suggestion list may filter on it."""
+
+
+def parse_slash_draft(text: str) -> SlashDraft | None:
+    """Parse *text* as ``/name arguments`` (the fullwidth slash too); None when it does not start with a slash.
+
+    The one definition of a slash draft: what a typed name names, whether a
+    closed list may reopen on it, and what a prompt shortcut's arguments are
+    all read from it.
+    """
+    match = _SLASH_DRAFT_RE.match(text)
+    if match is None:
+        return None
+    return SlashDraft(name=match.group(1), arguments=match.group(3) or "", bare=match.group(2) is None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,11 +88,6 @@ class ManPageSpec:
 def is_slash_command_candidate(text: str) -> bool:
     """Return True when text starts with a command-shaped slash token."""
     return "\n" not in text and "\r" not in text and _SLASH_COMMAND_CANDIDATE_RE.match(text) is not None
-
-
-def is_slash_name_with_arguments(text: str) -> bool:
-    """Whether *text* is one line naming a slash token and then arguments: ``/translate formal hello``."""
-    return "\n" not in text and _SLASH_NAME_WITH_ARGUMENTS_RE.match(text) is not None
 
 
 def completion_token_start(text: str, trigger: str) -> int | None:

@@ -8,8 +8,9 @@ import asyncio
 
 import pytest
 
-from chrys.app.tui.screens.main.ports import InputRestore
 from chrys.app.tui.screens.main.submit_state import SubmitState
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
+from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 
 
 def test_submit_state_begin_sets_active_text_and_clears_blocked() -> None:
@@ -67,73 +68,34 @@ async def test_submit_state_is_in_publish_only_on_its_publishing_task() -> None:
     assert state.in_publish() is False
 
 
-def test_each_claim_gets_a_new_number_and_only_the_latest_holds() -> None:
+def test_what_a_submit_hands_back_goes_back_once() -> None:
     state = SubmitState()
+    draft = ChatDraft("Review !`git diff`", owner=ShortcutIntent("review", "", "", path="/s/review.md"))
+    state.begin(draft.text, draft=draft, session_generation=3, cwd="/repo")
 
-    first = state.begin("first")
-    assert state.holds(first) is True
-
-    second = state.begin("second", kind="retry")
-
-    assert second != first
-    assert state.holds(second) is True
-    assert state.holds(first) is False
+    assert state.take_draft_for(lambda: (3, "/repo")) == draft
+    # A refusal handler and the sender may both ask: only the first gets it.
+    assert state.take_draft_for(lambda: (3, "/repo")) is None
 
 
-def test_release_ends_only_the_claim_still_in_flight() -> None:
+def test_a_plain_submit_hands_back_its_text() -> None:
     state = SubmitState()
-    first = state.begin("first")
-    second = state.begin("second")
+    state.begin("plain")
 
-    # The earlier claim's late cleanup leaves the newer one alone.
-    assert state.release(first) is False
-    assert state.active is True
-    assert state.text == "second"
-    assert state.holds(second) is True
-
-    assert state.release(second) is True
-    assert state.active is False
-    assert state.holds(second) is False
-    # Releasing twice does nothing more.
-    assert state.release(second) is False
+    assert state.take_draft_for(lambda: (0, "")) == "plain"
+    assert state.take_draft_for(lambda: (0, "")) is None
 
 
-def test_a_number_never_comes_back_after_clear() -> None:
+@pytest.mark.parametrize(
+    ("generation", "cwd", "drop_owner"),
+    [(4, "/repo", False), (3, "/elsewhere", False), (3, "/repo", True)],
+    ids=["another-session", "another-folder", "shortcut-gone"],
+)
+def test_a_draft_going_back_elsewhere_is_no_longer_its_shortcuts(generation: int, cwd: str, drop_owner: bool) -> None:
     state = SubmitState()
-    first = state.begin("first")
-    state.clear()
+    draft = ChatDraft("Review !`git diff`", owner=ShortcutIntent("review", "", "", path="/s/review.md"))
+    state.begin(draft.text, draft=draft, session_generation=3, cwd="/repo")
 
-    second = state.begin("second")
+    back = state.take_draft_for(lambda: (generation, cwd), drop_owner=drop_owner)
 
-    assert second != first
-    assert state.holds(first) is False
-    assert state.release(first) is False
-    assert state.holds(second) is True
-
-
-def test_claim_keeps_its_give_back_and_check_until_it_ends() -> None:
-    state = SubmitState()
-
-    def give_back() -> InputRestore | None:
-        return InputRestore(generation=1, text="prepared")
-
-    def still_valid() -> bool:
-        return True
-
-    claim = state.begin("prepared", give_back=give_back, still_valid=still_valid)
-    assert state.give_back is give_back
-    assert state.still_valid is still_valid
-
-    # A plain claim after it carries none of the earlier send's.
-    plain = state.begin("plain")
-    assert state.give_back is None
-    assert state.still_valid is None
-
-    state.begin("prepared again", give_back=give_back, still_valid=still_valid)
-    state.block()
-    state.clear()
-    assert state == SubmitState(generation=state.generation)
-    assert state.give_back is None
-    assert state.still_valid is None
-    assert state.holds(claim) is False
-    assert state.holds(plain) is False
+    assert back == ChatDraft(draft.text)

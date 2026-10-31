@@ -112,6 +112,16 @@ class InvocationEvent(Event):
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class PromptShortcutRef:
+    """The prompt shortcut a message's draft was expanded from, as the frontend's list loaded it."""
+
+    name: str
+    """The name typed after ``/``."""
+    path: str
+    """``PromptShortcut.path``: the file it was read from."""
+
+
 @dataclass
 class UserMessage(Event):
     """User sends a message to the agent."""
@@ -123,7 +133,9 @@ class UserMessage(Event):
     prepared_contents: list[Any] | None = field(default=None, repr=False, compare=False)
     # Set by frontends that submit while a run is active so the resulting
     # mid-run injection can be correlated and cancelled (``UserInjectCancel``)
-    # before the model sees it. ``None`` for ordinary fresh-turn submits.
+    # before the model sees it, and by a frontend for any message the user can
+    # withdraw while it is admitted (one carrying ``prompt_shortcut``). ``None``
+    # for ordinary fresh-turn submits.
     injection_id: str | None = None
     # Set by the backend, before its publish returns, when this message opened
     # a new turn — also for an injection submit whose run ended before it was
@@ -133,6 +145,11 @@ class UserMessage(Event):
     # the replay of this exact message. ``None`` for every frontend that has no
     # id of its own; the backend mints one before the turn starts.
     client_message_id: str | None = None
+    # The shortcut this message's draft was expanded from, set only when its
+    # text holds ``!`command``` placeholders: the engine runs them for that
+    # shortcut, if it still loads it, once the prompt hooks have passed, and
+    # sends their output in their place. Never joins a running turn.
+    prompt_shortcut: PromptShortcutRef | None = None
 
 
 @dataclass
@@ -302,10 +319,30 @@ class AgentProfileSwitch(Event):
     """User switches to a different agent profile."""
 
     profile_name: str = ""
-    session_scoped: bool = False
-    """The switch belongs to this session only (a TUI prompt shortcut card): a
-    new or another restored session goes back to the agent in use before it.
-    False for the user's own switch, which also ends a session-scoped one."""
+    source: Literal["user", "fallback"] = "user"
+    """``user``: the user's own pick, which new sessions also start on. ``fallback``: a
+    frontend replacing the session's agent after its profile was deleted, renamed or retired."""
+
+
+@dataclass
+class SessionOnlySwitch(Event):
+    """Switch this session's own agent and/or model in one rebuild, or neither (a prompt shortcut's).
+
+    New sessions keep starting on the agent and model they did. The engine
+    sets ``applied`` before the publish returns: True when what was asked is
+    in force, False when nothing changed (a refusal or failure was published).
+    A model the agent would not run is no part of what can be asked: the
+    engine leaves it out and says so in ``model_left_out``.
+    """
+
+    agent: str = ""
+    """Agent profile name; empty keeps the session's agent."""
+    model_profile: str = ""
+    """Model profile id; empty keeps the session's model."""
+    applied: bool = field(default=False, compare=False)
+    model_left_out: bool = field(default=False, compare=False)
+    """Set by the engine: the agent the switch runs on binds a model of its own (or an override is set),
+    which runs over the one asked for, so that one was not made the session's."""
 
 
 @dataclass
@@ -327,9 +364,8 @@ class ConfigUpdate(Event):
 class SettingsReload(Event):
     """User updated .env settings — engine should reload Settings and rebuild agent."""
 
-    release_session_scoped_model: bool = False
-    """Also end a session-scoped model switch, so the session takes the reloaded
-    model: set when the user picks a model for this session and the default together."""
+    model_chosen: bool = False
+    """The user picked the default model for this session too (``$``): the session's own model ends."""
 
 
 @dataclass
@@ -357,12 +393,6 @@ class SetModelProfile(Event):
     """
 
     profile_id: str = ""
-    session_scoped: bool = False
-    """The switch belongs to this session only (a TUI prompt shortcut card): it
-    sets the session's selected model, leaving a model the agent binds alone
-    and the ``$`` picker free, and a new or another restored session goes back
-    to the default. False (ACP) pins the model over the agent's for the rest of
-    the session, as before."""
 
 
 # ---------------------------------------------------------------------------
@@ -1267,6 +1297,24 @@ class ImageAttachmentCompressionFinished(Event):
     """Image attachment compression has finished before a user turn is sent."""
 
     image_count: int = 0
+
+
+@dataclass
+class PromptCommandsRunning(Event):
+    """A message's prompt-shortcut ``!`command``` placeholders started running, before its turn starts."""
+
+    count: int = 0
+    injection_id: str | None = None
+    """The message's ``UserMessage.injection_id``."""
+
+
+@dataclass
+class PromptCommandsEnded(Event):
+    """The commands a :class:`PromptCommandsRunning` announced ended; always follows one, whatever ended them."""
+
+    outcome: Literal["completed", "command_failed", "cancelled"] = "completed"
+    injection_id: str | None = None
+    """The message's ``UserMessage.injection_id``."""
 
 
 @dataclass

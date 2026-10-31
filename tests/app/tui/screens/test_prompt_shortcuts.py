@@ -29,7 +29,7 @@ from chrys.app.tui.screens.settings.panes.prompt_shortcuts import (
     PromptDirCard,
     PromptShortcutsPane,
 )
-from chrys.app.tui.widgets.chrome.input_bar import InputBar, _ChatTextArea
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar, _ChatTextArea
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
 from chrys.app.tui.widgets.directory_path import DirectoryPathCard
 from chrys.app.tui.widgets.hatch import HatchedEmptyState
@@ -72,9 +72,11 @@ class _Sent:
 
     def __init__(self) -> None:
         self.texts: list[str] = []
+        self.drafts: list[ChatDraft | None] = []
 
-    def __call__(self, text: str) -> None:
+    def __call__(self, text: str, draft: ChatDraft | None = None) -> None:
         self.texts.append(text)
+        self.drafts.append(draft)
 
 
 async def _ready(pilot: Pilot, monkeypatch: pytest.MonkeyPatch) -> tuple[MainScreen, _ChatTextArea, _Sent]:

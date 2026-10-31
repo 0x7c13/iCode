@@ -1782,6 +1782,14 @@ def test_background_tasks_have_declared_owners() -> None:
         ("run/coordinator", "TurnCoordinator", "_admit_user_message"): (2, "execution lease run task"),
         ("run/retry", "RetryCoordinator", "_handle_user_retry"): (2, "execution lease run task"),
         ("run/retry", "RetryCoordinator", "_create_retry_run_task"): (2, "execution lease run task"),
+        ("run/shortcut_commands", "ShortcutCommands", "_run"): (
+            2,
+            "prompt commands and their invalidation waiter, both drained before _run returns",
+        ),
+        ("run/shortcut_commands", "ShortcutCommands", "_deliver"): (
+            1,
+            "prompt commands running/ended publication, drained whole by its finish_close caller",
+        ),
         ("run/runner", "TurnRunner", "_withdraw_answer"): (
             1,
             "answer withdrawal publication, drained whole by its finish_close caller",

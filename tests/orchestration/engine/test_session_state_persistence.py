@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -321,6 +322,7 @@ async def test_restore_rearms_persisted_last_words_for_retry(
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         _ = start_profile, operation
@@ -433,6 +435,7 @@ async def test_restore_reconciles_spill_quota_manifest_and_availability(
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         _ = start_profile, operation
@@ -592,6 +595,7 @@ async def test_restore_hydrates_todo_tracker_before_last_words(
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         _ = start_profile, operation
@@ -659,6 +663,7 @@ async def test_restore_without_todos_leaves_tracker_empty(
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         _ = start_profile, operation

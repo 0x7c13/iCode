@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -20,7 +19,7 @@ from chrys.app.tui.screens.main.buddy_command import BuddyCommandController
 from chrys.app.tui.screens.main.commands import MainSlashCommandRegistry, SlashCommandActionPort
 from chrys.app.tui.screens.main.model_indicator import is_model_selection_locked
 from chrys.app.tui.screens.main.ports import BuddyCommandView, StartWorker, SuggestionPopupView
-from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, session_models
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, running_model
 from chrys.app.tui.support.gc_freeze import GcFreezeBlockReason
 from chrys.app.tui.support.prompt_history import DEFAULT_MAX_ENTRIES as _PROMPT_HISTORY_SEARCH_LIMIT
 from chrys.app.tui.support.prompt_search import (
@@ -34,17 +33,21 @@ from chrys.app.tui.widgets.chrome.commands import (
     SlashCommandDef,
     completion_token_start,
     is_slash_command_candidate,
+    parse_slash_draft,
 )
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft
+from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionItem
-from chrys.foundation.config.settings import Settings, parse_prompt_shortcut_paths
+from chrys.foundation.config.settings import Settings
 from chrys.foundation.i18n import MessageRef, msg
 from chrys.foundation.i18n.formatting import format_message, sanitize_legacy_scalar, sanitize_terminal_block
-from chrys.foundation.platform import get_platform, safe_getcwd
+from chrys.foundation.platform import safe_getcwd
 from chrys.service.profiles.models.schema import is_model_profile_selectable
 from chrys.service.prompt_shortcuts import (
     PromptShortcut,
     expand_template,
     load_prompt_shortcuts,
+    prompt_shortcut_folders,
     prompt_shortcut_sources,
 )
 
@@ -61,11 +64,6 @@ _PROMPT_HISTORY_FALLBACK_CELLS = 80
 # The index outlives the list for an instant reopen only while the prompts hold
 # at most this many characters; it keeps about three copies of their text.
 _PROMPT_HISTORY_CACHE_MAX_CHARS = 2 * 1024 * 1024
-# A typed ``/name arguments``, parsed: the name is everything up to the first whitespace.
-_TYPED_NAME_RE = re.compile(r"[/\uff0f](\S+)(?:\s+(.*))?\Z", re.DOTALL)
-# What may follow ``/`` while the list stays open for a prompt shortcut name:
-# its directories and any script, but no whitespace.
-_PROMPT_QUERY_RE = re.compile(r"[/\uff0f]\S+\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,10 +157,13 @@ class SuggestionCallbacks:
     submit_user_text: Callable[[str], object]
     start_agent_profile_switch: Callable[[str], object]
     start_model_profile_switch: Callable[[str], object]
-    prompt_expanded: Callable[[PromptShortcut, str], None] = lambda _command, _text: None
-    """Called after a prompt shortcut expanded into the draft, with the draft text."""
-    route_typed: Callable[[str], bool] = lambda _text: False
-    """Route submitted text as Enter does (``MainScreen._route_shortcut_draft``); True when it was handled."""
+
+
+def _prompt_row_value(shortcut: PromptShortcut) -> str:
+    """A shortcut row's value, as typed (``/name``): unique among rows, which a file's path is not
+    (a file under two listed folders loads under two names) and a bare name is not (it may be a
+    command's or skill's too)."""
+    return f"/{shortcut.name}"
 
 
 class SuggestionHandler:
@@ -628,24 +629,21 @@ class SuggestionHandler:
         # Opening filters by the live draft.
         self.on_slash_triggered()
 
-    def _exact_command_value(
-        self, query: str, commands: Sequence[SlashCommandDef], skills: Sequence[RuntimeSkillDetails]
-    ) -> str | None:
-        """The row a fully typed name would run, in the typed order: system command, skill, prompt shortcut.
+    def _exact_command_value(self, query: str) -> str | None:
+        """The row a fully typed name would run: the one :meth:`resolve_typed_name` names.
 
         The groups are listed in another order, so without this the first
         row, possibly a same-named shortcut, would be the one Enter picks.
         """
         if not query:
             return None
-        command = next((c for c in commands if query == c.name or query in c.aliases), None)
-        if command is not None:
-            return command.name
-        if any(skill.name == query for skill in skills):
+        typed = self.resolve_typed_name(f"/{query}")
+        if typed.kind == "command":
+            command = self._command_for_token(query)
+            return command.name if command is not None else None
+        if typed.kind == "skill":
             return query
-        key = query.casefold()
-        shortcut = next((c for c in self._known_shortcuts() if c.name.casefold() == key), None)
-        return shortcut.path if shortcut is not None else None
+        return _prompt_row_value(typed.shortcut) if typed.shortcut is not None else None
 
     def _all_command_items(self) -> list[SuggestionItem]:
         """Every row the bare ``/`` list shows: system commands, prompt shortcuts, then skills."""
@@ -777,10 +775,10 @@ class SuggestionHandler:
         name that is no command or skill is ``pending``: acted on now, a
         shortcut would go to the model as plain text, unexpanded.
         """
-        match = _TYPED_NAME_RE.match(text.strip())
-        if match is None:
+        slash = parse_slash_draft(text.strip())
+        if slash is None or not slash.name:
             return TypedName("none")
-        name, arguments = match.group(1), match.group(2) or ""
+        name, arguments = slash.name, slash.arguments
         if self._command_for_token(name) is not None:
             return TypedName("command")
         if any(skill.name == name for skill in self._state.runtime.details.skill_details):
@@ -800,23 +798,18 @@ class SuggestionHandler:
         """Where the loader reads shortcuts from, under the current settings."""
         handle = self._services.settings_handle
         settings = handle.settings if handle is not None else Settings()
-        try:
-            extra_dirs = parse_prompt_shortcut_paths(settings.prompt_shortcuts_paths)
-        except ValueError, TypeError, RecursionError:
-            extra_dirs = []
-        return {
-            "config_dir": get_platform().config_dir,
-            "workspace": self._current_file_root(),
-            "load_user_folder": settings.prompt_shortcuts_load_user_folder,
-            "extra_dirs": extra_dirs,
-            "load_working_folder": settings.prompt_shortcuts_load_working_folder,
-        }
+        return prompt_shortcut_folders(settings, self._current_file_root())
 
     async def _load_prompt_shortcuts(
         self, generation: int, folders: dict[str, Any], load: Callable[[], list[PromptShortcut]]
     ) -> None:
         try:
             commands = await asyncio.to_thread(load)
+        except asyncio.CancelledError:
+            # A read that never lands is not one out: the next ask for these folders starts another.
+            if generation == self._prompt_shortcuts_generation:
+                self._prompt_shortcuts_loading = None
+            raise
         except Exception:
             # A worker error would exit the App; a broken shortcut directory must not.
             logger.exception("Prompt shortcuts: loading failed")
@@ -843,7 +836,7 @@ class SuggestionHandler:
         """
         return [
             SuggestionItem(
-                value=command.path,
+                value=_prompt_row_value(command),
                 label=self._prompt_shortcut_label(command),
                 section=self._render_message(_SUGGESTIONS_PROMPT_SHORTCUTS.bind()),
                 kind="prompt",
@@ -876,11 +869,14 @@ class SuggestionHandler:
 
         Paths and comments (``/Users/me``, ``// note``) match no shortcut, so the list still closes for them.
         """
-        return _PROMPT_QUERY_RE.match(text) is not None and bool(self._prompt_shortcuts_matching(text[1:]))
+        slash = parse_slash_draft(text)
+        return (
+            slash is not None and slash.bare and bool(slash.name) and bool(self._prompt_shortcuts_matching(slash.name))
+        )
 
     def _prompt_shortcut_for_value(self, value: str) -> PromptShortcut | None:
-        """Return the shortcut a row stands for; a row's value is its file's path."""
-        return next((c for c in self._known_shortcuts() if c.path == value), None)
+        """Return the shortcut a row stands for (:func:`_prompt_row_value`)."""
+        return next((c for c in self._known_shortcuts() if _prompt_row_value(c) == value), None)
 
     def _expand_prompt_shortcut(self, command: PromptShortcut, arguments: str) -> None:
         # The file's text reaches the terminal through the input bar: no escape or control codes, tabs kept.
@@ -889,8 +885,8 @@ class SuggestionHandler:
             arguments,
             default_hint=self._default_prompt_hint,
         )
-        self._view.expand_prompt_in_input(expansion.text, expansion.fields)
-        self._callbacks.prompt_expanded(command, expansion.text)
+        owner = ShortcutIntent(command.name, command.agent, command.model, path=command.path)
+        self._view.expand_prompt_in_input(ChatDraft(expansion.text, tuple(expansion.fields), owner))
 
     def _default_prompt_hint(self, position: int | None) -> str:
         if position is None:
@@ -984,7 +980,7 @@ class SuggestionHandler:
 
     def _current_model_profile_id(self) -> str:
         """Return the model the session runs, for suggestion styling."""
-        return session_models(self._state, self._services).running
+        return running_model(self._state, self._services)
 
     def _get_model_items(self) -> tuple[list[SuggestionItem], set[str]]:
         """Build suggestion items and disabled set from selectable model profiles."""
@@ -1356,7 +1352,7 @@ class SuggestionHandler:
                 disabled=self._disabled_commands(),
                 title=self._suggestion_title("commands"),
                 keep_selection=keep_selection,
-                initial=self._exact_command_value(query, visible, skills),
+                initial=self._exact_command_value(query),
             )
 
         elif self._suggestion_mode == "subcommands":
@@ -1451,13 +1447,8 @@ class SuggestionHandler:
             if mode == "models" and not self._model_fallback_should_submit(text):
                 return True
             self.dismiss_suggestions()
-            self._view.set_input_value("")
-            if not text:
-                return True
-            if mode in {"agents", "models"} or (
-                not self._callbacks.route_typed(text) and not self.dispatch_slash_command(text)
-            ):
-                self._callbacks.submit_user_text(text)
+            # What Enter does with the list closed, through the one submit path.
+            self._view.submit_input()
             return True
         return bool(selected)
 

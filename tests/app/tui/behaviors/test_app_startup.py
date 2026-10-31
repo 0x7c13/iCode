@@ -133,8 +133,7 @@ async def test_cancelled_startup_ignores_late_refresh_callback() -> None:
 
 
 def test_tui_startup_profile_resolves_preferred_agent() -> None:
-    from chrys.app.tui.app import _resolve_startup_profile
-    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
     from chrys.service.profiles.agents.schema import AgentProfile
 
     registry = AgentProfileRegistry()
@@ -143,12 +142,11 @@ def test_tui_startup_profile_resolves_preferred_agent() -> None:
     registry.register(code)
     registry.register(qa)
 
-    assert _resolve_startup_profile(registry, "QA") is qa
+    assert resolve_launch_profile(registry, "QA") is qa
 
 
 def test_tui_startup_profile_accepts_id_and_display_name() -> None:
-    from chrys.app.tui.app import _resolve_startup_profile
-    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
     from chrys.service.profiles.agents.schema import AgentProfile
 
     registry = AgentProfileRegistry()
@@ -157,13 +155,12 @@ def test_tui_startup_profile_accepts_id_and_display_name() -> None:
     registry.register(code)
     registry.register(qa)
 
-    assert _resolve_startup_profile(registry, "qa-id") is qa
-    assert _resolve_startup_profile(registry, "quality agent") is qa
+    assert resolve_launch_profile(registry, "qa-id") is qa
+    assert resolve_launch_profile(registry, "quality agent") is qa
 
 
 def test_tui_startup_profile_falls_back_to_code_when_preferred_missing() -> None:
-    from chrys.app.tui.app import _resolve_startup_profile
-    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
     from chrys.service.profiles.agents.schema import AgentProfile
 
     registry = AgentProfileRegistry()
@@ -172,12 +169,11 @@ def test_tui_startup_profile_falls_back_to_code_when_preferred_missing() -> None
     registry.register(qa)
     registry.register(code)
 
-    assert _resolve_startup_profile(registry, "Missing") is code
+    assert resolve_launch_profile(registry, "Missing") is code
 
 
 def test_tui_startup_profile_treats_sub_agent_only_preference_as_unusable() -> None:
-    from chrys.app.tui.app import _resolve_startup_profile
-    from chrys.service.profiles.agents.registry import AgentProfileRegistry
+    from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
     from chrys.service.profiles.agents.schema import AgentProfile
 
     registry = AgentProfileRegistry()
@@ -186,7 +182,7 @@ def test_tui_startup_profile_treats_sub_agent_only_preference_as_unusable() -> N
     registry.register(explore)
     registry.register(code)
 
-    assert _resolve_startup_profile(registry, "Explore") is code
+    assert resolve_launch_profile(registry, "Explore") is code
 
 
 def test_terminal_restore_skips_textual_web_driver(monkeypatch: pytest.MonkeyPatch, capsys) -> None:

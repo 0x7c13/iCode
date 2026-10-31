@@ -354,7 +354,7 @@ class RuntimeDetailsDialog(BaseDialog[None]):
             except Exception:
                 logger.exception("Runtime details: reading prompt shortcuts failed")
         # The dialog may have closed while the folders were read.
-        if self._pruning or not self.is_attached or not self.app.is_running:
+        if not self._composed_live:
             return
         container = self.query_one("#runtime-shortcuts-scroll", ScrollableContainer)
         sections = self._shortcut_sections(sources)

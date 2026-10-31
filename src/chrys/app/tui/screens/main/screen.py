@@ -19,6 +19,7 @@ from textual.actions import SkipAction
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.events import DescendantFocus, Key, Paste, Resize, ScreenResume, ScreenSuspend
 from textual.geometry import Offset, Size
 from textual.reactive import reactive
@@ -26,7 +27,6 @@ from textual.screen import Screen
 from textual.selection import Selection, SelectState
 from textual.timer import Timer
 from textual.widget import Widget
-from textual.widgets import TextArea
 
 from chrys.app.tui.behaviors.right_click_copy import RightClickScreenCopyMixin
 from chrys.app.tui.binding_display import QUIT_BINDING, localized_binding
@@ -43,7 +43,7 @@ from chrys.app.tui.screens.main.copy_actions import CopyActionController
 from chrys.app.tui.screens.main.diff_controller import DiffController, LiveDiffOwner, LiveDiffTracker
 from chrys.app.tui.screens.main.engine_read_model import EngineReadModel
 from chrys.app.tui.screens.main.event_handlers import BackendEventCallbacks, BackendEventHandler
-from chrys.app.tui.screens.main.input_flow import GiveBack, InputFlowController, PreparedSend, SendIntent
+from chrys.app.tui.screens.main.input_flow import InputFlowController
 from chrys.app.tui.screens.main.model_indicator import (
     compute_model_indicator_state,
     is_model_selection_locked,
@@ -68,7 +68,7 @@ from chrys.app.tui.screens.main.settings_persistence import (
     SettingsPersistenceQueue,
 )
 from chrys.app.tui.screens.main.shell_mode import ShellModeController
-from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, session_models
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, running_model
 from chrys.app.tui.screens.main.subscriptions import MainScreenSubscriptions
 from chrys.app.tui.screens.main.suggestions import SuggestionCallbacks, SuggestionHandler
 from chrys.app.tui.screens.main.tool_action_bridge import ToolActionBridge
@@ -87,6 +87,7 @@ from chrys.app.tui.support.gc_freeze import (
 )
 from chrys.app.tui.terminal.panel import ShellPanel
 from chrys.app.tui.terminal.widget import Terminal
+from chrys.app.tui.util.liveness import composed_live
 from chrys.app.tui.widgets.chat.messages import ConversationStatusAction
 from chrys.app.tui.widgets.chat.panel import ChatPanel
 from chrys.app.tui.widgets.chat.ports import TranscriptLocalizationPort
@@ -98,10 +99,17 @@ from chrys.app.tui.widgets.chat.selection_controller import ChatSelectionControl
 from chrys.app.tui.widgets.chat.session_json import SessionJsonPanel
 from chrys.app.tui.widgets.chat.tool_call import ToolViewRequested, is_tool_copy_excluded
 from chrys.app.tui.widgets.chrome.app_header import AppHeader
-from chrys.app.tui.widgets.chrome.commands import is_slash_command_candidate, is_slash_name_with_arguments
+from chrys.app.tui.widgets.chrome.commands import is_slash_command_candidate
 from chrys.app.tui.widgets.chrome.footer import ChrysFooter
 from chrys.app.tui.widgets.chrome.hook_indicator import HookIndicator
-from chrys.app.tui.widgets.chrome.input_bar import InputBar
+from chrys.app.tui.widgets.chrome.input_bar import (
+    ChatDraft,
+    InputBar,
+    InputDraftSnapshot,
+    SubmitRequest,
+    SubmitRoute,
+    default_submit_route,
+)
 from chrys.app.tui.widgets.chrome.prompt_card import PromptCard
 from chrys.app.tui.widgets.chrome.status_bar import StatusBar
 from chrys.app.tui.widgets.chrome.suggestion_list import SuggestionList
@@ -124,12 +132,10 @@ from chrys.foundation.config.settings import (
     persist_tool_groups_expanded,
 )
 from chrys.foundation.events.types import (
-    AgentProfileSwitch,
     ApprovalModeUpdated,
     Error,
     ExecutionChanged,
     SessionRestored,
-    SetModelProfile,
 )
 from chrys.foundation.i18n import DisplaySequence, Localizer, MessageRef, msg
 from chrys.foundation.models.approval_reuse import ReuseChoice
@@ -137,6 +143,7 @@ from chrys.foundation.models.ask_user import AskUserAnswer
 from chrys.foundation.models.hook_confirmations import HookConfirmationAnswer
 from chrys.foundation.platform import get_platform, safe_getcwd
 from chrys.service.approval.policy import ApprovalMode
+from chrys.service.profiles.models.resolver import model_for_agent
 from chrys.service.profiles.models.schema import UNCONFIGURED_MODEL_ID, is_model_profile_selectable
 from chrys.service.session.sub_agent_transcript import load_persisted_sub_agent_transcript
 
@@ -504,8 +511,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 submit_user_text=self._submit_user_text,
                 start_agent_profile_switch=self._config_actions.start_agent_profile_switch,
                 start_model_profile_switch=self._switch_model_profile,
-                prompt_expanded=self._prompt_card.attach,
-                route_typed=self._route_shortcut_draft,
             ),
             buddy_view=self._view_adapter,
             locale_controller=self._locale_controller,
@@ -534,6 +539,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             commit_profile_switch_marker=self._commit_profile_switch_marker,
             post_gc_message=self.post_message,
             debug=self._debug,
+            pending_switch=self._prompt_card.pending_switch,
+            model_left_out=self._prompt_card.model_left_out,
+            show_error_notice=self._events.notify_held_error,
         )
         self._subscriptions = MainScreenSubscriptions(
             bus=self._services.bus,
@@ -541,6 +549,8 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             sessions=self._sessions,
             rollback_result_handler=self._rollback_controller.on_result,
             execution_handler=self._on_execution_changed,
+            prompt_commands_running_handler=self._input_flow.on_prompt_commands_running,
+            prompt_commands_ended_handler=self._input_flow.on_prompt_commands_ended,
         )
         self._workflow_panel = WorkflowPanel(locale_controller=self._locale_controller)
         self._workflow = WorkflowController(
@@ -943,7 +953,14 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         """
 
         async def run() -> object:
-            return await work()
+            try:
+                return await work()
+            except NoMatches:
+                if composed_live(self):
+                    raise
+                # The screen is going away (the app exits) and pruned its widgets while
+                # the work awaited: nothing is left for it to update.
+                return None
 
         name, description = _describe_work(work)
         return self.run_worker(run, name=name, description=description, thread=False)
@@ -1113,7 +1130,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         # without changing transcript geometry while suggestions are filtered.
         yield PromptCard()
         yield SuggestionList(locale_controller=self._locale_controller)
-        yield InputBar(locale_controller=self._locale_controller).data_bind(
+        input_bar = InputBar(locale_controller=self._locale_controller)
+        input_bar.submit_router = self._route_submit
+        yield input_bar.data_bind(
             agent_running=MainScreen.agent_running_state,
             agent_loading=MainScreen.agent_loading_state,
             has_messages=MainScreen.has_messages_state,
@@ -1396,7 +1415,11 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     @on(InputBar.UserSubmitted)
     def _on_user_input(self, event: InputBar.UserSubmitted) -> None:
-        """User pressed Enter — handle slash commands or publish message."""
+        """User pressed Enter — handle slash commands or publish message.
+
+        The input bar gave the draft up at the keypress, when nothing stopped it:
+        whatever stops it since (a load, a turn) hands it back whole.
+        """
         if self._workflow.workflow_mode:
             return
         text = event.text.strip()
@@ -1404,18 +1427,24 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return
         if self._suggestions.suggestion_mode == "history":
             self._suggestions.dismiss_suggestions()
-        if self._route_shortcut_draft(text):
-            return
+        draft = event.draft
 
-        # Dispatch slash commands
+        # Dispatch slash commands (the router already sent a shortcut's prompt with work here as a message).
         if is_slash_command_candidate(text):
             if self._state.run.agent_loading:
+                self.query_one(InputBar).restore_draft(draft)
                 return
             if self._suggestions.dispatch_slash_command(text):
                 return
-        if self._state.run.agent_loading:
+        if draft.owner is not None and self._prompt_card.route(draft, continue_button=False) == "keep":
+            # The router sent this shortcut's prompt as a new message at the keypress, and a turn
+            # or a load began since: it waits in the composer again, never joining that turn.
+            self.query_one(InputBar).restore_draft(draft)
             return
-        self._submit_user_text(text)
+        if self._state.run.agent_loading:
+            self.query_one(InputBar).restore_draft(draft)
+            return
+        self._submit_user_text(text, draft)
 
     # ------------------------------------------------------------------ #
     # Prompt-shortcut card
@@ -1432,30 +1461,15 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
                 current_model=self._prompt_card_current_model,
                 agent_running=lambda: self._state.run.agent_running,
                 agent_loading=lambda: self._state.run.agent_loading,
-                input_text=lambda: str(self.query_one(InputBar).value),
-                workspace_cwd=self._workspace_cwd,
-                restore_draft=lambda text: self._view_adapter.restore_input_text(text, keep_card=True),
-                begin_prepared=self._begin_prepared_send,
-                holds=self._holds_prepared_send,
-                publish_prepared=self._publish_prepared_send,
-                abandon_prepared=self._abandon_prepared_send,
-                session_id=lambda: self.chat_session_id,
-                switch_agent=self._prompt_card_switch_agent,
-                # Only the lock: a busy engine fails the switch itself, with its own message.
-                model_switchable=lambda _profile_id: (
-                    not is_model_selection_locked(
-                        self._state.runtime.details.model, runtime_confirmed=self._state.runtime.details_confirmed
-                    )
-                ),
-                switch_model=self._prompt_card_switch_model,
+                draft=lambda: self.query_one(InputBar).draft(),
+                draft_owner=lambda: self.query_one(InputBar).draft_owner,
+                set_owner=lambda owner: self.query_one(InputBar).set_draft_owner(owner),
                 notify=lambda message, title, severity: self.notify(
                     render_str(widget_localizer(self), message),
                     title=render_str(widget_localizer(self), title),
                     severity=cast("SeverityLevel", severity),
                     markup=False,
                 ),
-                run_worker=lambda work: self.run_worker(work, group="prompt-card-send", exit_on_error=False),
-                after_refresh=self.call_after_refresh,
             ),
         )
 
@@ -1481,48 +1495,43 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _prompt_card_current_agent(self) -> tuple[str, str]:
         return self._state.runtime.profile_name, self._state.runtime.profile
 
-    def _prompt_card_current_model(self) -> tuple[str, str]:
-        # What the session runs, an agent's own model included: a shortcut naming it needs no switch.
-        profile_id = session_models(self._state, self._services).running
+    def _prompt_card_current_model(self, agent: str) -> tuple[str, str]:
+        """The model that runs on the send's agent with no model switch, as (profile id, display name).
+
+        With no agent switch (*agent* empty) nothing is rebuilt: what runs now, the
+        runtime's word (``running_model``). An agent switch rebuilds: what that build
+        resolves (``model_for_agent``), never ``running_model``, which describes the
+        current build. The card offers only agents from the registry, so one always
+        resolves; the engine measures the switch itself either way.
+        """
+        agents, handle = self._services.agent_registry, self._services.settings_handle
+        target = agents.get(agent) if agents is not None and agent else None
+        if target is not None and handle is not None:
+            return self._prompt_card_model_label(
+                model_for_agent(self._services.model_registry, handle.settings, target), ""
+            )
+        return self._prompt_card_model_label(
+            running_model(self._state, self._services), self._state.runtime.details.model.model_id
+        )
+
+    def _prompt_card_model_label(self, profile_id: str, wire: str) -> tuple[str, str]:
         registry = self._services.model_registry
         profile = None if registry is None or not profile_id else registry.get(profile_id)
-        label = profile.name if profile is not None and profile.name else self._state.runtime.details.model.model_id
+        label = profile.name if profile is not None and profile.name else wire
         return profile_id, label or profile_id
-
-    async def _prompt_card_switch_agent(self, name: str) -> bool:
-        registry = self._services.agent_registry
-        profile = None if registry is None else registry.get(name)
-        if profile is None:
-            return False
-        if self._state.run.agent_running or self._state.run.agent_loading or self._services.execution_busy():
-            return False
-        # For this session only: /new goes back to the agent in use before the card.
-        await self._services.bus.publish(AgentProfileSwitch(profile_name=name, session_scoped=True))
-        return self._state.runtime.profile_name == profile.name
-
-    async def _prompt_card_switch_model(self, profile_id: str) -> bool:
-        # For this session only: the default model, and so the next session, stay as they are.
-        if self._services.execution_busy():
-            return False
-        await self._services.bus.publish(SetModelProfile(profile_id=profile_id, session_scoped=True))
-        return self._state.runtime.details.model.profile_id == profile_id
 
     @on(PromptCard.Removed)
     def _on_prompt_card_removed(self, _event: PromptCard.Removed) -> None:
         self._prompt_card.drop_switch()
         self.query_one(InputBar).focus_input()
 
-    @on(InputBar.DraftReplaced)
-    def _on_draft_replaced(self, event: InputBar.DraftReplaced) -> None:
-        self._prompt_card.on_draft_replaced(keep_card=event.keep_card)
-
-    @on(TextArea.Changed, "#chat-input")
-    def _on_chat_draft_changed(self, event: TextArea.Changed) -> None:
-        if self._prompt_card.active:
-            self._prompt_card.on_text_changed(event.text_area.text)
+    @on(InputBar.DraftChanged)
+    def _on_chat_draft_changed(self, _event: InputBar.DraftChanged) -> None:
+        # Its owner or text changed: the card follows (another owner, a new command count).
+        self._prompt_card.on_draft_changed()
 
     def on_key(self, event: Key) -> None:
-        """Tab in the chat input on a one-line ``/name arguments`` draft acts on what *name* is.
+        """Tab in the chat input on a ``/name …`` draft acts on what *name* is, as Enter does.
 
         Only this screen knows which names are shortcuts, so the key is
         claimed here, by the answer every send acts on too
@@ -1537,10 +1546,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         input_bar = self.query_one(InputBar)
         if input_bar.shell_mode or not input_bar.draft_has_focus:
             return
-        text = str(input_bar.value)
-        if not is_slash_name_with_arguments(text):
-            return
-        typed = self._suggestions.resolve_typed_name(text)
+        typed = self._suggestions.resolve_typed_name(str(input_bar.value))
         if typed.kind == "pending":
             self._warn_slash_command(_SHORTCUTS_LOADING_TAB.bind(), title=PROMPT_SHORTCUT_TITLE.bind())
         elif not self._suggestions.expand_typed_name(typed):
@@ -1598,7 +1604,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             _on_result,
         )
 
-    def _submit_user_text(self, text: str) -> None:
+    def _submit_user_text(self, text: str, draft: ChatDraft | None = None) -> None:
         """Submit normal user text as a new turn or mid-run injection.
 
         Sole chokepoint for chat submissions — composer submits and
@@ -1611,10 +1617,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             # Every submit path clears the composer before reaching here; hand
             # the text back so the blocked message is not lost. The hand-back
             # travels as a message, so a draft typed in the meantime wins.
-            self.query_one(InputBar).restore_draft(text)
+            self.query_one(InputBar).restore_draft(draft if draft is not None else text)
             self._show_model_unconfigured_dialog()
             return
-        self._input_flow.submit_user_text(text)
+        self._input_flow.submit_user_text(text, draft)
 
     def action_chat_page_up(self) -> None:
         """Scroll the transcript up one page, even while the input is focused."""
@@ -1657,13 +1663,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             can_commit=input_bar.can_commit_editor_draft,
             current_draft_revision=lambda: input_bar.draft_revision,
         )
-        # Whether the draft the editor opens on is a prompt shortcut's: only then is its card the editor's to keep.
-        opened_with_card = self._prompt_card.active
-        self._view_adapter.push_screen(
-            dialog, lambda result: self._on_editor_result(result, opened_with_card=opened_with_card)
-        )
+        # What it returns is the draft it opened on (the snapshot holds it whole), edited.
+        self._view_adapter.push_screen(dialog, lambda result: self._on_editor_result(result, opened=snapshot))
 
-    def _on_editor_result(self, result: EditorDialogResult, *, opened_with_card: bool) -> None:
+    def _on_editor_result(self, result: EditorDialogResult, *, opened: InputDraftSnapshot) -> None:
         if result.mode is not self._editor_mode:
             self._editor_mode = result.mode
             persist_editor_keymap(result.mode.value)
@@ -1676,10 +1679,12 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         if not result.accepted:
             return
         input_bar = self.query_one(InputBar)
-        # The editor edits the draft it opened on, so that draft's card stays. A draft that
-        # arrived meanwhile (a send's give-back, only into an empty input) is one the editor
-        # overwrites, which ends its card.
-        input_bar.replace_draft(result.text, keep_card=opened_with_card)
+        # Unchanged, and nothing else written meanwhile, the draft stays as it is, fields
+        # included. Otherwise the editor's text replaces whatever is there now, still
+        # belonging to the shortcut the draft it opened on belonged to; the fields cannot
+        # follow an editor's edits.
+        if result.text != opened.text or input_bar.draft_revision != opened.revision:
+            input_bar.set_draft(ChatDraft(result.text, owner=opened.draft.owner))
         input_bar.focus_input()
 
     # ------------------------------------------------------------------ #
@@ -1745,10 +1750,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     # ------------------------------------------------------------------ #
     # Suggestion list (/ commands, @ files, # agents, $ models)
     # ------------------------------------------------------------------ #
-
-    @on(InputBar.SlashTriggered)
-    def _on_slash_triggered(self, _event: InputBar.SlashTriggered) -> None:
-        self._suggestions.on_slash_triggered()
 
     @on(InputBar.SlashQueryChanged)
     def _on_slash_query_changed(self, event: InputBar.SlashQueryChanged) -> None:
@@ -1842,13 +1843,10 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             # it back — unless a draft landed in the meantime, which wins; the
             # inline status action stays visible for after the user configures
             # a model.
-            # A prompt shortcut's draft keeps its card, as on Enter.
-            self.query_one(InputBar).restore_draft(event.text, keep_card=True)
+            self.query_one(InputBar).restore_draft(event.draft if event.draft is not None else event.text)
             self._show_model_unconfigured_dialog()
             return
-        if event.text and self._route_shortcut_draft(event.text, intent="continue"):
-            return
-        self._input_flow.request_retry(event.text)
+        self._input_flow.request_retry(event.text, event.draft)
 
     # The card and the config actions are built before the input flow, and
     # the config actions before the card: these look each up when called.
@@ -1856,52 +1854,40 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
     def _on_user_picked_agent_or_model(self) -> None:
         self._prompt_card.on_user_pick()
 
-    def _holds_prepared_send(self, prepared: PreparedSend) -> bool:
-        return self._input_flow.holds(prepared)
+    def _route_submit(self, request: SubmitRequest) -> SubmitRoute:
+        """Where a submit gesture's draft goes: the one answer for Enter, Send, Continue and the list's fallback.
 
-    def _publish_prepared_send(self, prepared: PreparedSend, final_text: str) -> bool:
-        return self._input_flow.publish_prepared(prepared, final_text)
-
-    def _abandon_prepared_send(self, prepared: PreparedSend) -> bool:
-        return self._input_flow.abandon_prepared(prepared)
-
-    def _begin_prepared_send(
-        self, text: str, intent: SendIntent, give_back: GiveBack, still_valid: Callable[[], bool]
-    ) -> PreparedSend | None:
-        """Claim the send in flight for a prompt shortcut's draft, behind the guards every send has.
-
-        As for a plain send, nothing is claimed in workflow mode or without a
-        configured model; there the draft goes back through *give_back*.
+        Called by the input bar at the gesture, before it touches the
+        composer. A typed ``/name arguments`` for a prompt shortcut lands in
+        the draft, never sent unseen; while the shortcuts are still being read,
+        a ``/name`` that may be one waits in the composer with a notice. A
+        draft that names a command or skill runs as one, a prompt shortcut's
+        too (typed over it, say), except from the Continue button, whose text
+        is always a note. Any other shortcut's draft with work to do (commands,
+        a switch) goes as a new message, or stays (``taken``) while it cannot
+        go yet (:meth:`PromptCardController.route`).
         """
         if self._workflow.workflow_mode:
-            return None
-        if self._model_unconfigured():
-            give_back()
-            self._show_model_unconfigured_dialog()
-            return None
-        return self._input_flow.begin_prepared(text, intent, give_back=give_back, still_valid=still_valid)
-
-    def _route_shortcut_draft(self, text: str, *, intent: SendIntent = "message") -> bool:
-        """Route a submitted draft alike for Enter, Send and Retry/Continue; True when it was handled here.
-
-        A typed ``/name arguments`` for a prompt shortcut lands in the draft,
-        never sent unseen; any other command it names leaves the rest to the
-        caller, without the card: a draft rewritten into a command is no
-        longer the card's. Otherwise a draft with a card sends through it
-        (commands, then switches, then a publish as *intent* asks).
-
-        While the shortcuts are still being read, a ``/name`` that may be one
-        waits: the text comes back with a notice, never sent unexpanded.
-        """
+            # Workflow mode handles no chat submit; the input bar sends it nowhere, as before.
+            return default_submit_route(request)
+        draft = request.draft
+        intent: SubmitRoute = "continue" if request.continue_turn else "message"
+        text = draft.text.strip()
         typed = self._suggestions.resolve_typed_name(text)
         if typed.kind == "pending":
-            self._view_adapter.restore_input_text(text, keep_card=True)
             self._warn_slash_command(_SHORTCUTS_LOADING.bind(), title=PROMPT_SHORTCUT_TITLE.bind())
-            return True
-        if typed.kind != "none":
-            self._prompt_card.clear()
-            return self._suggestions.expand_typed_name(typed)
-        return self._prompt_card.submit(text, intent=intent)
+            return "taken"
+        if self._suggestions.expand_typed_name(typed):
+            return "taken"
+        if typed.kind == "none" and draft.owner is not None:
+            route = self._prompt_card.route(draft, continue_button=request.continue_turn and not request.runs_commands)
+            if route == "keep":
+                return "taken"
+            # A shortcut's prompt with work opens a turn of its own, even where Enter would continue one.
+            return "message" if route == "send" else intent
+        if request.runs_commands and (typed.kind != "none" or is_slash_command_candidate(text)):
+            return "command"
+        return intent
 
     @on(ConversationStatusAction.Pressed)
     def _on_conversation_status_action_pressed(self, event: ConversationStatusAction.Pressed) -> None:
@@ -2500,8 +2486,6 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
 
     def action_escape(self) -> None:
         """Unified Esc handler — dismiss overlays, confirm interrupt, or confirm exit."""
-        if self._prompt_card.cancel():
-            return
         if self.theme_editor is not None:
             if self.theme_editor.editor.dismiss_dropdown():
                 return
@@ -2509,6 +2493,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             return
         if self._suggestions_active_for_bindings():
             self._suggestions.dismiss_suggestions()
+            return
+        # A prompt shortcut's message on its way (its commands running), once the overlays above are closed.
+        if self._input_flow.withdraw_submit():
             return
         if not self._dashboard_visible() and self._workflow.back():
             return
@@ -2664,6 +2651,9 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
         self._sync_main_bindings()
 
     async def _on_execution_changed(self, _event: ExecutionChanged) -> None:
+        if not composed_live(self):
+            # Removal and shutdown prune the widgets before the screen unsubscribes.
+            return
         self._sync_execution_chrome()
         self._workflow.request_refresh()
 
