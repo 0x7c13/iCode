@@ -84,6 +84,20 @@ def raise_if_missing_cwd(cwd: object, error: OSError) -> None:
 
 
 @dataclass(frozen=True)
+class WindowsShellCommand:
+    """A command line for ``cmd.exe /c``, handed to it as written: :func:`managed_subprocess`'s one argument.
+
+    An argument list reaches a Windows child joined by ``subprocess.list2cmdline``,
+    which escapes every quote in it as ``\\"``; ``cmd.exe`` does not read that
+    escape, so ``echo x > "a b"`` would print its redirection instead. The trusted
+    ``cmd.exe`` (:func:`resolve_windows_comspec`) gets the command as ``/c "<command>"``,
+    the form ``subprocess`` gives a shell command. Windows only.
+    """
+
+    command: str
+
+
+@dataclass(frozen=True)
 class _ProcessStatus:
     pid: int
     state: str
@@ -1296,7 +1310,13 @@ async def _create_owned_subprocess(*args: Any, **kwargs: Any) -> asyncio.subproc
     """
     # Callers pass their own stdin; detached by default as in :func:`managed_subprocess`.
     kwargs.setdefault("stdin", subprocess.DEVNULL)
-    spawn = asyncio.ensure_future(asyncio.create_subprocess_exec(*args, **kwargs))
+    if len(args) == 1 and isinstance(args[0], WindowsShellCommand):
+        if sys.platform != "win32":
+            raise ValueError("A Windows shell command runs only on Windows.")
+        start = asyncio.create_subprocess_shell(args[0].command, executable=resolve_windows_comspec(), **kwargs)
+    else:
+        start = asyncio.create_subprocess_exec(*args, **kwargs)
+    spawn = asyncio.ensure_future(start)
     try:
         return await asyncio.shield(spawn)
     except asyncio.CancelledError:

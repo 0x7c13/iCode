@@ -1042,6 +1042,11 @@ class DismissInputBarStub:
         self.prompt_history_on = True
         self.suggestions_active = False
         self.suggestion_mode: str | None = None
+        self.submitted_drafts: list[str] = []
+        """The drafts handed to the input bar's own submit path (``InputBar.submit_input``)."""
+
+    def submit_input(self) -> None:
+        self.submitted_drafts.append(self.value)
 
     def set_suggestions_active(self, active: bool, *, mode: str | None = None) -> None:
         self.suggestions_active = active

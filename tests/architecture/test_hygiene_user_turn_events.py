@@ -2,13 +2,15 @@
 
 """Src rule: in the TUI only the input flow builds the events that send text to the model.
 
-``chrys.foundation.events.types.UserMessage`` and ``UserRetry`` reach the model.
-Every send in the TUI claims the one submit in flight in
+``chrys.foundation.events.types.UserMessage`` and ``UserRetry`` reach the model,
+and ``SessionOnlySwitch`` is the first step of sending a prompt shortcut's
+draft. Every send in the TUI claims the one submit in flight in
 ``app/tui/screens/main/input_flow.py`` and publishes under that claim, so a
-prompt shortcut's send that is still preparing can refuse every other way of
-sending. A second place that builds one of these events (and so publishes it)
-would bypass the claim. This is an anti-bypass guard; the behaviour itself is
-pinned by the entry-point tests in ``tests/app/tui/screens/test_prompt_send_claim.py``.
+send whose switch or commands are still on their way refuses every other way
+of sending and hands its draft back once. A second place that builds one of
+these events (and so publishes it) would bypass the claim. This is an
+anti-bypass guard; the behaviour itself is pinned by the TUI send tests in
+``tests/app/tui/screens/test_prompt_shortcut_send.py``.
 
 The chat widgets' ``UserMessage`` (``app/tui/widgets/chat/messages.py``) is a
 different class; only names bound to the events module count.
@@ -34,7 +36,7 @@ _TUI_DIR = "src/chrys/app/tui/"
 # The one TUI module that builds and publishes the model-bound user events.
 _USER_TURN_EVENT_OWNER = PurePath("src/chrys/app/tui/screens/main/input_flow.py")
 _EVENT_MODULES = frozenset({"chrys.foundation.events.types", "chrys.foundation.events"})
-_EVENT_CLASSES = frozenset({"UserMessage", "UserRetry"})
+_EVENT_CLASSES = frozenset({"UserMessage", "UserRetry", "SessionOnlySwitch"})
 _PARTIAL_NAMES = frozenset({"partial", "functools.partial"})
 
 
@@ -111,7 +113,7 @@ def _assert_user_turn_events_are_built_only_by_the_input_flow(sources: Mapping[P
         f"{path.as_posix()}:{line}: builds chrys.foundation.events.types.{built} outside "
         f"{_USER_TURN_EVENT_OWNER.as_posix()}; a send published here bypasses the one submit claim "
         "(see tests/architecture/test_hygiene_user_turn_events.py): route it through InputFlowController "
-        "(submit_user_text, request_retry or begin_prepared/publish_prepared)"
+        "(submit_user_text or request_retry)"
         for path, line, built in _outside_constructions(sources)
     ]
     assert violations == [], "\n".join(violations)

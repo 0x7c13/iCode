@@ -8,7 +8,7 @@ import asyncio
 import copy
 import dataclasses
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +23,7 @@ from chrys.foundation.events.types import (
     Error,
     ModelProfileSwitched,
     ProfileSwitched,
+    SessionOnlySwitch,
     SetApprovalMode,
     SetModelProfile,
     SettingsReload,
@@ -39,6 +40,8 @@ from chrys.foundation.platform.files import surrogate_safe_text
 from chrys.orchestration.engine.state.active_session import session_pin_overrides
 from chrys.orchestration.engine.state.lifecycle_permits import RebuildControlToken, RebuildPermit, RebuildPermitDenied
 from chrys.service.approval.policy import ApprovalMode
+from chrys.service.profiles.models.resolver import active_model_profile_fields, model_for_agent
+from chrys.service.profiles.models.schema import is_model_profile_selectable
 
 if TYPE_CHECKING:
     from chrys.foundation.events.bus import EventBus
@@ -50,6 +53,8 @@ if TYPE_CHECKING:
     from chrys.service.mutations.workspace_changes import WorkspaceChangeTracker
     from chrys.service.profiles.agents.registry import AgentProfileRegistry
     from chrys.service.profiles.agents.schema import AgentProfile
+    from chrys.service.profiles.models.registry import ModelProfileRegistry
+    from chrys.service.profiles.models.schema import ModelProfile
 
 
 logger = logging.getLogger(__name__)
@@ -61,6 +66,10 @@ _CONTROLS_NO_REGISTRY = msg(
 _CONTROLS_PROFILE_NOT_FOUND = msg(
     "controls.profile_not_found",
     fallback="Profile '{profile_name}' not found",
+)
+_CONTROLS_MODEL_PROFILE_NOT_FOUND = msg(
+    "controls.model_profile_not_found",
+    fallback="Model profile '{profile_id}' not found",
 )
 _CONTROLS_MODEL_SWITCH_NOT_READY = msg(
     "controls.model_switch_not_ready",
@@ -109,6 +118,7 @@ class RuntimeControls:
         bus: EventBus,
         settings_handle: SettingsHandle,
         agent_registry: AgentProfileRegistry | None,
+        model_registry: ModelProfileRegistry | None,
         workspace_change_tracker: WorkspaceChangeTracker,
         workflows: WorkflowCoordinator,
     ) -> None:
@@ -119,6 +129,7 @@ class RuntimeControls:
         self._bus = bus
         self._settings_handle = settings_handle
         self._agent_registry = agent_registry
+        self._model_registry = model_registry
         self._workspace_change_tracker = workspace_change_tracker
         self._workflows = workflows
 
@@ -222,10 +233,8 @@ class RuntimeControls:
         permit = await self._permits.acquire_rebuild_permit(token)
         if isinstance(permit, RebuildPermitDenied):
             if await self._publish_profile_satisfied_or_denied(event.profile_name, permit, token.session_id):
-                self._record_agent_switch(event, self._session.agent_profile)
-                return
+                self._record_new_session_agent(event, new_profile)
             return
-        before = self._session.agent_profile
         try:
             if (
                 self._current.loaded is not None
@@ -237,27 +246,130 @@ class RuntimeControls:
             if self._current.loaded is None:
                 await self._lifecycle.start_with_rebuild_permit(permit, new_profile, operation="switch")
                 await self._bus.publish(self._profile_switched_snapshot(permit.token.session_id))
-            else:
-                await self._lifecycle.reload_with_rebuild_permit(permit, new_profile, operation="switch")
+                return
+            await self._lifecycle.reload_with_rebuild_permit(permit, new_profile, operation="switch")
         finally:
             try:
-                # Recorded whenever the agent is in place, also when a later step failed or was
-                # cancelled: a session-scoped switch that went live must still end with its session.
+                # Whenever the requested agent is in force, also when it already
+                # was or a step after the commit failed: the pick stands.
                 current = self._session.agent_profile
                 if current is not None and current.name == new_profile.name:
-                    self._record_agent_switch(event, before)
+                    self._record_new_session_agent(event, new_profile)
             finally:
                 self._permits.release_rebuild_permit(permit)
 
-    def _record_agent_switch(self, event: AgentProfileSwitch, before: AgentProfile | None) -> None:
-        """Remember the agent a session-scoped switch replaced; the user's own switch forgets it."""
-        switch = self._session.session_switch
-        if not event.session_scoped:
-            switch.agent_before = None
-        elif switch.agent_before is None and before is not None:
-            current = self._session.agent_profile
-            if current is None or current.name != before.name:
-                switch.agent_before = before
+    def _record_new_session_agent(self, event: AgentProfileSwitch, profile: AgentProfile) -> None:
+        """Make the user's own pick the agent new sessions start on; a fallback only repairs a dead one."""
+        if event.source == "user":
+            self._session.new_session_agent = profile.name
+            return
+        registry = self._agent_registry
+        kept = registry.get(self._session.new_session_agent) if registry is not None else None
+        if kept is None or kept.sub_agent_only:
+            self._session.new_session_agent = profile.name
+
+    async def on_session_only_switch(self, event: SessionOnlySwitch) -> None:
+        """Switch this session's own agent and/or model in one rebuild, or neither (a prompt shortcut's).
+
+        The agent and model new sessions start on do not move: the agent is
+        this session's ``agent_profile`` only, the model rides the settings
+        handle's session layer, and both end when the session closes. Both
+        halves are staged into one build under one permit, so a build that
+        fails before its commit changes nothing. The model is measured on the
+        agent the switch runs on (``model_for_agent``): one that agent would not
+        run (it binds its own, or an override is set) is left out, and
+        ``event.model_left_out`` says so; one it runs anyway is not asked for.
+        ``event.applied`` is set before the publish returns: True when what was
+        asked is in force.
+        """
+        agent: AgentProfile | None = None
+        if event.agent:
+            agent = self._agent_registry.get(event.agent) if self._agent_registry is not None else None
+            if agent is None or agent.sub_agent_only:
+                await self._bus.publish(
+                    Error(
+                        code="profile_not_found",
+                        message=f"Profile '{event.agent}' not found",
+                        display_message=_CONTROLS_PROFILE_NOT_FOUND.bind(profile_name=event.agent),
+                        session_id=self._session.session_id,
+                    )
+                )
+                return
+        model: ModelProfile | None = None
+        if event.model_profile:
+            model = self._model_registry.get(event.model_profile) if self._model_registry is not None else None
+            if model is None or not is_model_profile_selectable(model):
+                await self._bus.publish(
+                    Error(
+                        code="model_profile_not_found",
+                        message=f"Model profile '{event.model_profile}' not found",
+                        display_message=_CONTROLS_MODEL_PROFILE_NOT_FOUND.bind(profile_id=event.model_profile),
+                        session_id=self._session.session_id,
+                    )
+                )
+                return
+        current = self._session.agent_profile
+        target = agent or current
+        if target is None:
+            await self._bus.publish(
+                Error(
+                    code="runtime_mutation_not_ready",
+                    message="No active agent — cannot switch model",
+                    display_message=_CONTROLS_MODEL_SWITCH_NOT_READY.bind(),
+                    session_id=self._session.session_id,
+                )
+            )
+            return
+        if model is not None:
+            settings = self._settings_handle.settings
+            if model_for_agent(self._model_registry, settings, target, session_model=model.id) != model.id:
+                # The target agent runs a model of its own (or an override) over the session's: asking
+                # for it changes nothing now, and held in the session it would surface on a later agent.
+                event.model_left_out = True
+                model = None
+            elif model_for_agent(self._model_registry, settings, target) == model.id:
+                # It runs there anyway (the agent's own, or the session's already): nothing to ask for.
+                model = None
+        wants_agent = agent is not None and (current is None or agent.name != current.name)
+        wants_model = model is not None and model.id != self._settings_handle.settings.model_profile
+        if not wants_agent and not wants_model:
+            event.applied = True
+            return
+        token = self._permits.capture_control_token()
+        permit = await self._permits.acquire_rebuild_permit(token)
+        if isinstance(permit, RebuildPermitDenied):
+            await self._publish_rebuild_denied(permit, token.session_id)
+            return
+        generation = self._permits.build_generation
+        started = self._current.loaded is None
+        session = (
+            {**self._settings_handle.session_values, **active_model_profile_fields(model)}
+            if wants_model and model is not None
+            else None
+        )
+        try:
+            await self._start_or_restart_with_permit(
+                permit, target, operation="switch" if wants_agent else "model_switch", session=session
+            )
+        finally:
+            try:
+                committed = self._permits.build_generation != generation
+                if started and not committed:
+                    # A start names its agent before it builds; one that failed leaves neither half behind.
+                    self._session.agent_profile = current
+                in_force = self._session.agent_profile
+                event.applied = (
+                    committed
+                    and in_force is not None
+                    and in_force.name == target.name
+                    and (model is None or self._settings_handle.settings.model_profile == model.id)
+                )
+            finally:
+                self._permits.release_rebuild_permit(permit)
+        if started:
+            await self._bus.publish(self._profile_switched_snapshot(token.session_id))
+        if wants_model and model is not None:
+            await self._publish_model_switched_snapshot(model.id, token.session_id)
 
     async def _publish_profile_satisfied_or_denied(
         self,
@@ -298,25 +410,16 @@ class RuntimeControls:
             )
         )
 
-    def _pin_session_model_profile(self, profile_id: str, *, session_scoped: bool = False) -> None:
-        if session_scoped:
-            # Only the session's selected model: an agent's own model still wins.
-            overlay = self._settings_handle.loaded.overlay(Source.SESSION, model_profile=profile_id)
-        else:
-            overlay = self._settings_handle.loaded.overlay(
+    def _pin_session_model_profile(self, profile_id: str) -> None:
+        # Into the layered load, where a caller-owned pin lives (``session_pin_overrides``).
+        self._settings_handle.install(
+            self._settings_handle.base.overlay(
                 Source.SESSION,
                 model_profile=profile_id,
                 model_profile_override=profile_id,
                 model_profile_override_sub_agents=False,
-            )
-        self._settings_handle.install(overlay)
-        switch = self._session.session_switch
-        if not session_scoped:
-            # A pin that is not session-scoped replaces one that was.
-            switch.model = False
-        elif not self._session.model_profile_pinned:
-            # A pin the caller owns (headless ``--model``, ACP) stays theirs.
-            switch.model = True
+            ),
+        )
         self._session.model_profile_pinned = True
 
     async def _publish_workspace_updated_snapshot(
@@ -338,15 +441,14 @@ class RuntimeControls:
 
     async def _publish_model_satisfied_or_denied(
         self,
-        event: SetModelProfile,
+        profile_id: str,
         denied: RebuildPermitDenied,
         session_id: str | None,
     ) -> None:
-        profile_id = event.profile_id
         if _denial_allows_already_satisfied_success(denied) and (
             self._current.manifest.active_profile is not None and self._current.manifest.active_profile.id == profile_id
         ):
-            self._pin_session_model_profile(profile_id, session_scoped=event.session_scoped)
+            self._pin_session_model_profile(profile_id)
             await self._publish_model_switched_snapshot(profile_id, session_id)
             return
         await self._publish_rebuild_denied(denied, session_id)
@@ -382,17 +484,18 @@ class RuntimeControls:
         operation: str,
         workspace: Workspace | None = None,
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
     ) -> None:
         if self._current.loaded is None:
             # The workspace rides as staged input, exactly like the settings: a
             # build that fails before committing must leave the live root — the
             # one the live settings and hooks were derived from — untouched.
             await self._lifecycle.start_with_rebuild_permit(
-                permit, profile, operation=operation, staged_loaded=staged_loaded, workspace=workspace
+                permit, profile, operation=operation, staged_loaded=staged_loaded, session=session, workspace=workspace
             )
             return
         await self._lifecycle.reload_with_rebuild_permit(
-            permit, profile, workspace=workspace, operation=operation, staged_loaded=staged_loaded
+            permit, profile, workspace=workspace, operation=operation, staged_loaded=staged_loaded, session=session
         )
 
     async def on_set_model_profile(self, event: SetModelProfile) -> None:
@@ -415,18 +518,20 @@ class RuntimeControls:
         token = self._permits.capture_control_token()
         permit = await self._permits.acquire_rebuild_permit(token)
         if isinstance(permit, RebuildPermitDenied):
-            await self._publish_model_satisfied_or_denied(event, permit, token.session_id)
+            await self._publish_model_satisfied_or_denied(event.profile_id, permit, token.session_id)
             return
 
-        old_loaded = self._settings_handle.loaded
+        old_loaded = self._settings_handle.base
         old_pinned = self._session.model_profile_pinned
-        old_scoped_model = self._session.session_switch.model
         old_runtime = self._current.loaded
 
         try:
             try:
-                self._pin_session_model_profile(event.profile_id, session_scoped=event.session_scoped)
-                await self._start_or_restart_with_permit(permit, self._session.agent_profile, operation="model_switch")
+                self._pin_session_model_profile(event.profile_id)
+                # The pin is the session's model: a model of the session's own would outrank it.
+                await self._start_or_restart_with_permit(
+                    permit, self._session.agent_profile, operation="model_switch", session={}
+                )
             except BaseException:
                 # The rebuild failed or was cancelled (a failure already published AgentLoadFailed).
                 # While no new runtime went live, restore the pin and settings so the running
@@ -435,7 +540,6 @@ class RuntimeControls:
                 if self._current.loaded is old_runtime:
                     self._settings_handle.install(old_loaded)
                     self._session.model_profile_pinned = old_pinned
-                    self._session.session_switch.model = old_scoped_model
                 raise
             await self._publish_model_switched_snapshot(event.profile_id, token.session_id)
         finally:
@@ -443,7 +547,7 @@ class RuntimeControls:
 
     def _session_pin_overrides(self) -> dict[str, Any]:
         """Snapshot the per-session pins every re-load must carry (:func:`session_pin_overrides`)."""
-        return session_pin_overrides(self._session, self._settings_handle.settings)
+        return session_pin_overrides(self._session, self._settings_handle.base.settings)
 
     def _reload_eval_context(self) -> EvalContext:
         """The launch mode's retry policy, passed *into* the load.
@@ -462,7 +566,13 @@ class RuntimeControls:
         return Path(workspace.primary_cwd) if workspace is not None else Path(safe_getcwd())
 
     async def on_settings_reload(self, event: SettingsReload) -> None:
-        """Handle settings reload — reload Settings from disk and env, then rebuild."""
+        """Handle settings reload — reload Settings from disk and env, then rebuild.
+
+        The session's own model rides along unless the user just chose one for
+        this session and the default together (``model_chosen``, the ``$``
+        pick) or its profile no longer exists: the rebuild then commits the
+        session without it.
+        """
         token = self._permits.capture_control_token()
         # Taken even with nothing built yet. A host that has not built — startup
         # before the first build, a first build that failed, a host that only
@@ -475,8 +585,8 @@ class RuntimeControls:
         if permit is None:
             return
 
-        old_loaded = self._settings_handle.loaded
-        released_pin = event.release_session_scoped_model and self._session.release_scoped_model()
+        old_loaded = self._settings_handle.base
+        session = self._session_choice_after_reload(model_chosen=event.model_chosen)
         try:
             try:
                 # Re-read settings from env (matches TUI behavior, which persists
@@ -559,7 +669,7 @@ class RuntimeControls:
             # — restoring the old ones there would desynchronize the two.
             if profile_for_restart is not None:
                 await self._start_or_restart_with_permit(
-                    permit, profile_for_restart, operation="settings_reload", staged_loaded=loaded
+                    permit, profile_for_restart, operation="settings_reload", staged_loaded=loaded, session=session
                 )
                 if (
                     old_loaded.settings.workspace_change_notice
@@ -569,20 +679,23 @@ class RuntimeControls:
                     # a failed rebuild keeps the old enabled settings AND the baseline.
                     self._workspace_change_tracker.invalidate()
             else:
-                self._settings_handle.install(loaded)
+                self._settings_handle.install_prepared(self._settings_handle.prepare(loaded, session=session))
             await self._publish_settings_reloaded()
-        except BaseException:
-            # Nothing reloaded went live: the session keeps the model it was pinned to.
-            # Deliberately only then: once the rebuild committed the reloaded settings,
-            # the executor runs on them without the pin, so the user's release stands
-            # even if a later step fails; restoring the pin would name a model the
-            # executor was not built with.
-            if released_pin and self._settings_handle.loaded is old_loaded:
-                self._session.model_profile_pinned = True
-                self._session.session_switch.model = True
-            raise
         finally:
             self._permits.release_rebuild_permit(permit)
+
+    def _session_choice_after_reload(self, *, model_chosen: bool) -> dict[str, Any]:
+        """The session's own choices a reload commits: without its model once the user chose one or it is gone."""
+        session = self._settings_handle.session_values
+        model_id = self._settings_handle.session_model
+        if model_id and (model_chosen or not self._model_selectable(model_id)):
+            return {}
+        return session
+
+    def _model_selectable(self, profile_id: str) -> bool:
+        registry = self._model_registry
+        profile = registry.get(profile_id) if registry is not None else None
+        return profile is not None and is_model_profile_selectable(profile)
 
     async def _publish_settings_reloaded(self) -> None:
         await self._bus.publish(
@@ -631,7 +744,7 @@ class RuntimeControls:
             # minus the restart-required warning: nothing was edited here, so any
             # deferred value was already reported by the reload that deferred it.
             try:
-                old_loaded = self._settings_handle.loaded
+                old_loaded = self._settings_handle.base
                 candidate = await asyncio.to_thread(
                     load_settings,
                     project_root=Path(new_workspace.primary_cwd),

@@ -12,10 +12,9 @@ When the agent is running, the button becomes Stop to interrupt.
 from __future__ import annotations
 
 import asyncio
-import re
 import unicodedata
 from bisect import bisect_right
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from itertools import accumulate
 from pathlib import Path
@@ -49,11 +48,16 @@ from chrys.app.tui.toasts import dismiss_toast
 from chrys.app.tui.util.spinner import SPINNER_FRAMES
 from chrys.app.tui.util.visibility import resync_compositor_regions
 from chrys.app.tui.widgets import EnhancedTextArea
-from chrys.app.tui.widgets.chrome.commands import completion_token_start, is_slash_command_candidate
+from chrys.app.tui.widgets.chrome.commands import (
+    completion_token_start,
+    is_slash_command_candidate,
+    parse_slash_draft,
+)
 from chrys.app.tui.widgets.chrome.image_paste import (
     convert_pasted_image_paths_to_mentions,
     save_clipboard_image_to_file,
 )
+from chrys.app.tui.widgets.chrome.prompt_draft import ShortcutIntent
 from chrys.app.tui.widgets.selection import NonSelectableTextMixin
 from chrys.app.tui.widgets.text_area import MESSAGE_EDITOR_PASTE_MAX_TOKENS, NEWLINE_SHORTCUT_KEYS
 from chrys.foundation.i18n import Localizer, MessageRef, msg
@@ -91,8 +95,6 @@ _INPUT_PROMPT_FIELDS_PENDING = msg(
 )
 _PROMPT_FIELDS_CONFIRM_SECONDS = 2.0
 """A second Enter within this window sends a draft whose prompt fields are still unfilled."""
-_SLASH_QUERY_RE = re.compile(r"[/\uff0f]\S*")
-"""A one-line draft that is only a slash token: the suggestion list may reopen for it."""
 
 type InputLabel = MessageRef | str
 
@@ -186,11 +188,15 @@ _BUTTON_GROUP_HORIZONTAL_PADDING = 2
 
 @dataclass(frozen=True, slots=True)
 class InputDraftSnapshot:
-    """Immutable chat draft captured before opening the message editor."""
+    """The chat draft, whole, with its cursor and revision, captured before opening the message editor."""
 
-    text: str
+    draft: ChatDraft
     cursor_location: tuple[int, int]
     revision: int
+
+    @property
+    def text(self) -> str:
+        return self.draft.text
 
 
 @dataclass
@@ -240,6 +246,46 @@ def shift_prompt_fields(fields: Sequence[PromptField], start: int, end: int, ins
     return tuple(kept)
 
 
+@dataclass(frozen=True, slots=True)
+class ChatDraft:
+    """The chat draft as one value: its text, its unfilled prompt fields and the shortcut it belongs to.
+
+    Whatever moves a draft as a whole (history, the editor, a send that
+    gives it back) moves all three together, so a draft comes back the way
+    it left. Only an edit that empties the text ends the fields and owner.
+    """
+
+    text: str
+    fields: tuple[PromptField, ...] = ()
+    owner: ShortcutIntent | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SubmitRequest:
+    """A submit gesture's draft and what the gesture asks for, for the screen's router."""
+
+    draft: ChatDraft
+    continue_turn: bool
+    """The gesture continues the current task: Continue, or Enter while it offers Continue."""
+    runs_commands: bool
+    """A typed slash command runs as a command; False for the Continue button, whose text is a note."""
+
+
+type SubmitRoute = Literal["taken", "command", "message", "continue"]
+"""Where a submit goes: ``taken`` by the screen (the composer is left as it is), a slash
+``command``, a new ``message`` (kept in the composer while a turn runs, for the injection
+lock), or a ``continue`` note. The composer is cleared for the last three."""
+
+type SubmitRouter = Callable[[SubmitRequest], SubmitRoute]
+
+
+def default_submit_route(request: SubmitRequest) -> SubmitRoute:
+    """The route without a screen's router: a command-shaped draft runs as a command."""
+    if request.runs_commands and is_slash_command_candidate(request.draft.text.strip()):
+        return "command"
+    return "continue" if request.continue_turn else "message"
+
+
 class _ChatTextArea(EnhancedTextArea):
     """Chat input with Enter-submit, explicit newline shortcuts and input history."""
 
@@ -253,7 +299,7 @@ class _ChatTextArea(EnhancedTextArea):
 
     _history: _HistoryBrowser
     _history_browsing: bool
-    _history_draft: str | None
+    _history_draft: ChatDraft | None
     _instance_id: str
     _right_placeholder: str
 
@@ -273,9 +319,6 @@ class _ChatTextArea(EnhancedTextArea):
     class ShellModeCancelled(Message):
         """Posted when user exits shell mode (Escape or backspace-to-empty)."""
 
-    class SlashTrigger(Message):
-        """Posted when user types ``/`` at start of empty input."""
-
     class FileTrigger(Message):
         """Posted when user types ``@``."""
 
@@ -285,12 +328,11 @@ class _ChatTextArea(EnhancedTextArea):
     class ModelTrigger(Message):
         """Posted when user types ``$`` at start of empty input."""
 
-    class DraftReplaced(Message):
-        """Posted when the whole draft is replaced rather than edited (history, editor, restore)."""
+    class DraftOwnerChanged(Message):
+        """Posted when the prompt shortcut the draft belongs to changes (``ChatDraft.owner``)."""
 
-        def __init__(self, *, keep_card: bool = False) -> None:
-            self.keep_card = keep_card
-            """True when the new draft still belongs to the shown prompt-shortcut card."""
+        def __init__(self, owner: ShortcutIntent | None) -> None:
+            self.owner = owner
             super().__init__()
 
     def __init__(self, *args, **kwargs) -> None:
@@ -298,7 +340,7 @@ class _ChatTextArea(EnhancedTextArea):
         super().__init__(*args, **kwargs)
         self._history = _HistoryBrowser()
         self._history_browsing = False
-        self._history_draft: str | None = None
+        self._history_draft: ChatDraft | None = None
         self._instance_id = token_hex(8)
         self._history_writer = PromptHistoryWriter(append_history)
         self._suggestions_active: bool = False
@@ -310,6 +352,9 @@ class _ChatTextArea(EnhancedTextArea):
         self._paste_cwd: str = safe_getcwd()
         self._clipboard_image_dir: Path | None = None
         self._prompt_fields: tuple[PromptField, ...] = ()
+        self._draft_owner: ShortcutIntent | None = None
+        # Set while a whole draft is written: its own clearing must not end the owner it brings.
+        self._writing_draft = False
         self._prompt_field_columns_of: tuple[PromptField, ...] | None = None
         self._prompt_field_columns_cache: dict[int, list[tuple[int, int]]] = {}
         # A snapshot of the initial setting: prompt fields turn the line highlight
@@ -325,13 +370,55 @@ class _ChatTextArea(EnhancedTextArea):
         """Unfilled placeholders left by the last prompt-shortcut expansion."""
         return self._prompt_fields
 
-    def set_prompt_fields(self, fields: Sequence[PromptField]) -> None:
-        """Highlight *fields* of the current text and select the first one."""
+    def set_prompt_fields(self, fields: Sequence[PromptField], *, select: bool = True) -> None:
+        """Highlight *fields* of the current text and, with *select*, select the first one."""
         length = len(self.text)
         self._prompt_fields = tuple(sorted((start, end) for start, end in fields if 0 <= start < end <= length))
         self._repaint_prompt_fields()
-        if self._prompt_fields:
+        if select and self._prompt_fields:
             self._select_prompt_field(self._prompt_fields[0])
+
+    # -------------------------------------------------------------- #
+    # The draft as one value
+    # -------------------------------------------------------------- #
+
+    @property
+    def draft_owner(self) -> ShortcutIntent | None:
+        """The prompt shortcut this draft belongs to, if a shortcut expanded into it."""
+        return self._draft_owner
+
+    def set_draft_owner(self, owner: ShortcutIntent | None) -> None:
+        """Make *owner* the draft's, keeping its text and fields; posts the change."""
+        if owner == self._draft_owner:
+            return
+        self._draft_owner = owner
+        self.post_message(self.DraftOwnerChanged(owner))
+
+    def chat_draft(self) -> ChatDraft:
+        """The draft now: text, unfilled fields and owner."""
+        return ChatDraft(self.text, self._prompt_fields, self._draft_owner)
+
+    def write_draft(self, draft: ChatDraft, *, select_field: bool = False) -> None:
+        """Replace the whole draft with *draft*, its fields and owner included; the cursor ends at its end.
+
+        With *select_field* the first field is selected instead.
+        """
+        self._writing_draft = True
+        try:
+            self._drop_prompt_fields()
+            self.clear()
+            if draft.text:
+                self.insert(draft.text)
+        finally:
+            self._writing_draft = False
+        self.set_prompt_fields(draft.fields, select=select_field)
+        self.set_draft_owner(draft.owner if draft.text else None)
+
+    def _end_owner_if_emptied(self) -> None:
+        # An edit that empties the draft ends what it belonged to; a whole write states its own.
+        if not self._writing_draft and not self.text:
+            self._drop_prompt_fields()
+            self.set_draft_owner(None)
 
     def _drop_prompt_fields(self) -> None:
         if self._prompt_fields:
@@ -371,15 +458,22 @@ class _ChatTextArea(EnhancedTextArea):
 
     def edit(self, edit: Edit) -> EditResult:
         if not self._prompt_fields:
-            return super().edit(edit)
+            result = super().edit(edit)
+            self._end_owner_if_emptied()
+            return result
         document = self.document
         start = document.get_index_from_location(edit.top)
         end = document.get_index_from_location(edit.bottom)
-        # Shift before the base edit posts Changed and repaints.
+        # Shift before the base edit posts Changed and repaints. ``len(edit.text)`` is the length
+        # the document stores: text reaches the draft with LF line ends only (typing inserts
+        # ``\n``, a paste or drop goes through ``_sanitize_paste_text``, an expansion through
+        # ``sanitize_terminal_block``), so no CRLF collapses on the way in.
         self._prompt_fields = shift_prompt_fields(self._prompt_fields, start, end, len(edit.text))
         if not self._prompt_fields:
             self.highlight_cursor_line = self._highlights_cursor_line
-        return super().edit(edit)
+        result = super().edit(edit)
+        self._end_owner_if_emptied()
+        return result
 
     # Undo and redo replay a batch of recorded edits straight on the document,
     # not through ``edit()`` (Textual 8.2.7 ``TextArea._undo_batch`` /
@@ -397,11 +491,13 @@ class _ChatTextArea(EnhancedTextArea):
                 steps.append(None if done is None else (recorded.top, done.end_location, done.replaced_text))
             self._replay_prompt_fields(steps)
         super()._undo_batch(edits)
+        self._end_owner_if_emptied()
 
     def _redo_batch(self, edits: Sequence[Edit]) -> None:
         if self._prompt_fields and edits:
             self._replay_prompt_fields([(recorded.top, recorded.bottom, recorded.text) for recorded in edits])
         super()._redo_batch(edits)
+        self._end_owner_if_emptied()
 
     def _replay_prompt_fields(self, steps: Sequence[tuple[Location, Location, str] | None]) -> None:
         """Move the fields across *steps*, replacements applied in order to the current text.
@@ -428,8 +524,10 @@ class _ChatTextArea(EnhancedTextArea):
         self._repaint_prompt_fields()
 
     def load_text(self, text: str) -> None:
+        # A plain whole write: no fields, no owner.
         self._drop_prompt_fields()
         super().load_text(text)
+        self.set_draft_owner(None)
 
     def get_line(self, line_index: int) -> Text:
         line = super().get_line(line_index)
@@ -504,12 +602,9 @@ class _ChatTextArea(EnhancedTextArea):
             )
         )
 
-    def _set_text(self, text: str) -> None:
-        """Replace textarea content with *text* and move cursor to end."""
-        self.post_message(self.DraftReplaced())
-        self.clear()
-        if text:
-            self.insert(text)
+    def _show_history_draft(self, draft: ChatDraft) -> None:
+        """Show *draft* while browsing history, the cursor at its end."""
+        self.write_draft(draft)
 
     async def _refresh_history_entries(self) -> None:
         browser = self._history
@@ -528,8 +623,9 @@ class _ChatTextArea(EnhancedTextArea):
             browser.entries = list(refreshed_entries)
 
     def _capture_visible_draft(self) -> None:
+        # The whole draft, so stepping back past the newest entry returns its fields and owner too.
         if not self._history_browsing:
-            self._history_draft = self.text
+            self._history_draft = self.chat_draft()
 
     async def _browse_history(self, direction: Literal[-1, 1]) -> bool:
         """Move within instance history, returning True when the key was handled."""
@@ -546,26 +642,26 @@ class _ChatTextArea(EnhancedTextArea):
                 self._history_browsing = False
                 return False
             browser.index = len(browser.entries) - 1
-            self._set_text(browser.entries[browser.index])
+            self._show_history_draft(ChatDraft(browser.entries[browser.index]))
             return True
 
         if direction < 0:
             if browser.index <= 0:
-                self._set_text(browser.entries[browser.index])
+                self._show_history_draft(ChatDraft(browser.entries[browser.index]))
                 return True
             browser.index -= 1
-            self._set_text(browser.entries[browser.index])
+            self._show_history_draft(ChatDraft(browser.entries[browser.index]))
             return True
 
         if browser.index < len(browser.entries) - 1:
             browser.index += 1
-            self._set_text(browser.entries[browser.index])
+            self._show_history_draft(ChatDraft(browser.entries[browser.index]))
             return True
 
         # Past the last entry — restore the saved draft and exit browsing.
         browser.index = -1
         self._history_browsing = False
-        self._set_text(self._history_draft or "")
+        self._show_history_draft(self._history_draft or ChatDraft(""))
         return True
 
     def _reset_history_browsing(self) -> None:
@@ -710,11 +806,10 @@ class _ChatTextArea(EnhancedTextArea):
         await super()._on_key(event)
         if self._history_search_active:
             return
-        # After character insertion, check for /, @, #, $ triggers.
-        # Accept fullwidth variants (U+FF0F, U+FF20, U+FF03, U+FF04) for CJK keyboards.
-        if event.character in ("/", "\uff0f") and self.text in ("/", "\uff0f") and self.cursor_location == (0, 1):
-            self.post_message(self.SlashTrigger())
-        elif event.character in ("@", "\uff20") and (self.text.endswith("@") or self.text.endswith("\uff20")):
+        # After character insertion, check for @, #, $ triggers; ``/`` needs none, since the
+        # draft becoming a bare slash token opens its list (``SlashQueryChanged``).
+        # Accept fullwidth variants (U+FF20, U+FF03, U+FF04) for CJK keyboards.
+        if event.character in ("@", "\uff20") and (self.text.endswith("@") or self.text.endswith("\uff20")):
             # Trigger after whitespace/start/CJK: "@", "some text @", or "你好@".
             txt = self.text
             at_pos = len(txt) - 1
@@ -848,14 +943,20 @@ class InputBar(Widget):
     retry_pending: reactive[bool] = reactive(False)
     _retry_label: InputLabel
 
-    DraftReplaced = _ChatTextArea.DraftReplaced
-    """Re-exported: the text area is private, the message is not."""
+    class DraftChanged(Message):
+        """Posted when the draft's text or owner changed, however (an edit, a whole write).
+
+        The input bar posts it itself: a message the text area posts while the
+        input bar is handling one (a submit's whole write) has the input bar as
+        its sender, and Textual stops such a message there.
+        """
 
     class UserSubmitted(Message):
-        """Posted when the user submits text."""
+        """Posted when the user submits text: *text* stripped, *draft* the composer's whole draft it came from."""
 
-        def __init__(self, text: str) -> None:
+        def __init__(self, text: str, draft: ChatDraft | None = None) -> None:
             self.text = text
+            self.draft = draft if draft is not None else ChatDraft(text)
             super().__init__()
 
     class InterruptRequested(Message):
@@ -867,10 +968,13 @@ class InputBar(Widget):
         Carries the current input-bar text (may be empty).  When
         non-empty, the engine uses it as the mid-turn continuation
         prompt instead of the default ``"continue"`` placeholder.
+        *draft* is the composer's whole draft that text came from (its
+        unfilled fields included), for a refused Continue to give back.
         """
 
-        def __init__(self, text: str = "") -> None:
+        def __init__(self, text: str = "", draft: ChatDraft | None = None) -> None:
             self.text = text
+            self.draft = draft
             super().__init__()
 
     class ShellModeRequested(Message):
@@ -880,7 +984,11 @@ class InputBar(Widget):
         """Posted when the user requests the full-screen message editor."""
 
     class SlashQueryChanged(Message):
-        """Posted when the draft becomes ``/name`` (no whitespace) while no suggestion list is open."""
+        """Posted when the draft becomes a bare slash token (``/``, ``/name``) while no suggestion list is open.
+
+        The one way a ``/`` list opens from the draft: typing ``/`` into an
+        empty draft, or deleting back to the token, both arrive here.
+        """
 
         def __init__(self, text: str) -> None:
             self.text = text
@@ -888,9 +996,6 @@ class InputBar(Widget):
 
     class NewSessionRequested(Message):
         """Posted when the user clicks New."""
-
-    class SlashTriggered(Message):
-        """Posted when ``/`` is typed at start of empty input."""
 
     class FileTriggered(Message):
         """Posted when ``@`` is typed at a file-mention boundary."""
@@ -956,7 +1061,8 @@ class InputBar(Widget):
         self._retry_label = INPUT_CONTINUE.bind()
         self._inject_placeholder = _build_inject_placeholder(self._localizer())
         self._history_search_placeholder = _build_history_search_placeholder(self._localizer())
-        self._slash_typed = False
+        self.submit_router: SubmitRouter | None = None
+        """Where a submit goes (:class:`SubmitRequest`); the screen installs its own, else :func:`default_submit_route`."""
         # When the unfilled-fields warning was shown, for which draft revision, and its toast.
         self._prompt_fields_warned: tuple[float, int, Notification] | None = None
         super().__init__(**kwargs)
@@ -1276,14 +1382,6 @@ class InputBar(Widget):
         if self._suggestions_active:
             self.post_message(self.SuggestionDismiss())
 
-    def on__chat_text_area_slash_trigger(self, event: _ChatTextArea.SlashTrigger) -> None:
-        event.stop()
-        if self.locked or self.shell_mode:
-            return
-        # The "/" keystroke's own Changed must not ask to reopen a list this message opens.
-        self._slash_typed = True
-        self.post_message(self.SlashTriggered())
-
     def on__chat_text_area_file_trigger(self, event: _ChatTextArea.FileTrigger) -> None:
         event.stop()
         if self.locked or self.shell_mode:
@@ -1322,38 +1420,71 @@ class InputBar(Widget):
                 self.post_message(self.SuggestionSelect(execute=True))
                 return
             self.post_message(self.SuggestionDismiss())
-        if not self._confirm_unfilled_prompt_fields():
-            return
-        # In retry_mode a plain Enter-submit (no slash command) is treated
-        # the same as clicking Continue/Retry: the typed text rides along
-        # as a mid-turn note rather than starting a brand-new turn.
-        # Slash commands always route through ``UserSubmitted`` so the
-        # screen's dispatcher handles them.
-        is_slash_command = is_slash_command_candidate(event.text)
-        if self.retry_mode and not self.agent_running and not is_slash_command:
-            text = event.text.strip()
-            self.post_message(self.RetryRequested(text=text))
-            self.query_one("#chat-input", _ChatTextArea).clear()
+        # In retry_mode Enter offers what Continue does: the typed text rides
+        # along as a mid-turn note rather than starting a brand-new turn.
+        self._submit(continue_turn=self.retry_mode and not self.agent_running, runs_commands=True)
+
+    def _submit(self, *, continue_turn: bool, runs_commands: bool) -> None:
+        """Hand the draft to where the router sends it: the one place a submit leaves the composer.
+
+        A draft the screen takes stays as it is (a send that locks it, or
+        text that waits). Otherwise the text is posted and the composer
+        cleared, except a message while a turn runs, which the injection
+        lock keeps on screen. Every gesture asks here, once, before sending
+        a draft whose prompt fields are still unfilled.
+        """
+        ta = self.query_one("#chat-input", _ChatTextArea)
+        draft = ta.chat_draft()
+        text = draft.text.strip()
+        if not text and not continue_turn:
             self._refresh_interaction_state()
             return
-        self.post_message(self.UserSubmitted(event.text))
-        if not self.agent_running or is_slash_command:
-            self.query_one("#chat-input", _ChatTextArea).clear()
+        if text and not self._confirm_unfilled_prompt_fields():
+            return
+        ta._reset_history_browsing()
+        router = self.submit_router or default_submit_route
+        route = (
+            router(SubmitRequest(draft, continue_turn=continue_turn, runs_commands=runs_commands))
+            if text
+            else "continue"
+        )
+        if route == "taken":
             self._refresh_interaction_state()
+            return
+        if route == "continue":
+            self.post_message(self.RetryRequested(text=text, draft=draft if text else None))
+        else:
+            self.post_message(self.UserSubmitted(text, draft))
+        if route != "message" or not self.agent_running:
+            ta.clear()
+        self._refresh_interaction_state()
+
+    def submit_input(self) -> None:
+        """Send the draft as the Send button does (the ``/`` list's Enter fallback)."""
+        if not self.display or self.agent_loading or self.retry_pending or self.locked:
+            self._refresh_interaction_state()
+            return
+        self._submit(continue_turn=False, runs_commands=True)
+
+    def on__chat_text_area_draft_owner_changed(self, event: _ChatTextArea.DraftOwnerChanged) -> None:
+        event.stop()
+        self.post_message(self.DraftChanged())
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Forward text changes when suggestions are active, or offer a closed list a ``/name`` draft."""
         self._draft_revision += 1
+        self.post_message(self.DraftChanged())
         text = event.text_area.text
-        slash_typed, self._slash_typed = self._slash_typed, False
+        chat_input = event.text_area if isinstance(event.text_area, _ChatTextArea) else None
         if self._suggestions_active:
             self.post_message(self.TextChanged(text))
         elif (
-            not slash_typed
+            chat_input is not None
             and not self.locked
             and not self.shell_mode
-            and not self.query_one("#chat-input", _ChatTextArea)._history_browsing
-            and _SLASH_QUERY_RE.fullmatch(text)
+            and not chat_input._history_browsing
+            and (slash := parse_slash_draft(text)) is not None
+            and slash.bare
         ):
             # Deleting back from "/name args" (or after the list closed) brings the list back, as in opencode.
             self.post_message(self.SlashQueryChanged(text))
@@ -1400,12 +1531,8 @@ class InputBar(Widget):
             # In retry mode the button always resumes the current turn.
             # Any text the user typed rides along as a mid-turn note;
             # the engine will use it as the continuation prompt in place
-            # of the default ``"continue"`` placeholder. Unfilled shortcut
-            # fields are checked as for Enter.
-            typed = self.query_one("#chat-input", _ChatTextArea).text.strip()
-            if typed and not self._confirm_unfilled_prompt_fields():
-                return
-            self.post_message(self.RetryRequested(text=self.consume_retry_text()))
+            # of the default ``"continue"`` placeholder.
+            self._submit(continue_turn=True, runs_commands=False)
         else:
             self._do_submit()
 
@@ -1416,15 +1543,7 @@ class InputBar(Widget):
         if self.agent_loading or self.retry_pending:
             self._refresh_interaction_state()
             return
-        ta = self.query_one("#chat-input", _ChatTextArea)
-        text = ta.text.strip()
-        if text and not self._confirm_unfilled_prompt_fields():
-            return
-        if text:
-            ta._reset_history_browsing()
-            self.post_message(self.UserSubmitted(text))
-            ta.clear()
-        self._refresh_interaction_state()
+        self._submit(continue_turn=False, runs_commands=True)
 
     def _confirm_unfilled_prompt_fields(self) -> bool:
         """Return whether a submit may go ahead with the draft's prompt fields.
@@ -1461,10 +1580,9 @@ class InputBar(Widget):
         self.app.post_message(Notify(notification))
         return False
 
-    def expand_prompt(self, text: str, fields: Sequence[PromptField]) -> None:
-        """Replace the draft with an expanded prompt shortcut and highlight its unfilled *fields*."""
-        self.replace_draft(text, keep_card=True)
-        self.query_one("#chat-input", _ChatTextArea).set_prompt_fields(fields)
+    def expand_prompt(self, draft: ChatDraft) -> None:
+        """Replace the draft with an expanded prompt shortcut, its first unfilled field selected."""
+        self.set_draft(draft, select_field=True)
         self.focus_input()
 
     def _lock(self, label: InputLabel, *, stop_style: bool, spin_prompt: bool = True) -> None:
@@ -1514,15 +1632,28 @@ class InputBar(Widget):
     def snapshot_draft(self) -> InputDraftSnapshot:
         """Capture the current chat draft and cursor without mutating them."""
         text_area = self.query_one("#chat-input", _ChatTextArea)
-        return InputDraftSnapshot(text_area.text, text_area.cursor_location, self._draft_revision)
+        return InputDraftSnapshot(text_area.chat_draft(), text_area.cursor_location, self._draft_revision)
 
     @property
     def draft_revision(self) -> int:
         """Return the monotonic generation of the underlying chat draft."""
         return self._draft_revision
 
-    def restore_draft(self, text: str, *, keep_card: bool = False) -> bool:
-        """Hand *text* back to an empty composer; return whether it was written.
+    def draft(self) -> ChatDraft:
+        """The draft now, as one value: text, unfilled fields and owner."""
+        return self.query_one("#chat-input", _ChatTextArea).chat_draft()
+
+    @property
+    def draft_owner(self) -> ShortcutIntent | None:
+        """The prompt shortcut the draft belongs to, if any."""
+        return self.query_one("#chat-input", _ChatTextArea).draft_owner
+
+    def set_draft_owner(self, owner: ShortcutIntent | None) -> None:
+        """Change what the draft belongs to, keeping its text and fields."""
+        self.query_one("#chat-input", _ChatTextArea).set_draft_owner(owner)
+
+    def restore_draft(self, draft: str | ChatDraft) -> bool:
+        """Hand *draft* back to an empty composer, whole (fields, prompt-shortcut owner); return whether it was written.
 
         Every caller reaches this from a path that already consumed the draft —
         a submit, a retry, a rollback, a rejection — and the hand-back travels
@@ -1534,22 +1665,24 @@ class InputBar(Widget):
         user typed, and no consume path can leave one behind — a whitespace-only
         composer never submits.
         """
-        if not text:
+        whole = draft if isinstance(draft, ChatDraft) else ChatDraft(draft)
+        if not whole.text:
             return False
         if self.query_one("#chat-input", _ChatTextArea).text:
             return False
-        self.replace_draft(text, keep_card=keep_card)
+        self.set_draft(whole)
         return True
 
-    def replace_draft(self, text: str, *, keep_card: bool = False) -> None:
-        """Replace the draft, move its cursor to the end, and refresh controls."""
+    def replace_draft(self, text: str) -> None:
+        """Replace the draft with plain *text* (no fields, no owner), cursor at its end."""
+        self.set_draft(ChatDraft(text))
+
+    def set_draft(self, draft: ChatDraft, *, select_field: bool = False) -> None:
+        """Replace the whole draft with *draft*, fields and owner included, and refresh controls."""
         self._draft_revision += 1
         text_area = self.query_one("#chat-input", _ChatTextArea)
-        text_area.post_message(_ChatTextArea.DraftReplaced(keep_card=keep_card))
         text_area._reset_history_browsing()
-        text_area.clear()
-        if text:
-            text_area.insert(text)
+        text_area.write_draft(draft, select_field=select_field)
         self._refresh_interaction_state()
 
     def can_commit_editor_draft(self) -> bool:
@@ -1626,16 +1759,6 @@ class InputBar(Widget):
     @value.setter
     def value(self, text: str) -> None:
         self.replace_draft(text)
-
-    def consume_retry_text(self) -> str:
-        """Return and clear the typed retry/continue note, if any."""
-        ta = self.query_one("#chat-input", _ChatTextArea)
-        text = ta.text.strip()
-        if text:
-            ta._reset_history_browsing()
-            ta.clear()
-        self._refresh_interaction_state()
-        return text
 
     def add_to_history(self, text: str, *, session_id: str | None = None) -> None:
         """Add *text* to input history."""

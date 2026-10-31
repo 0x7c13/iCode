@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -42,6 +43,17 @@ def test_shell_commands_without_placeholders_is_empty() -> None:
 async def test_text_without_placeholders_is_returned_unchanged(tmp_path: Path) -> None:
     text = "Nothing to run here: `code` and !bang\n"
     assert await interpolate_shell(text, cwd=str(tmp_path)) == text
+
+
+@pytest.mark.usefixtures("posix_shell")
+async def test_a_command_with_quotes_runs_as_written_in_every_shell(tmp_path: Path) -> None:
+    """``cmd.exe`` and ``sh`` alike: a quoted path with a space is one path, and the redirection writes to it."""
+    target = tmp_path / "a folder" / "out.txt"
+    target.parent.mkdir()
+
+    await interpolate_shell(f'Wrote: !`echo ran > "{target}"`', cwd=str(tmp_path))
+
+    assert target.read_text(encoding="utf-8").strip() == "ran"
 
 
 @posix_only
@@ -110,6 +122,22 @@ async def test_commands_run_in_the_given_cwd(tmp_path: Path) -> None:
 
 @posix_only
 @pytest.mark.usefixtures("posix_shell")
+async def test_a_packaged_icode_puts_its_own_runtime_last_on_the_commands_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In a packaged iCode a command finds the user's tools (``python``, ``uv``), never the bundled runtime's."""
+    runtime_dir = str(Path(sys.executable).parent)
+    user_bin = str(tmp_path / "user" / "bin")
+    monkeypatch.setenv("CHRYS_FORCE_FROZEN", "1")
+    monkeypatch.setenv("PATH", os.pathsep.join([runtime_dir, user_bin]))
+
+    out = await interpolate_shell('!`printf %s "$PATH"`', cwd=str(tmp_path))
+
+    assert out.split(os.pathsep) == [user_bin, runtime_dir]
+
+
+@posix_only
+@pytest.mark.usefixtures("posix_shell")
 async def test_large_output_is_cut_to_head_and_tail_with_a_truncation_note(tmp_path: Path) -> None:
     raw_size = SHELL_OUTPUT_LIMIT_BYTES * 4
     command = f"i=0; while [ $i -lt {raw_size // 8} ]; do printf 'abcdefg\\n'; i=$((i+1)); done; printf 'TAILEND'"
@@ -173,6 +201,16 @@ async def test_command_that_cannot_start_fails_with_start_failed(
 
     assert caught.value.reason == "start_failed"
     assert caught.value.command == "echo hi"
+
+
+@pytest.mark.usefixtures("posix_shell")
+async def test_command_no_process_can_be_given_fails_with_start_failed(tmp_path: Path) -> None:
+    # No OS passes a NUL in a process's arguments.
+    with pytest.raises(ShellInterpolationError) as caught:
+        await interpolate_shell("x !`echo a\x00b` y", cwd=str(tmp_path))
+
+    assert caught.value.reason == "start_failed"
+    assert caught.value.command == "echo a\x00b"
 
 
 @posix_only

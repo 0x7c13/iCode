@@ -154,6 +154,12 @@ msgstr ""
 msgid "construction.trajectory_activation_failed"
 msgstr ""
 
+#. English: Model profile '{profile_id}' not found
+#. chrys-meta={"fingerprint":"5a33b040dd79831725bbe1011477eb6f0fe317752443876f63310bc532486969","multiline":false,"placeholders":["profile_id"]}
+#: src/chrys/orchestration/engine/state/controls.py
+msgid "controls.model_profile_not_found"
+msgstr ""
+
 #. English: No active agent — cannot switch model
 #. chrys-meta={"fingerprint":"0eb68fe3143e750485fd38d2b6c5145940256aaba7fb6c654ea4b2f67554d981","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/state/controls.py
@@ -206,6 +212,39 @@ msgstr ""
 #. chrys-meta={"fingerprint":"cb28b5e3fdd8418cdc8eb0bd3720140316db7796b79c681812939459e0e51adf","multiline":false,"placeholders":[]}
 #: src/chrys/orchestration/engine/run/coordinator.py
 msgid "coordinator.prompt_admission_conflict"
+msgstr ""
+
+#. English: The command {command} could not start ({detail}). Nothing was sent.
+#. chrys-meta={"fingerprint":"ba99b6ad60457d292f6362f06ca177fd832a88fe9145ae70e892dd4ce5a704e2","multiline":false,"placeholders":["command","detail"]}
+#: src/chrys/orchestration/engine/run/shortcut_commands.py
+msgid "coordinator.prompt_command_not_started"
+msgstr ""
+
+#. English: The command {command} was stopped. Nothing was sent.
+#. chrys-meta={"fingerprint":"06b3821d08dd0a0302bbf597aa85612358e7413587e2013e34d6e117065bed5f","multiline":false,"placeholders":["command"]}
+#: src/chrys/orchestration/engine/run/shortcut_commands.py
+msgid "coordinator.prompt_command_stopped"
+msgstr ""
+
+#. English: The command {command} did not finish within {seconds} seconds.
+#. Nothing was sent.
+#. chrys-meta={"fingerprint":"5afc83d83c9d064fbcaa765f463c23b07b888e390858073cdc605f37fe113787","multiline":false,"placeholders":["command","seconds"]}
+#: src/chrys/orchestration/engine/run/shortcut_commands.py
+msgid "coordinator.prompt_command_timed_out"
+msgstr ""
+
+#. English: A shortcut's prompt that runs commands is not added to a running
+#. task. Send it when the task ends.
+#. chrys-meta={"fingerprint":"a4bdba6881e2e4eb7237c33c9eb92ecbef013ffc6e130505364fbc2a298cb2cc","multiline":false,"placeholders":[]}
+#: src/chrys/orchestration/engine/run/coordinator.py
+msgid "coordinator.prompt_shortcut_busy"
+msgstr ""
+
+#. English: /{name} is not a shortcut in this working folder any more, so its
+#. commands did not run. Nothing was sent.
+#. chrys-meta={"fingerprint":"5a6c676ca8c1e4cf8bf041273eb325296124ba640a954c34d8cc6e1c17019b65","multiline":false,"placeholders":["name"]}
+#: src/chrys/orchestration/engine/run/shortcut_commands.py
+msgid "coordinator.prompt_shortcut_unavailable"
 msgstr ""
 
 #. English: Cannot fork while the agent is still loading.
@@ -7133,6 +7172,15 @@ msgstr ""
 msgid "tui.input.retry"
 msgstr ""
 
+#. English: Running {count} command… Esc to cancel
+#. English-plural: Running {count} commands… Esc to cancel
+#. chrys-meta={"fingerprint":"42c109ca663063aa97936b1d998e5b5a5e3642da3a440c9928dbdcb47d8d77c8","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/input_flow.py
+msgid "tui.input.running_commands"
+msgid_plural "tui.input.running_commands#plural"
+msgstr[0] ""
+msgstr[1] ""
+
 #. English: Send
 #. chrys-meta={"fingerprint":"add273c721eb680a4f9e1ba65e55d47c739397f22134aed96cfbd8551edd51f7","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/input_bar.py
@@ -9131,12 +9179,6 @@ msgstr ""
 msgid "tui.prompt_card.busy_commands"
 msgstr ""
 
-#. English: Sending cancelled
-#. chrys-meta={"fingerprint":"aa0c2c4271042f1f01386d554fce24a95960375e254e9da3eb6f14c5043a81ff","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/prompt_card.py
-msgid "tui.prompt_card.cancelled"
-msgstr ""
-
 #. English: {count} command in the input runs when sent
 #. English-plural: {count} commands in the input run when sent
 #. chrys-meta={"fingerprint":"5f4000d1d4159ffd5acf4e315235436fb6d00937d5908188bac1cc04aa915810","multiline":false,"placeholders":[]}
@@ -9152,17 +9194,17 @@ msgstr[1] ""
 msgid "tui.prompt_card.commands"
 msgstr ""
 
+#. English: Continue sends a note as typed. Press Enter to send this prompt as
+#. a new message.
+#. chrys-meta={"fingerprint":"f636537c02b3e25cae96bda995d9f18d8bf73eb2051e745ca710e61b16eb48e1","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/screens/main/prompt_card.py
+msgid "tui.prompt_card.continue_is_a_note"
+msgstr ""
+
 #. English: Don't switch
 #. chrys-meta={"fingerprint":"847b06d0be60dcf8eb4116c16813b11069a7a0353c2de2f7f743e42709fe2c80","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/prompt_card.py
 msgid "tui.prompt_card.dont_switch"
-msgstr ""
-
-#. English: Not sent: the agent is still starting; send it again once it is
-#. ready
-#. chrys-meta={"fingerprint":"f5d98eca0bb8a03a53d5f3b5d7ab0851775e5af55c1066fdcdbde802f2f138ae","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/prompt_card.py
-msgid "tui.prompt_card.loading"
 msgstr ""
 
 #. English: Model
@@ -9194,49 +9236,6 @@ msgstr ""
 #. chrys-meta={"fingerprint":"1504c1303b9080586daa7344502b8a90e15b77368c1cca0519a475481ec403dc","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/chrome/prompt_card.py
 msgid "tui.prompt_card.remove"
-msgstr ""
-
-#. English: Running… Esc to cancel
-#. chrys-meta={"fingerprint":"6269100de42f76b0147b51f9ff581e64bf6c3d087f16fc65866203aaef7e131f","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/widgets/chrome/prompt_card.py
-msgid "tui.prompt_card.running"
-msgstr ""
-
-#. English: Not sent: something went wrong; see the logs for details
-#. chrys-meta={"fingerprint":"73e97f0f157f3bdc223911d4e797e92b48ee9692cfc654e13cfca001928f6a71","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/prompt_card.py
-msgid "tui.prompt_card.send_failed"
-msgstr ""
-
-#. English: Not sent: the session or working folder changed while the prompt
-#. was being prepared
-#. chrys-meta={"fingerprint":"5c811c5374cd493c0fd058f509fa339792001fad7c1b017e2773fbf8bb24e7a3","multiline":false,"placeholders":[]}
-#: src/chrys/app/tui/screens/main/prompt_card.py
-msgid "tui.prompt_card.session_changed"
-msgstr ""
-
-#. English: Not sent: {command} could not start
-#. chrys-meta={"fingerprint":"60b6afba39236b06c7153867e17f9f079b81f53646c4b3b9416e5f808a11f006","multiline":false,"placeholders":["command"]}
-#: src/chrys/app/tui/screens/main/prompt_card.py
-msgid "tui.prompt_card.shell_start_failed"
-msgstr ""
-
-#. English: Not sent: {command} was stopped
-#. chrys-meta={"fingerprint":"162bc6513daf249e4a786d068359dca4c822873ab4f231721d2c974ad26c0d7d","multiline":false,"placeholders":["command"]}
-#: src/chrys/app/tui/screens/main/prompt_card.py
-msgid "tui.prompt_card.shell_stopped"
-msgstr ""
-
-#. English: Not sent: {command} did not finish in time
-#. chrys-meta={"fingerprint":"62ecac14e4a210aaa0a3f15e30a1d47d880f683e2d1ea4fed3446eea9cabc9ef","multiline":false,"placeholders":["command"]}
-#: src/chrys/app/tui/screens/main/prompt_card.py
-msgid "tui.prompt_card.shell_timeout"
-msgstr ""
-
-#. English: Not sent: could not switch to {target}
-#. chrys-meta={"fingerprint":"d02b2c52e65c32bf2be32934d0a98ea422bcc391a99e2b93da44e4578e613ee8","multiline":false,"placeholders":["target"]}
-#: src/chrys/app/tui/screens/main/prompt_card.py
-msgid "tui.prompt_card.switch_failed"
 msgstr ""
 
 #. English: Prompt shortcut
@@ -14630,6 +14629,12 @@ msgstr ""
 #. chrys-meta={"fingerprint":"a5fb27a22343ae45dffbf8e925df54667260b67e79f86aabb0cfa7dd81b207f2","multiline":false,"placeholders":[]}
 #: src/chrys/app/tui/widgets/trajectory/overview.py
 msgid "tui.trajectory.preparation_outcome.cancelled"
+msgstr ""
+
+#. English: command failed
+#. chrys-meta={"fingerprint":"cd5d4bb62ec9320e2136b7a0dab23e6abe3d259ceede37e024e58e3adedbb71e","multiline":false,"placeholders":[]}
+#: src/chrys/app/tui/widgets/trajectory/overview.py
+msgid "tui.trajectory.preparation_outcome.command_failed"
 msgstr ""
 
 #. English: completed

@@ -11,10 +11,11 @@ listed: they show in the draft. A dim line says the switch lasts for the
 session. The card offers no choice: sending accepts it, and its
 "✕ Don't switch" button drops the agent and model switch; the commands still
 run when the draft is sent.
-Like :class:`SuggestionList` it is a screen overlay anchored at the input.
-Its height follows what it says, so a change of height lays the screen out
-once; any other repaint (a new command count, the same card shown again)
-keeps its height and lays nothing out.
+Like :class:`SuggestionList` it is a screen overlay anchored at the input,
+and like it, it never lays the screen out, which costs as much as the
+transcript is long: its rows are pinned to what it says, and a change of rows
+(the button and note going when no switch is left, a ⚠ line) remaps only the card.
+The ✕ button keeps its cells while hidden, so the rows wrap at one width.
 """
 
 from __future__ import annotations
@@ -24,14 +25,14 @@ from typing import TYPE_CHECKING, ClassVar
 
 from rich.cells import cell_len
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Button, Static
 
 from chrys.app.tui.i18n import render_str, widget_localizer
-from chrys.app.tui.util.visibility import set_widget_visibility_without_layout
+from chrys.app.tui.util.visibility import set_rules_without_layout, set_widget_visibility_without_layout
 from chrys.foundation.i18n import MessageDef, MessageRef, msg
 from chrys.foundation.i18n.formatting import sanitize_legacy_scalar
 
@@ -57,7 +58,6 @@ _COMMAND_COUNT = msg(
     fallback="{count} command in the input runs when sent",
     plural_fallback="{count} commands in the input run when sent",
 )
-_RUNNING = msg("tui.prompt_card.running", fallback="Running… Esc to cancel")
 _REMOVE = msg("tui.prompt_card.remove", fallback="Don't switch the agent and model")
 
 
@@ -80,11 +80,7 @@ class CardState:
     agent: CardChoice | None = None
     model: CardChoice | None = None
     commands: int = 0
-    """The ``!`command``` placeholders a send runs; 0 once a send has run them."""
-    running: bool = False
-    """A send is running the commands now, and Esc cancels it."""
-    in_progress: bool = False
-    """The draft is being sent: nothing on the card can be changed any more."""
+    """The ``!`command``` placeholders a send runs."""
 
     @property
     def visible(self) -> bool:
@@ -179,14 +175,47 @@ class PromptCard(Widget):
         self._state = None
         set_widget_visibility_without_layout(self, False)
 
+    def on_resize(self, _event: events.Resize) -> None:
+        # A new width may wrap the rows differently.
+        if self._state is not None:
+            self._paint(self._state)
+
     def _paint(self, state: CardState) -> None:
         remove = self.query_one("#prompt-card-remove", Button)
         remove.tooltip = self._render_message(_REMOVE.bind())
         switching = any(choice is not None and choice.value is not None for choice in (state.agent, state.model))
         # Offered only while it would change something: a ⚠ alone switches nothing.
-        remove.display = switching and not state.in_progress
-        _update_keeping_layout(self.query_one("#prompt-card-body", Static), self._body(state))
-        self.query_one("#prompt-card-note", Static).display = switching and not state.in_progress
+        actions = switching
+        body = self.query_one("#prompt-card-body", Static)
+        text = self._body(state)
+        body.update(text, layout=False)
+        rows = self._body_rows(body, text)
+        note_rows = 1 if actions else 0
+        # The rows pinned to what the card says, and the button shown by inheriting the card's
+        # visibility (so it hides with the card), remapped once; while the card is hidden, the
+        # flip that shows it remaps it. Every box on the body's path is pinned, its row (body and
+        # one-row button) too: no layout runs here, so an auto height there would keep a stale
+        # value and clip the body (a card shrunk while hidden lost its last row).
+        set_rules_without_layout(
+            visibility=[(remove, None if actions else False)],
+            heights=[
+                (body, rows),
+                (self.query_one("#prompt-card-row", Horizontal), rows),
+                (self.query_one("#prompt-card-note", Static), note_rows),
+                (self, rows + note_rows + self.styles.gutter.height),
+            ],
+            remap=self.visible,
+        )
+
+    @staticmethod
+    def _body_rows(body: Static, text: Text) -> int:
+        """The rows *text* takes in *body*, measured as a layout would (the update cleared the cached height).
+
+        Before the first layout there is no width to wrap at: one row per line.
+        """
+        width = body.size.width
+        rows = body.get_content_height(body.size, body.size, width) if width else len(text.plain.splitlines())
+        return max(rows, 1)
 
     def _note_text(self) -> Text:
         return Text(self._render_message(_NOTE.bind()))
@@ -202,7 +231,7 @@ class PromptCard(Widget):
             if choice is not None:
                 rows.append((self._render_message(label.bind()), self._choice_value(choice, not_found, warning)))
         if state.commands:
-            count = _RUNNING.bind() if state.running else _COMMAND_COUNT.bind(count=state.commands)
+            count = _COMMAND_COUNT.bind(count=state.commands)
             rows.append((self._render_message(_COMMANDS.bind()), Text(self._render_message(count))))
         width = max((cell_len(label) for label, _value in rows), default=0)
         label_style = self.get_component_rich_style("prompt-card--label", partial=False)
@@ -231,20 +260,6 @@ class PromptCard(Widget):
 
     def _render_message(self, reference: MessageRef) -> str:
         return render_str(widget_localizer(self), reference)
-
-
-def _update_keeping_layout(widget: Static, content: Text) -> None:
-    """Update *widget*, laying the screen out only when its height changes.
-
-    ``Static.update`` lays out by default, and laying out the screen costs as
-    much as the transcript is long: a repaint that keeps the height (a new
-    command count while typing) must not pay it.
-    """
-    size = widget.size
-    widget.update(content, layout=False)
-    # Measured as a layout would measure it (the update cleared the cached height).
-    if not size.width or widget.get_content_height(size, size, size.width) != size.height:
-        widget.refresh(layout=True)
 
 
 __all__ = ["CardChoice", "CardState", "PromptCard"]

@@ -972,7 +972,7 @@ def test_model_trigger_does_not_bypass_locked_runtime_selection(selection_source
     ids=["before-runtime", "runtime-named", "runtime-named-none"],
 )
 def test_model_list_marks_the_model_the_session_runs(confirmed: bool, running: str, current: str) -> None:
-    """The ``$`` list marks what runs (``session_models``); a runtime answer naming no model keeps the launch setting."""
+    """The ``$`` list marks what runs (``running_model``); a runtime answer naming no model keeps the launch setting."""
     screen = make_suggestion_screen()
     _register_model_profiles(screen)
     screen.state.runtime.details_confirmed = confirmed
@@ -1016,8 +1016,9 @@ def test_trigger_enter_submits_unmatched_text_but_keeps_a_matched_draft(
     typed: str,
     submits: bool,
 ) -> None:
-    """Enter with nothing highlighted submits the draft only when the typed
-    trigger matches no profile; text that names the active profile stays put."""
+    """Enter with nothing highlighted submits the draft, through the input bar's
+    own submit path, only when the typed trigger matches no profile; text that
+    names the active profile stays put."""
     screen = make_suggestion_screen()
     register_profiles(screen)
     screen.input_bar.value = typed
@@ -1028,13 +1029,14 @@ def test_trigger_enter_submits_unmatched_text_but_keeps_a_matched_draft(
     assert handler.on_suggestion_select(execute=True) is True
 
     if submits:
-        assert screen.input_bar.value == ""
-        assert screen.submitted == [typed]
+        assert screen.input_bar.submitted_drafts == [typed]
         assert screen.suggestion_list.is_visible is False
     else:
         assert screen.input_bar.value == typed
-        assert screen.submitted == []
+        assert screen.input_bar.submitted_drafts == []
         assert screen.suggestion_list.is_visible is True
+    # The handler never sends the text itself: the input bar's router decides where it goes.
+    assert screen.submitted == []
 
 
 def test_command_suggestion_enter_without_selection_keeps_submit_fallback() -> None:
@@ -1046,5 +1048,6 @@ def test_command_suggestion_enter_without_selection_keeps_submit_fallback() -> N
 
     assert handler.on_suggestion_select(execute=True) is True
 
-    assert screen.input_bar.value == ""
-    assert screen.submitted == ["/mcp"]
+    # As Enter with the list closed: the input bar's own submit path takes the draft.
+    assert screen.input_bar.submitted_drafts == ["/mcp"]
+    assert screen.submitted == []

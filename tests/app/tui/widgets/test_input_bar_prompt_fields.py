@@ -5,9 +5,10 @@
 from __future__ import annotations
 
 import pytest
+from textual import events
 from textual.app import App, ComposeResult
 
-from chrys.app.tui.widgets.chrome.input_bar import InputBar, _ChatTextArea, shift_prompt_fields
+from chrys.app.tui.widgets.chrome.input_bar import ChatDraft, InputBar, _ChatTextArea, shift_prompt_fields
 from tests.support.tui_helpers import click_when_settled
 from tests.support.waiting import wait_for
 
@@ -110,7 +111,7 @@ def _chat(app: App[None]) -> _ChatTextArea:
 async def _expanded(pilot, app: _FieldsApp) -> _ChatTextArea:
     chat = _chat(app)
     await wait_for(lambda: chat.has_focus, pilot=pilot, description="chat input focused")
-    app.query_one(InputBar).expand_prompt(_TEXT, _TEXT_FIELDS)
+    app.query_one(InputBar).expand_prompt(ChatDraft(_TEXT, _TEXT_FIELDS))
     await wait_for(lambda: chat.text == _TEXT, pilot=pilot, description="prompt expanded")
     return chat
 
@@ -157,6 +158,21 @@ async def test_editing_elsewhere_shifts_later_fields_and_keeps_them() -> None:
 
         assert chat.text == "XY" + _TEXT
         assert chat.prompt_fields == ((17, 21), (29, 33))
+
+
+@pytest.mark.parametrize("pasted", ["x\r\ny", "x\ry", "x\ny"], ids=["crlf", "cr", "lf"])
+async def test_pasting_lines_before_a_field_keeps_it_on_its_own_text(pasted: str) -> None:
+    """Every way text reaches the draft gives it LF line ends, so a field moves by what the document stores."""
+    app = _FieldsApp()
+    async with app.run_test() as pilot:
+        chat = await _expanded(pilot, app)
+        chat.move_cursor((0, 0))
+        chat.post_message(events.Paste(pasted))
+        await wait_for(lambda: chat.text == "x\ny" + _TEXT, pilot=pilot, description="pasted, line ends as LF")
+
+        first, second = chat.prompt_fields
+        assert chat.text[first[0] : first[1]] == "tone"
+        assert chat.text[second[0] : second[1]] == "text"
 
 
 async def test_backspace_into_a_field_drops_it_and_undo_does_not_restore_it() -> None:
@@ -243,7 +259,7 @@ async def test_field_highlight_on_a_long_draft_reads_no_offsets_per_painted_line
         chat = _chat(app)
         await wait_for(lambda: chat.has_focus, pilot=pilot, description="chat input focused")
         # The second field runs from ``$Y`` across the line break into ``across``.
-        app.query_one(InputBar).expand_prompt(text, ((first, first + 2), (second, len(text) - 3)))
+        app.query_one(InputBar).expand_prompt(ChatDraft(text, ((first, first + 2), (second, len(text) - 3))))
         await wait_for(lambda: chat.text == text, pilot=pilot, description="prompt expanded")
         style = chat.get_component_rich_style("chat-input--prompt-field", partial=False)
 
@@ -307,7 +323,7 @@ async def test_expand_without_fields_replaces_the_draft_and_sends_at_once() -> N
         await pilot.press("h", "i")
         assert chat.text == "hi"
 
-        app.query_one(InputBar).expand_prompt("plain", ())
+        app.query_one(InputBar).expand_prompt(ChatDraft("plain"))
         await wait_for(lambda: chat.text == "plain", pilot=pilot, description="expanded without fields")
         assert chat.prompt_fields == ()
         assert app.submitted == []

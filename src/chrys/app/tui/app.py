@@ -88,7 +88,7 @@ from chrys.foundation.models.session_surface import SessionSurface
 from chrys.foundation.platform.signals import HANGUP_SIGNALS
 from chrys.foundation.util.session_ids import session_short_id
 from chrys.orchestration.startup import catalog_load_warning
-from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_profile_selector
+from chrys.service.profiles.agents.registry import AgentProfileRegistry, resolve_launch_profile
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.resolver import (
     format_available_profile_labels,
@@ -172,37 +172,6 @@ if TYPE_CHECKING:
     from chrys.orchestration.engine.engine import AgentEngine
     from chrys.service.profiles.agents.schema import AgentProfile
     from chrys.service.state.store import JsonFileStateStore
-
-
-def _resolve_startup_profile(registry: AgentProfileRegistry, preferred_name: str) -> AgentProfile | None:
-    """Resolve the TUI launch profile, falling back through Code to the first visible profile."""
-    requested = preferred_name.strip() or DEFAULT_AGENT_PROFILE
-    # Match the TUI picker: hidden and sub-agent-only profiles are not valid main launch profiles.
-    profiles = registry.list_profiles()
-    by_name = {profile.name: profile for profile in profiles}
-
-    profile = resolve_profile_selector(profiles, requested)
-    if profile is not None:
-        return profile
-
-    if requested != DEFAULT_AGENT_PROFILE:
-        fallback = by_name.get(DEFAULT_AGENT_PROFILE)
-        if fallback is not None:
-            logger.warning(
-                "Default agent profile %r is not usable as a launch profile, falling back to %r.",
-                requested,
-                DEFAULT_AGENT_PROFILE,
-            )
-            return fallback
-
-    if profiles:
-        logger.warning(
-            "Default agent profile %r is not usable as a launch profile, falling back to %r.",
-            requested,
-            profiles[0].name,
-        )
-        return profiles[0]
-    return None
 
 
 def _apply_startup_active_model_selection(
@@ -1066,7 +1035,7 @@ class ChrysApp(TuiVariableDefaultsMixin, App):
         if not registry.list_profiles():
             registry.load_all()
 
-        profile = _resolve_startup_profile(registry, self._profile_name)
+        profile = resolve_launch_profile(registry, self._profile_name)
 
         if profile is not None:
             screen.set_startup_agent_loading(True)

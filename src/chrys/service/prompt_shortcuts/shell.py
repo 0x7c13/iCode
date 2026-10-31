@@ -24,7 +24,13 @@ from chrys.foundation.platform.output_capture import (
     capture_limit_footer,
     drain_process_pipes,
 )
-from chrys.foundation.platform.process import SubprocessStoppedError, managed_subprocess, wait_for_subprocess
+from chrys.foundation.platform.process import (
+    SubprocessStoppedError,
+    WindowsShellCommand,
+    managed_subprocess,
+    wait_for_subprocess,
+)
+from chrys.foundation.platform.runtime_paths import build_shell_subprocess_env
 from chrys.foundation.text.tool_output import process_carriage_returns, strip_ansi
 
 SHELL_TIMEOUT_SECONDS = 10.0
@@ -53,11 +59,12 @@ def shell_commands(text: str) -> list[str]:
     return [match.group(1) for match in _SHELL_RE.finditer(text)]
 
 
-def _shell_argv(command: str) -> list[str]:
-    # The same shell a hook's shell-syntax command runs in.
+def _shell_argv(command: str) -> tuple[str | WindowsShellCommand, ...]:
+    # The user's shell: ``$SHELL`` (``/bin/sh``), or ``cmd.exe`` given the command as
+    # written, quotes included (``echo x > "a b"``).
     if sys.platform == "win32":
-        return ["cmd.exe", "/c", command]
-    return [os.environ.get("SHELL") or "/bin/sh", "-c", command]
+        return (WindowsShellCommand(command),)
+    return (os.environ.get("SHELL") or "/bin/sh", "-c", command)
 
 
 async def run_shell_command(command: str, *, cwd: str) -> str:
@@ -71,6 +78,9 @@ async def run_shell_command(command: str, *, cwd: str) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            # As the shell tool's: the user's own commands find the user's tools, never the
+            # packaged runtime's, and print plain text for the message.
+            env=build_shell_subprocess_env(),
         ) as proc:
             await wait_for_subprocess(
                 drain_process_pipes(proc, stdout, stderr),
@@ -83,6 +93,9 @@ async def run_shell_command(command: str, *, cwd: str) -> str:
         raise ShellInterpolationError(command, "stopped") from exc
     except OSError as exc:
         raise ShellInterpolationError(command, "start_failed", exc.strerror or "") from exc
+    except ValueError as exc:
+        # Arguments no process can be given: a NUL, or text the OS cannot encode.
+        raise ShellInterpolationError(command, "start_failed", str(exc)) from exc
     combined = _combined(stdout.snapshot(), stderr.snapshot())
     # Like a shell's ``$(…)``, the line end the output finishes with is not part
     # of it: ``Last commit: !`git log -1``` stays on one line.

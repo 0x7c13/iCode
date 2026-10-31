@@ -40,6 +40,7 @@ from chrys.foundation.events.types import (
     SessionDelete,
     SessionFork,
     SessionNew,
+    SessionOnlySwitch,
     SessionRestore,
     SetApprovalMode,
     SetModelProfile,
@@ -532,6 +533,7 @@ class AgentEngine:
         await self._bus.subscribe(SettingsReload, self._on_settings_reload)
         await self._bus.subscribe(SetApprovalMode, self._on_set_approval_mode)
         await self._bus.subscribe(SetModelProfile, self._on_set_model_profile)
+        await self._bus.subscribe(SessionOnlySwitch, self._on_session_only_switch)
         await self._bus.subscribe(BackgroundTaskStop, self._on_background_task_stop)
         await self._bus.subscribe(InvocationRetryRequested, self._on_sub_agent_retry)
         await self._bus.subscribe(InvocationAbortRequested, self._on_sub_agent_abort)
@@ -547,6 +549,9 @@ class AgentEngine:
         # Closing is declared before the active workflow run is drained: a requester queued behind that
         # run is refused as shutting down instead of being admitted into a session that is going away.
         self._session.mark_closing()
+        # An input still being admitted ends now, and whatever it waits on with it (a hook's
+        # confirmation, a prompt shortcut's commands), whoever is driving the admission.
+        self._turns.turn_state.input_operations.invalidate_all("shutdown")
         try:
             await self._workflows.shutdown()
         except BaseException:
@@ -796,6 +801,10 @@ class AgentEngine:
         """Handle agent profile switch — preserves conversation history."""
         await self._controls.on_profile_switch(event)
 
+    async def _on_session_only_switch(self, event: SessionOnlySwitch) -> None:
+        """Switch this session's own agent and/or model in one rebuild (a prompt shortcut's)."""
+        await self._controls.on_session_only_switch(event)
+
     def pin_ask_user_timeout(self) -> None:
         """Mark ``ask_user_timeout_seconds`` as caller-owned across reloads.
 
@@ -811,10 +820,9 @@ class AgentEngine:
         Headless ``--model`` lives only in this host's settings — it never
         parks the choice in the process pointer the way the TUI does — so
         without the pin one ``SettingsReload`` would silently revert the run
-        to the global default. The run owns it, so no session change releases it.
+        to the global default.
         """
         self._session.model_profile_pinned = True
-        self._session.session_switch.model = False
 
     async def _on_settings_reload(self, _event: SettingsReload) -> None:
         """Handle settings reload — recreate Settings from env and rebuild agent."""

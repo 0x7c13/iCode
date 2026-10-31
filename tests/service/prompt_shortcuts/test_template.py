@@ -138,6 +138,7 @@ def test_bang_command_stays_literal() -> None:
         ('config.json src "{ \\"key\\": \\"value\\" }"', ["config.json", "src", '{ "key": "value" }']),
         ('"C:\\Program Files\\x" y', ["C:\\Program Files\\x", "y"]),
         ('"C:\\dir\\" x', ["C:\\dir\\", "x"]),
+        ("'C:\\dir\\' x", ["C:\\dir\\", "x"]),
         ("'it\\'s' ok", ["it's", "ok"]),
         ('a "b c" \'d e\' ""', ["a", "b c", "d e", ""]),
         ('"open x', ["open", "x"]),
@@ -146,6 +147,7 @@ def test_bang_command_stays_literal() -> None:
         "opencode-escaped-quotes",
         "windows-path-keeps-backslashes",
         "trailing-backslash-before-quote",
+        "trailing-backslash-before-single-quote",
         "single-quote-escape",
         "quoted-runs-and-empty",
         "unterminated-quote",
@@ -153,6 +155,33 @@ def test_bang_command_stays_literal() -> None:
 )
 def test_a_backslash_escapes_only_its_own_quote(arguments: str, expected: list[str]) -> None:
     assert parse_arguments(arguments) == expected
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ("it's broken", ["it's", "broken"]),
+        ('don\'t "a b"', ["don't", "a b"]),
+        ("O'Brien's 'x y' z", ["O'Brien's", "x y", "z"]),
+        ('say"hi" there', ['say"hi"', "there"]),
+        ("rock'n'roll", ["rock'n'roll"]),
+    ],
+    ids=[
+        "apostrophe",
+        "apostrophe-then-quoted",
+        "apostrophes-then-single-quoted",
+        "double-quote-in-word",
+        "two-in-word",
+    ],
+)
+def test_a_quote_inside_a_word_is_part_of_the_word(arguments: str, expected: list[str]) -> None:
+    """Only a quote that starts an argument opens a quoted run."""
+    assert parse_arguments(arguments) == expected
+
+
+def test_an_apostrophe_reaches_its_placeholder_whole() -> None:
+    assert _expand("Review: $1 | rest: $2", "it's broken now").text == "Review: it's | rest: broken now"
+    assert _expand("All: $ARGUMENTS", "it's broken now").text == "All: it's broken now"
 
 
 def test_each_quote_escapes_only_itself() -> None:

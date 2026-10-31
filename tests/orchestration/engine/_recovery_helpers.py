@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -277,6 +278,7 @@ def _record_start(
         *,
         operation: str = "startup",
         staged_loaded: LoadedSettings | None = None,
+        session: Mapping[str, Any] | None = None,
         workspace: Workspace | None = None,
     ) -> None:
         _ = workspace
@@ -284,7 +286,7 @@ def _record_start(
             assert operation == expect_operation
         start_calls.append((profile, operation))
         if staged_loaded is not None:
-            engine.settings_handle.install(staged_loaded)
+            engine.settings_handle.install_prepared(engine.settings_handle.prepare(staged_loaded, session=session))
 
     monkeypatch.setattr(engine.lifecycle, "start", fake_start)
     return start_calls

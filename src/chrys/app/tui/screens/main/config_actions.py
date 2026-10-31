@@ -12,7 +12,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Literal
 
 from chrys.app.tui.screens.main.model_indicator import model_lock_notice
-from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, session_models
+from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.foundation.events.types import SetApprovalMode
 from chrys.foundation.i18n import msg
 from chrys.service.approval.policy import ApprovalMode
@@ -198,7 +198,7 @@ class RuntimeConfigController:
         """Persist a picked model profile and request a backend settings reload.
 
         The pick is for this session and the default together, so it also ends
-        any per-session model switch the session holds.
+        the session's own model (a prompt shortcut's, a restored session's).
         """
         if self._services.execution_busy():
             return
@@ -215,7 +215,7 @@ class RuntimeConfigController:
                 timeout=5,
             )
             return
-        await self._services.bus.publish(SettingsReload(release_session_scoped_model=True))
+        await self._services.bus.publish(SettingsReload(model_chosen=True))
         self._callbacks.user_picked()
 
     def start_agent_profile_switch(self, profile_name: str) -> object:
@@ -236,8 +236,8 @@ class RuntimeConfigController:
         """Whether a config dialog opening now is read-only: a turn runs, or a send in flight will start one.
 
         A dialog reads the session once, as it opens. A prompt shortcut's send
-        holds its claim while its commands run, then switches the model and
-        publishes under whatever opened meanwhile.
+        holds its claim from its switch until its turn starts: the switch and
+        the turn land under whatever opened meanwhile.
         """
         return self._state.run.agent_running or self._state.submit.active or self._services.execution_busy()
 
@@ -275,15 +275,10 @@ class RuntimeConfigController:
                 self._callbacks.start_worker(partial(self.on_model_config_result, result))
                 self._view.focus_input()
 
-            # What a deletion does depends on which of the session's models it hits; the
-            # process pointer, the third fact, the dialog reads itself.
-            models = session_models(self._state, self._services)
             self._view.push_screen(
                 ModelConfigScreen(
                     registry,
                     _canonical_active_model_profile_id(registry, global_default_profile_id),
-                    session_selected_profile_id=_canonical_active_model_profile_id(registry, models.selected),
-                    session_running_profile_id=_canonical_active_model_profile_id(registry, models.running),
                     read_only=self._config_read_only(),
                 ),
                 _on_result,
@@ -301,10 +296,8 @@ class RuntimeConfigController:
     async def on_model_config_result(self, result: str) -> None:
         """Handle model config modal result — reload settings if applied.
 
-        ``"switched"``: the session's own model was deleted, so the reload also
-        ends a prompt shortcut's session-only switch to it. ``"updated"``: a
-        Save, announced. ``"reloaded"``: the model the runtime ran (an agent's
-        own) was deleted; the session keeps its choice.
+        ``"deleted"``: a profile was deleted; the reload drops whatever the
+        session used that is gone. ``"updated"``: a Save, announced.
         """
         if not result:
             return
@@ -315,7 +308,8 @@ class RuntimeConfigController:
             directory, profiles = await asyncio.to_thread(registry.read_profiles)
             registry.install_profiles(directory, profiles)
         await self._adopt_global_default_when_nothing_active()
-        await self._services.bus.publish(SettingsReload(release_session_scoped_model=result == "switched"))
+        # The engine drops whatever the reload finds gone (the session's own model included).
+        await self._services.bus.publish(SettingsReload())
         if result == "updated":
             self._view.notify(_MODEL_PROFILE_UPDATED.bind(), title=_MODEL_SETTINGS_TITLE.bind())
         self._callbacks.debug("ModelConfig", result)
@@ -455,7 +449,8 @@ class RuntimeConfigController:
             new_profile = self._services.agent_registry.get(new_active_name)
             if new_profile is not None:
                 label = new_profile.display_name or new_profile.name
-                await self._services.bus.publish(AgentProfileSwitch(profile_name=new_active_name))
+                # Not the user's pick: new sessions keep starting on their agent unless it was this one.
+                await self._services.bus.publish(AgentProfileSwitch(profile_name=new_active_name, source="fallback"))
                 if pending_switch is None:
                     self._view.notify(_AGENT_SWITCHED.bind(label=label), title=_AGENT_TITLE.bind())
                 self._callbacks.debug("AgentConfig", f"switched → {new_active_name}")

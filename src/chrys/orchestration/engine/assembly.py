@@ -226,6 +226,7 @@ def assemble_agent_engine(
         bus=bus,
         settings_handle=settings_handle,
         agent_registry=agent_registry,
+        model_registry=model_registry,
         workspace_change_tracker=workspace_change_tracker,
         workflows=workflows,
     )

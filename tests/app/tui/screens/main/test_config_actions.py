@@ -29,9 +29,7 @@ from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState
 from chrys.app.tui.screens.main.view_adapter import MainScreenViewAdapter
 from chrys.app.tui.screens.models.picker import ModelPickerAction, ModelsScreen
 from chrys.app.tui.screens.models.screen import ModelConfigScreen
-from chrys.foundation.config.settings import DEFAULT_LOCALE, Settings
-from chrys.foundation.config.settings_store import LoadedSettings, SettingsHandle
-from chrys.foundation.config.spec import Source
+from chrys.foundation.config.settings import DEFAULT_LOCALE
 from chrys.foundation.events.bus import EventBus
 from chrys.foundation.events.types import (
     AgentRuntimeDetails,
@@ -45,7 +43,7 @@ from chrys.service.profiles.agents.registry import AgentProfileRegistry
 from chrys.service.profiles.models.registry import ModelProfileRegistry
 from chrys.service.profiles.models.schema import ModelProfile, is_model_profile_selectable
 from tests.app.tui.screens._model_config_support import _model_config_result_events
-from tests.support.event_capture import capture_event_sequence, capture_events
+from tests.support.event_capture import capture_event_sequence
 from tests.support.tui_helpers import discard_worker
 
 
@@ -326,7 +324,7 @@ async def test_model_config_result_requests_reload_without_preconfirm_cache_or_s
         callbacks=_callbacks(),
     )
 
-    await controller.on_model_config_result("switched")
+    await controller.on_model_config_result("deleted")
 
     assert len(published) == 1
     assert services.active_model_profile_id == "confirmed-id"
@@ -400,81 +398,6 @@ async def test_config_screens_receive_file_default_and_runtime_effective_pointer
     assert model_screen._global_default_profile_id == "model-a"
     assert isinstance(agent_screen, AgentsConfigScreen)
     assert agent_screen._active_model_profile_id == "model-b"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("pin", "running", "expected_selected", "expected_running"),
-    [
-        ("Model S", "model-s", "model-s", "model-s"),
-        ("model-s", "model-a", "model-s", "model-a"),
-        ("", "model-a", "model-p", "model-a"),
-        ("", "", "model-p", "model-p"),
-    ],
-    ids=["shortcut-by-name", "agent-own-over-shortcut", "agent-own", "neither"],
-)
-async def test_the_model_dialog_is_told_both_of_the_sessions_models(
-    pin: str, running: str, expected_selected: str, expected_running: str
-) -> None:
-    """A prompt shortcut's switch selects a model for this session alone, in the settings the engine
-    shares, not the process pointer; an agent's own model may run instead. The dialog decides what a
-    deletion does against both (``session_models``)."""
-    registry = ModelProfileRegistry()
-    for profile_id, name in (("model-p", "Model P"), ("model-s", "Model S"), ("model-a", "Model A")):
-        registry.register(ModelProfile(id=profile_id, name=name, model_id=f"wire-{profile_id}"))
-    loaded = LoadedSettings(settings=Settings(), provenance={}).overlay(Source.PROCESS_RUNTIME, model_profile="model-p")
-    if pin:
-        loaded = loaded.overlay(Source.SESSION, model_profile=pin)
-    state = MainScreenState()
-    if running:
-        state.runtime.details_confirmed = True
-        state.runtime.details.model.profile_id = running
-    view = _View()
-    controller = RuntimeConfigController(
-        state=state,
-        services=MainScreenServices(
-            bus=EventBus(),
-            model_registry=registry,
-            settings_handle=SettingsHandle(loaded),
-            active_model_profile_id="model-p",
-        ),
-        view=cast(Any, view),
-        callbacks=_callbacks(),
-    )
-
-    controller.open_model_config()
-    await view.drain_workers()
-
-    model_screen, _callback = view.pushed[0]
-    assert isinstance(model_screen, ModelConfigScreen)
-    assert model_screen._session_selected_profile_id == expected_selected
-    assert model_screen._session_running_profile_id == expected_running
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("result", "releases", "announced"),
-    [("switched", [True], False), ("updated", [False], True), ("reloaded", [False], False), ("", [], False)],
-)
-async def test_each_model_dialog_result_asks_for_its_own_effects(
-    result: str, releases: list[bool], announced: bool
-) -> None:
-    """``switched`` reloads and ends a session-only switch; ``updated`` reloads and says so; ``reloaded``
-    reloads alone, keeping the session's own choice; nothing else reloads."""
-    bus = EventBus()
-    published = await capture_events(bus, SettingsReload)
-    view = _View()
-    controller = RuntimeConfigController(
-        state=MainScreenState(),
-        services=MainScreenServices(bus=bus, model_registry=ModelProfileRegistry()),
-        view=cast(Any, view),
-        callbacks=_callbacks(),
-    )
-
-    await controller.on_model_config_result(result)
-
-    assert [event.release_session_scoped_model for event in published] == releases
-    assert bool(view.notifications) is announced
 
 
 @pytest.mark.asyncio
@@ -944,8 +867,8 @@ async def test_users_own_agent_or_model_pick_tells_the_prompt_card(
     "change",
     [
         "model_settings_updated",
-        # The model settings' "switched" result is the fallback after deleting the session's model.
-        "model_settings_switched",
+        # A model deleted: the reload drops whatever is gone; nobody picked anything.
+        "model_settings_deleted",
         "agent_config_rename",
         "agent_config_fallback",
         "agent_config_saved",
@@ -972,8 +895,8 @@ async def test_changes_that_are_not_the_users_pick_leave_the_prompt_card_alone(
 
     if change == "model_settings_updated":
         await controller.on_model_config_result("updated")
-    elif change == "model_settings_switched":
-        await controller.on_model_config_result("switched")
+    elif change == "model_settings_deleted":
+        await controller.on_model_config_result("deleted")
     elif change == "agent_config_rename":
         controller.on_agent_config_saved("Code Renamed", "QA")
         await controller.on_agent_config_result("")

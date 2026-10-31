@@ -26,8 +26,10 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
+from chrys.foundation.config.settings import Settings, parse_prompt_shortcut_paths
+from chrys.foundation.platform import get_platform
 from chrys.foundation.text.encoding import decode_bytes
 from chrys.service.skills.loader import FRONTMATTER_RE, parse_frontmatter
 
@@ -110,6 +112,25 @@ def project_roots(workspace: str) -> list[Path]:
         if (folder / ".git").exists():
             return chain
     return [start]
+
+
+def prompt_shortcut_folders(settings: Settings, workspace: str | None) -> dict[str, Any]:
+    """Where shortcuts are read from for *workspace* under *settings*: :func:`load_prompt_shortcuts`'s arguments.
+
+    The one definition both readers use: the ``/`` list, and the engine when it
+    checks that a message's shortcut is still one it would load.
+    """
+    try:
+        extra_dirs = parse_prompt_shortcut_paths(settings.prompt_shortcuts_paths)
+    except ValueError, TypeError, RecursionError:
+        extra_dirs = []
+    return {
+        "config_dir": get_platform().config_dir,
+        "workspace": workspace,
+        "load_user_folder": settings.prompt_shortcuts_load_user_folder,
+        "extra_dirs": extra_dirs,
+        "load_working_folder": settings.prompt_shortcuts_load_working_folder,
+    }
 
 
 def load_prompt_shortcuts(
@@ -383,7 +404,13 @@ def _load_file(
         cached = _PARSED.get(key)
     if cached is not None and cached[0] == version:
         return cached[1]
-    command = _parse_file(path, name, size=stat.st_size)
+    try:
+        command = _parse_file(path, name, size=stat.st_size)
+    except Exception as exc:
+        # One file that breaks the parser (a YAML date with no such day, say) is skipped alone,
+        # and cached like any other skip, so it warns again only once it changes.
+        logger.warning("Prompt shortcuts: skipping %s: %s", os.fspath(path), exc)
+        command = None
     with _CACHE_LOCK:
         _PARSED[key] = (version, command)
     return command

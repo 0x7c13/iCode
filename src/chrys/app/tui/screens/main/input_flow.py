@@ -2,27 +2,27 @@
 
 """User submit, injection, retry, and interrupt flow for the main screen.
 
-Every send to the model claims admission here (``MainScreenState.submit``)
-when the user asks for it, and holds the claim until it has published or
-handed its text back; a second send meanwhile is refused and its text given
-back. A send whose text is prepared first — a prompt shortcut's
-``!`command``` placeholders and agent and model switches — claims at Enter
-through :meth:`InputFlowController.begin_prepared` and publishes under that
-same claim, so no other entry point can publish in between.
+A prompt shortcut's draft is sent like any message. If it switches the
+agent or model, that goes to the engine first as one step
+(``SessionOnlySwitch``); if it holds ``!`command``` placeholders, the message
+carries its shortcut and the engine runs them while admitting it, saying so
+(``PromptCommandsRunning`` / ``PromptCommandsEnded``) and taking a withdraw
+(Esc) meanwhile. The composer clears at Enter as for any message; whatever
+keeps the message from going out hands the draft back whole, once.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from chrys.app.tui.screens.main.ports import InputFlowView, InputRestore, StartWorker
+from chrys.app.tui.screens.main.ports import InputFlowView, StartWorker
 from chrys.app.tui.screens.main.state import MainScreenServices, MainScreenState, SubmitKind
 from chrys.app.tui.support.gc_freeze import GcAbsorbReason, GcAbsorbRequested
-from chrys.app.tui.widgets.chrome.input_bar import INPUT_CONTINUE
+from chrys.app.tui.widgets.chat.replay import contents_text
+from chrys.app.tui.widgets.chrome.input_bar import INPUT_CONTINUE, ChatDraft
 from chrys.app.tui.widgets.chrome.status_bar import STATUS_RESUMING, STATUS_THINKING
 from chrys.foundation.events.types import (
     Error,
@@ -30,41 +30,28 @@ from chrys.foundation.events.types import (
     InvocationContentDelta,
     InvocationContentFinished,
     InvocationMessage,
+    PromptCommandsEnded,
+    PromptCommandsRunning,
+    PromptShortcutRef,
+    SessionOnlySwitch,
     UserInjectCancel,
     UserInterrupt,
     UserMessage,
     UserRetry,
 )
+from chrys.foundation.i18n import msg
+from chrys.service.prompt_shortcuts.shell import shell_commands
 
 if TYPE_CHECKING:
+    from chrys.app.tui.screens.main.prompt_card import PendingSwitch
     from chrys.app.tui.screens.main.state import DeferredTurnEvent
     from chrys.foundation.events.bus import EventBus
 
-type GiveBack = Callable[[], InputRestore | None]
-"""A prepared send's one way to return its draft to the composer, once; the proof of that restore, or None."""
-
-type SendIntent = Literal["message", "continue"]
-"""What the user asked for: a new message, or to continue the current task.
-
-A message is published as a new turn or, while a turn runs, as an injection,
-decided when it is published.
-"""
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedSend:
-    """A send that claimed admission when the user asked for it and publishes later.
-
-    *text* is the draft as the user wrote it, ``!`command``` placeholders
-    included. *claim* is this send's number in ``MainScreenState.submit``.
-    Whatever stops it — an abandon, a backend refusal, a check that fails
-    right before publishing — gives its text back through the one give-back
-    it claimed with, so the draft returns once, with its card.
-    """
-
-    claim: int
-    text: str
-    intent: SendIntent
+_RUNNING_COMMANDS = msg(
+    "tui.input.running_commands",
+    fallback="Running {count} command… Esc to cancel",
+    plural_fallback="Running {count} commands… Esc to cancel",
+)
 
 
 class InputFlowController:
@@ -89,6 +76,9 @@ class InputFlowController:
         commit_profile_switch_marker: Callable[[], None],
         post_gc_message: Callable[[GcAbsorbRequested], object],
         debug: Callable[[str, str], None],
+        pending_switch: Callable[[ChatDraft], PendingSwitch | None],
+        model_left_out: Callable[[], None],
+        show_error_notice: Callable[[Error], None],
     ) -> None:
         self._state = state
         self._services = services
@@ -104,116 +94,52 @@ class InputFlowController:
         self._commit_profile_switch_marker = commit_profile_switch_marker
         self._post_gc_message = post_gc_message
         self._debug = debug
+        self._pending_switch = pending_switch
+        self._model_left_out = model_left_out
+        self._show_error_notice = show_error_notice
+        self._commands_status = False
 
     @property
     def _bus(self) -> EventBus:
         return self._services.bus
 
-    def submit_user_text(self, text: str) -> None:
-        """Submit normal user text as a new turn or mid-run injection."""
+    def submit_user_text(self, text: str, draft: ChatDraft | None = None) -> None:
+        """Submit normal user text as a new turn or mid-run injection; *draft* is the composer's whole draft."""
         if self._state.run.agent_running:
             self._start_worker(partial(self.queue_injection, text))
             return
-        self._start_worker(partial(self.send_user_message, text))
+        self._start_worker(partial(self.send_user_message, text, draft))
 
-    def request_retry(self, text: str = "") -> None:
-        """Schedule retry/continue from a sync Textual event handler."""
-        begun = self._begin_retry(text)
-        if begun is not None:
-            self._start_worker(partial(self._publish_retry, *begun))
-        elif text and self._state.submit.active and self._view.restore_input_draft(text):
-            # Another send holds the claim (a prompt shortcut's may hold it
-            # while its commands run): the typed note comes back, as for Enter.
+    def request_retry(self, text: str = "", draft: ChatDraft | None = None) -> None:
+        """Schedule retry/continue from a sync Textual event handler; *draft* is the composer's whole draft."""
+        event = self._begin_retry(text, draft)
+        if event is not None:
+            self._start_worker(partial(self._publish_retry, event))
+            return
+        if not text or (self._state.submit.active and self._state.submit.kind == "retry"):
+            # A second Continue for the retry in flight does nothing: that retry carries the same note.
+            return
+        # A turn began after the keypress, or a message is still on its way (a prompt
+        # shortcut's admission can take a while): the typed note comes back, as for Enter.
+        if self._view.restore_input_draft(draft if draft is not None else text) and self._state.submit.active:
             self._view.flash_submit_still_sending()
 
-    # -- prepared sends --------------------------------------------------- #
+    def withdraw_submit(self) -> bool:
+        """Esc while a message carrying a prompt shortcut is on its way: withdraw it; False for anything else.
 
-    def begin_prepared(
-        self,
-        text: str,
-        intent: SendIntent,
-        *,
-        give_back: GiveBack,
-        still_valid: Callable[[], bool],
-    ) -> PreparedSend | None:
-        """Claim admission now for *text*, to be published later with :meth:`publish_prepared`.
-
-        Nothing else happens yet: no render gate, no running or pending state.
-        *give_back* returns the draft to the composer (once, a newer draft
-        winning) and hands back the proof of that restore, so a follow-up (a
-        refused image's "use paths") can rewrite it; *still_valid* tells
-        whether the send may still publish.
-        Refused like any submit while another is in flight (and a continue
-        while a turn runs): *text* goes back through *give_back*.
+        Owns Esc for that whole time: the first one withdraws (a message not yet
+        published is never published; one the engine is admitting is told to
+        stop, its commands with it), later ones do nothing.
         """
-        if self._state.submit.active or (intent == "continue" and self._state.run.agent_running):
-            if give_back() is not None:
-                self._view.flash_submit_still_sending()
-            return None
-        kind: SubmitKind = "retry" if intent == "continue" else "turn"
-        claim = self._state.submit.begin(text, kind=kind, give_back=give_back, still_valid=still_valid)
-        return PreparedSend(claim, text, intent)
-
-    def holds(self, prepared: PreparedSend) -> bool:
-        """Return whether *prepared* still owns the submit in flight."""
-        return self._state.submit.holds(prepared.claim)
-
-    def publish_prepared(self, prepared: PreparedSend, final_text: str) -> bool:
-        """Hand *final_text* to the publish under *prepared*'s claim, never claiming again.
-
-        The claim stays the send's until its event is on the bus: the publish
-        checks once more, right before publishing, that the send is still
-        valid, and gives the draft back instead when it is not. False, with
-        nothing scheduled, when the claim is no longer this send's.
-        """
-        if not self.holds(prepared):
+        submit = self._state.submit
+        if not submit.active or submit.message_id is None:
             return False
-        claim = prepared.claim
-        if prepared.intent == "continue":
-            self._start_worker(partial(self._publish_prepared_retry, UserRetry(text=final_text), claim))
-        else:
-            self._start_worker(partial(self._publish_prepared_message, final_text, claim))
+        if not submit.withdrawn:
+            submit.withdrawn = True
+            self._start_worker(partial(self._bus.publish, UserInjectCancel(injection_id=submit.message_id)))
         return True
 
-    def abandon_prepared(self, prepared: PreparedSend) -> bool:
-        """Release *prepared*'s claim and give its text back; False when the claim was no longer its own."""
-        return self._give_back_and_release(prepared.claim)
-
-    def _give_back_and_release(self, claim: int) -> bool:
-        give_back = self._state.submit.give_back
-        if not self._state.submit.release(claim):
-            return False
-        return give_back is not None and give_back() is not None
-
-    def _prepared_may_publish(self, claim: int) -> bool:
-        """Whether the prepared send holding *claim* may publish now, its own check included."""
-        submit = self._state.submit
-        if not submit.holds(claim) or self._state.run.agent_loading:
-            return False
-        return submit.still_valid is None or submit.still_valid()
-
-    async def _publish_prepared_message(self, text: str, claim: int) -> None:
-        # No await between this check and the publish: nothing can change in between.
-        if not self._prepared_may_publish(claim):
-            self._give_back_and_release(claim)
-            return
-        if self._state.run.agent_running:
-            self._state.submit.kind = "injection"
-            await self._inject_claimed(text, claim)
-        else:
-            await self._send_claimed(text, claim)
-
-    async def _publish_prepared_retry(self, event: UserRetry, claim: int) -> None:
-        if not self._prepared_may_publish(claim):
-            self._give_back_and_release(claim)
-            return
-        self._state.render_gate.begin()
-        self._view.set_retry_pending(True)
-        await self._publish_retry(event, claim)
-
-    # -- claims ----------------------------------------------------------- #
-
-    def _claim_submit(self, text: str, *, kind: SubmitKind) -> int | None:
+    def _claim_submit(self, text: str, *, kind: SubmitKind, draft: ChatDraft | None = None) -> bool:
         """Make *text* the one submit in flight, or hand it back to the composer.
 
         Called before the worker's first await, so of two submits scheduled in
@@ -223,12 +149,34 @@ class InputFlowController:
         coming back says why — until the first submit's own outcome shows.
         """
         if self._state.submit.active:
-            if self._view.restore_input_draft(text):
+            if self._view.restore_input_draft(draft if draft is not None else text):
                 self._view.flash_submit_still_sending()
-            return None
-        return self._state.submit.begin(text, kind=kind)
+            return False
+        self._begin_claim(text, kind=kind, draft=draft)
+        return True
 
-    async def _publish_submit(self, event: UserMessage | UserRetry) -> bool:
+    def _begin_claim(self, text: str, *, kind: SubmitKind, draft: ChatDraft | None = None) -> None:
+        """Claim the submit in flight with what it hands back if it does not go out: *draft*, else plain *text*."""
+        # Where a shortcut's draft was taken, read only for one: it goes back without its owner elsewhere.
+        generation, cwd = self._place() if draft is not None and draft.owner is not None else (0, "")
+        self._state.submit.begin(text, kind=kind, draft=draft, session_generation=generation, cwd=cwd)
+
+    def _place(self) -> tuple[int, str]:
+        """The engine's session generation and the working folder, now."""
+        return self._services.session_generation(), self._state.workspace.current_cwd
+
+    def _give_back_draft(self) -> None:
+        """Hand the claimed draft back whole, if no refusal handler took it already."""
+        draft = self._state.submit.take_draft_for(self._place)
+        if draft is not None:
+            self._view.restore_input_draft(draft)
+
+    def _finish_unrendered(self) -> None:
+        """The submit opened no turn: stop deferring, and show any error held back meanwhile as a notice."""
+        for error in self._state.render_gate.finish(rendered=False):
+            self._show_error_notice(error)
+
+    async def _publish_submit(self, event: UserMessage | UserRetry | SessionOnlySwitch) -> bool:
         """Publish the submit in flight; return whether the backend refused it.
 
         ``EventBus.publish`` awaits its handlers in order, so a refusal reaches
@@ -238,41 +186,77 @@ class InputFlowController:
         await self._bus.publish(event)
         return self._state.submit.blocked
 
-    async def send_user_message(self, text: str) -> None:
-        """Publish and render a normal user message."""
-        if self._state.run.agent_loading:
-            return
-        claim = self._claim_submit(text, kind="turn")
-        if claim is None:
-            return
-        await self._send_claimed(text, claim)
+    async def send_user_message(self, text: str, draft: ChatDraft | None = None) -> None:
+        """Publish and render a normal user message, a prompt shortcut's draft included.
 
-    async def _send_claimed(self, text: str, claim: int) -> None:
-        """Publish *text* as a new turn under *claim*, already held."""
-        # Read before the claim ends: a prepared send gives back its own draft.
-        give_back = self._state.submit.give_back
+        A draft that switches the agent or model has the engine do that first,
+        as one step: the message goes only once it did, and in the same
+        session. One whose text holds ``!`command``` placeholders carries its
+        shortcut, so the engine runs them while it admits the message.
+        """
+        if self._state.run.agent_loading:
+            # A load began after the keypress, before this worker ran: the draft waits in the composer.
+            self._view.restore_input_draft(draft if draft is not None else text)
+            return
+        if not self._claim_submit(text, kind="turn", draft=draft):
+            return
+        submit = self._state.submit
+        ref = _shortcut_ref(draft, text)
+        if ref is not None:
+            submit.message_id = uuid4().hex[:12]
+        event = UserMessage(text=text, injection_id=submit.message_id, prompt_shortcut=ref)
+        published = False
+        blocked = False
         try:
-            event = UserMessage(text=text)
-            self._state.render_gate.begin()
-            if await self._publish_submit(event):
-                self._state.render_gate.finish(rendered=False)
-                return
+            switch = self._pending_switch(draft) if draft is not None else None
+            if (switch is None or await self._switch_session(switch)) and not submit.withdrawn:
+                self._state.render_gate.begin()
+                published = True
+                blocked = await self._publish_submit(event)
         finally:
-            self._state.submit.release(claim)
-        if not event.started_turn:
+            self._clear_commands_status()
+            if not (published and event.started_turn):
+                # Refused, withdrawn, switched nowhere, or taken by a run still
+                # finishing: the draft is the user's again (once: a refusal's
+                # handler may have handed it back already).
+                self._give_back_draft()
+            self._state.submit.clear()
+        if published and (blocked or not event.started_turn):
             # Neither refused nor a new turn: the run seen ending here was still
-            # finishing and took the message, or the backend dropped it. The
-            # text is the user's again; if that run used it, its outcome shows
-            # it in the transcript and clears the composer.
-            self._state.render_gate.finish(rendered=False)
-            if give_back is not None:
-                give_back()
-            else:
-                self._view.restore_input_draft(text)
+            # finishing and took the message, or the backend dropped it. If that
+            # run used it, its outcome shows it in the transcript and clears the composer.
+            self._finish_unrendered()
+        if not (published and event.started_turn):
             self._debug("UserMessage (no turn)", text[:60])
             return
         await self._open_turn(event)
         self._debug("UserMessage", text[:60])
+
+    async def _switch_session(self, switch: PendingSwitch) -> bool:
+        """Have the engine switch this session's own agent and model; whether it did, in this same session."""
+        generation = self._services.session_generation()
+        event = SessionOnlySwitch(agent=switch.agent, model_profile=switch.model_profile)
+        if await self._publish_submit(event):
+            return False
+        if event.model_left_out:
+            self._model_left_out()
+        return event.applied and self._services.session_generation() == generation
+
+    async def on_prompt_commands_running(self, event: PromptCommandsRunning) -> None:
+        """The engine runs the commands of the message in flight: say so until they end."""
+        if event.injection_id is None or event.injection_id != self._state.submit.message_id:
+            return
+        self._commands_status = True
+        self._view.show_status(_RUNNING_COMMANDS.bind(count=event.count))
+
+    async def on_prompt_commands_ended(self, event: PromptCommandsEnded) -> None:
+        if event.injection_id is not None and event.injection_id == self._state.submit.message_id:
+            self._clear_commands_status()
+
+    def _clear_commands_status(self) -> None:
+        if self._commands_status:
+            self._commands_status = False
+            self._view.clear_status()
 
     async def _open_turn(self, event: UserMessage) -> None:
         """Show *event* as the opener of the turn its publish just started.
@@ -282,6 +266,9 @@ class InputFlowController:
         then find the turn live and wait for the bubble.
         """
         text = event.text
+        # What the model receives (a prompt shortcut's command output included), as a
+        # restored session shows it; the title and the input history keep what was typed.
+        shown = contents_text(event.prepared_contents) if event.prepared_contents is not None else text
         self._state.run.started_at = event.timestamp
         self._view.set_terminal_title_for_user_message(text)
         self._set_agent_running(True)
@@ -296,7 +283,9 @@ class InputFlowController:
         try:
             # EventBus.publish is sequential; the backend fills prepared_contents
             # before returning so this previews exactly what the model receives.
-            await self._view.render_user_message(text, created_at=event.timestamp, contents=event.prepared_contents)
+            await self._view.render_user_message(
+                shown or text, created_at=event.timestamp, contents=event.prepared_contents
+            )
             rendered = True
         finally:
             self._state.render_gate.finish(rendered=rendered)
@@ -306,13 +295,8 @@ class InputFlowController:
 
     async def queue_injection(self, text: str) -> None:
         """Queue a user message for mid-run injection without chat display."""
-        claim = self._claim_submit(text, kind="injection")
-        if claim is None:
+        if not self._claim_submit(text, kind="injection"):
             return
-        await self._inject_claimed(text, claim)
-
-    async def _inject_claimed(self, text: str, claim: int) -> None:
-        """Queue *text* for the running turn under *claim*, already held."""
         try:
             injection_id = uuid4().hex[:12]
             self._view.lock_input_with_text()
@@ -322,7 +306,7 @@ class InputFlowController:
                 self._state.pending_injection.clear()
                 return
         finally:
-            self._state.submit.release(claim)
+            self._state.submit.clear()
         if event.started_turn:
             # The run ended before the backend admitted this message, so it
             # opened a new turn with it: show that turn as a new turn's Enter
@@ -401,28 +385,29 @@ class InputFlowController:
         self._view.set_retry_mode(True, label=INPUT_CONTINUE.bind())
         self._debug("UserInterrupt", "")
 
-    def _begin_retry(self, text: str) -> tuple[UserRetry, int] | None:
-        """Reserve admission before scheduling, including same-tick clicks; return the event and its claim."""
+    def _begin_retry(self, text: str, draft: ChatDraft | None = None) -> UserRetry | None:
+        """Reserve admission before scheduling, including same-tick clicks."""
         if self._state.run.agent_running or self._state.submit.active:
             return None
 
         event = UserRetry(text=text)
         self._state.render_gate.begin()
-        claim = self._state.submit.begin(text, kind="retry")
+        # A refusal gives back the whole draft, its unfilled fields included, as for Enter.
+        self._begin_claim(text, kind="retry", draft=draft)
         self._view.set_retry_pending(True)
-        return event, claim
+        return event
 
-    async def _publish_retry(self, event: UserRetry, claim: int) -> None:
+    async def _publish_retry(self, event: UserRetry) -> None:
         text = event.text
         try:
             if await self._publish_submit(event):
-                self._state.render_gate.finish(rendered=False)
+                self._finish_unrendered()
                 return
         except BaseException:
             self._state.render_gate.finish(rendered=False)
             raise
         finally:
-            self._state.submit.release(claim)
+            self._state.submit.clear()
             self._view.set_retry_pending(False)
 
         self._view.hide_trailing_status_action()
@@ -446,3 +431,11 @@ class InputFlowController:
             await self.flush_deferred_agent_messages()
 
         self._debug("UserRetry", text[:60] if text else "")
+
+
+def _shortcut_ref(draft: ChatDraft | None, text: str) -> PromptShortcutRef | None:
+    """The shortcut a message carries: only a shortcut's draft whose text holds commands for the engine to run."""
+    owner = draft.owner if draft is not None else None
+    if owner is None or not shell_commands(text):
+        return None
+    return PromptShortcutRef(name=owner.name, path=owner.path)
