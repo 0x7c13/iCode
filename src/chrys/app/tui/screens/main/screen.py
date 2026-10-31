@@ -845,6 +845,7 @@ class MainScreen(RightClickScreenCopyMixin, Screen):
             configure_agent=self._open_agent_config,
             configure_agent_tab=self._open_agent_config_tab,
             show_runtime_details=self.action_runtime_details,
+            show_usage=self._config_actions.open_usage,
             configure_settings=self._open_settings,
             show_manual_pages=lambda pages, start_index: self._view_adapter.show_man_pages(
                 pages,
